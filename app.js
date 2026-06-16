@@ -578,6 +578,7 @@ function renderMoneySummary(summary) {
   document.getElementById("openInvestedMoneyBtn")?.addEventListener("click", () => openMoneyDetail("invested"));
 
   document.getElementById("bookMoneyTotal").textContent = money(summary.totalMoneyBook);
+  document.getElementById("realizedMoneyTotal").textContent = `${money(summary.totalMoneyRealized)} • ${pct(summary.profitLossPct)} • ${money(summary.profitLoss)}`;
 }
 
 function openMoneyDetail(mode) {
@@ -644,6 +645,7 @@ function calculateSummary(month) {
     computedBank, bankAccountsTotal,
     investedByType, valueByType, investedTotal, valueTotal,
     totalMoneyBook: bank + investedTotal,
+    totalMoneyRealized: bank + valueTotal,
     profitLoss: valueTotal - investedTotal,
     profitLossPct: investedTotal ? (valueTotal - investedTotal) / investedTotal : 0
   };
@@ -660,7 +662,13 @@ function renderMonthSituationBars(summary) {
       <div class="balance-track"><span class="income" style="width:${Math.max(3, summary.income / max * 100)}%"></span></div>
     </div>
     <div class="balance-bar-row">
-      <div><strong>Gastos + inversion</strong><span>${money(outflow)} · Gasto ${pct(expensePct)} · Inversion ${pct(investmentPct)}</span></div>
+      <div class="balance-bar-heading">
+        <strong>Gastos + inversion</strong>
+        <span class="balance-bar-summary">
+          <strong>${money(outflow)}</strong>
+          <small>Gasto ${pct(expensePct)} · Inversion ${pct(investmentPct)}</small>
+        </span>
+      </div>
       <div class="balance-track stacked">
         <span class="expense" style="width:${Math.max(0, outflow ? expensePct * outflow / max * 100 : 0)}%"></span>
         <span class="investment" style="width:${Math.max(0, outflow ? investmentPct * outflow / max * 100 : 0)}%"></span>
