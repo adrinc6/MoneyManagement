@@ -715,3 +715,39 @@ input[type="date"] {
     width: auto;
   }
 }
+
+html, body {
+  touch-action: pan-x pan-y;
+  overscroll-behavior: none;
+}
+.color-dot {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  vertical-align: middle;
+}
+.large-donut {
+  height: 340px;
+}
+.compact-bank-list {
+  margin: 8px 0 12px;
+}
+.compact-bank-list .bank-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 120px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+}
+.compact-bank-list .bank-row input {
+  min-height: 36px;
+  text-align: right;
+  padding: 6px 8px;
+}
+
+@media (max-width: 720px) {
+  .large-donut { height: 360px; }
+  .compact-bank-list .bank-row {
+    grid-template-columns: minmax(0, 1fr) 110px;
+  }
+}

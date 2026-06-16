@@ -42,7 +42,7 @@ const state = {
   charts: {},
   filtered: [],
   movementDrill: { level: "years", year: null, month: null },
-  summaryModes: { situation: "ingresos", investmentMoney: "invested", moneyMix: "money", investmentOverviewType: null },
+  summaryModes: { situation: "ingresos", investmentMoney: "invested", moneyMix: "types", bankMoney: "summary", investmentOverviewType: null },
   descriptionSuggestions: {}
 };
 
@@ -92,15 +92,15 @@ function wireUi() {
     state.summaryModes.moneyMix = btn.dataset.moneyMix;
     renderMoneyCharts(calculateSummary(document.getElementById("summaryMonth").value || currentMonthKey()));
   });
+  document.getElementById("bankMoneyMode")?.addEventListener("click", event => {
+    const btn = event.target.closest("[data-bank-mode]");
+    if (!btn) return;
+    state.summaryModes.bankMoney = btn.dataset.bankMode;
+    renderBankDetail(calculateSummary(document.getElementById("summaryMonth").value || currentMonthKey()));
+  });
   document.addEventListener("click", event => {
     if (event.target.closest(".toast")) return;
     window.setTimeout(() => clearToasts(), 0);
-  });
-  document.getElementById("moneyMixMode")?.addEventListener("click", event => {
-    const btn = event.target.closest("[data-money-mix]");
-    if (!btn) return;
-    state.summaryModes.moneyMix = btn.dataset.moneyMix;
-    renderMoneyCharts(calculateSummary(document.getElementById("summaryMonth").value || currentMonthKey()));
   });
 }
 
@@ -398,7 +398,8 @@ function renderMonthSituationDialog(summary) {
 
   const rows = getSituationBreakdown(summary.month, state.summaryModes.situation);
   const total = sum(rows.map(e => e[1]));
-  renderTable("monthSituationTable", ["Detalle", "Cantidad", "%"], rows.map(([label, value]) => [
+  renderTable("monthSituationTable", ["", "Detalle", "Cantidad", "%"], rows.map(([label, value], idx) => [
+    colorDot(COLORS[idx % COLORS.length]),
     escapeHtml(label),
     money(value),
     total ? pct(value / total) : "0,0 %"
@@ -452,25 +453,14 @@ function openMoneyDetail(mode) {
   document.getElementById("moneyDialogTitle").textContent = isBank ? "Banco" : "Invertido";
   document.getElementById("bankMoneyDetail").classList.toggle("hidden", !isBank);
   document.getElementById("investedMoneyDetail").classList.toggle("hidden", isBank);
-  document.getElementById("moneyDialogSummary").innerHTML = isBank ? `
-    <div class="money-grid">
-      <div class="money-item"><span>Banco</span><strong>${money(summary.bank)}</strong><small class="muted">${state.banks.length} ctas</small></div>
-      <div class="money-item"><span>App</span><strong>${money(summary.computedBank)}</strong><small class="${checkTone}">Diferencia ${money(bankDelta)}</small></div>
-    </div>
-    <div class="bank-check ${checkTone}">
-      <i data-lucide="${Math.abs(bankDelta) < 0.01 ? "check-circle-2" : "alert-triangle"}"></i>
-      <span>${state.banks.length ? `Suma ctas ${money(summary.bankAccountsTotal)} · App ${money(summary.computedBank)} · Dif. ${money(bankDelta)}` : "Sin ctas cargadas en la hoja Bancos."}</span>
-    </div>
-    <div class="bank-list">${renderBankRows()}</div>
-    ${state.banks.length && state.config.readMode === "apps-script" ? `<button class="btn full" id="saveBanksBtn" type="button"><i data-lucide="save"></i> Guardar ctas</button>` : ""}
-  ` : `
+  document.getElementById("moneyDialogSummary").innerHTML = isBank ? "" : `
     <div class="money-grid">
       <div class="money-item"><span>Invertido</span><strong>${money(summary.investedTotal)}</strong><small class="muted">Coste historico</small></div>
       <div class="money-item"><span>Actual</span><strong>${money(summary.valueTotal)}</strong><small class="${summary.profitLoss >= 0 ? "positive" : "negative"}">${money(summary.profitLoss)} · ${pct(summary.profitLossPct)}</small></div>
       ${parts}
     </div>
   `;
-  document.getElementById("saveBanksBtn")?.addEventListener("click", saveBanks);
+  if (isBank) renderBankDetail(summary);
   document.getElementById("moneyDialog").showModal();
   renderMoneyCharts(summary);
   lucide.createIcons();
@@ -480,7 +470,7 @@ function renderBankRows() {
   return state.banks.map((bank, idx) => `
     <label class="bank-row">
       <span>${escapeHtml(bank.cuenta)}</span>
-      <input data-bank-index="${idx}" type="number" step="0.01" value="${safeNumber(bank.dinero)}">
+      <input data-bank-index="${idx}" type="number" step="1" value="${Math.round(safeNumber(bank.dinero))}">
     </label>
   `).join("") || emptyBlock("No se han detectado ctas. La hoja debe llamarse Bancos y tener columnas Cuenta y Dinero.");
 }
@@ -558,30 +548,63 @@ function getSituationBreakdown(month, mode) {
 }
 
 function renderMoneyCharts(summary) {
-  const bankRows = adjustedBankChartRows();
+  const bankRows = adjustedBankChartRows().map((row, idx) => ({ label: row.label, value: row.value, color: COLORS[idx % COLORS.length] }));
   const bankTotal = sum(bankRows.map(row => row.value));
   upsertChart("bankDistributionChart", "doughnut", {
     labels: bankRows.length ? bankRows.map(row => `${row.label}: ${money(row.value)} (${pct(row.value / bankTotal)})`) : ["Banco"],
-    datasets: [{ data: bankRows.length ? bankRows.map(row => row.value) : [Math.max(summary.bank, 0)], backgroundColor: COLORS, borderColor: "#fff", borderWidth: 2 }]
-  }, compactChartOptions("Cuentas con saldo positivo", { legend: false }));
+    datasets: [{ data: bankRows.length ? bankRows.map(row => row.value) : [Math.max(summary.bank, 0)], backgroundColor: bankRows.length ? bankRows.map(row => row.color) : ["#0f766e"], borderColor: "#fff", borderWidth: 2 }]
+  }, compactChartOptions("Ctas", { legend: false }));
+  renderColorRowsTable("bankDistributionTable", bankRows, ["", "Cta", "Dinero", "%"]);
 
   document.querySelectorAll("[data-money-mix]").forEach(btn => btn.classList.toggle("active", btn.dataset.moneyMix === state.summaryModes.moneyMix));
-  const mixValues = state.summaryModes.moneyMix === "money"
-    ? [summary.bank, summary.investedTotal]
-    : [summary.investedTotal, Math.max(summary.valueTotal - summary.investedTotal, 0)];
-  const mixLabels = state.summaryModes.moneyMix === "money" ? ["Dinero", "Invertido"] : ["Invertido", "Ganancia"];
+  let rows;
+  let title;
+  if (state.summaryModes.moneyMix === "profit") {
+    rows = [
+      { label: "Invertido", value: summary.investedTotal, color: "#2563eb" },
+      { label: "Ganancia", value: Math.max(summary.profitLoss, 0), color: "#15803d" }
+    ].filter(row => row.value > 0);
+    title = "Invertido vs ganancia";
+  } else if (state.summaryModes.moneyMix === "money") {
+    rows = [
+      { label: "Dinero", value: summary.bank, color: "#0f766e" },
+      { label: "Invertido", value: summary.investedTotal, color: "#2563eb" }
+    ].filter(row => row.value > 0);
+    title = "Dinero vs invertido";
+  } else {
+    rows = INVESTMENT_TYPES.map((type, idx) => ({ label: type, value: summary.investedByType[type] || 0, color: COLORS[(idx + 2) % COLORS.length] })).filter(row => row.value > 0);
+    title = "Tipos de inversion";
+  }
+  const total = sum(rows.map(row => row.value));
   upsertChart("moneyVsInvestedChart", "doughnut", {
-    labels: mixLabels.map((label, idx) => `${label}: ${money(mixValues[idx])} (${pct(mixValues[idx] / Math.max(sum(mixValues), 1))})`),
-    datasets: [{ data: mixValues, backgroundColor: ["#0f766e", "#2563eb"], borderColor: "#fff", borderWidth: 2 }]
-  }, compactChartOptions(state.summaryModes.moneyMix === "money" ? "Dinero vs invertido" : "Invertido vs ganancia", { legend: false }));
+    labels: rows.map(row => `${row.label}: ${money(row.value)} (${pct(row.value / Math.max(total, 1))})`),
+    datasets: [{ data: rows.map(row => row.value), backgroundColor: rows.map(row => row.color), borderColor: "#fff", borderWidth: 2 }]
+  }, compactChartOptions(title, { legend: false }));
+  renderColorRowsTable("investmentMixTable", rows, ["", "Detalle", "Total", "%"]);
+}
 
-  const isCurrent = true;
-  const typeRows = INVESTMENT_TYPES.map(type => ({ type, value: isCurrent ? summary.valueByType[type] || 0 : summary.investedByType[type] || 0 })).filter(row => row.value > 0);
-  const typeTotal = sum(typeRows.map(row => row.value));
-  upsertChart("investmentTypesChart", "doughnut", {
-    labels: typeRows.map(row => `${row.type}: ${money(row.value)} (${pct(row.value / typeTotal)})`),
-    datasets: [{ data: typeRows.map(row => row.value), backgroundColor: COLORS.slice(2, 5), borderColor: "#fff", borderWidth: 2 }]
-  }, compactChartOptions(isCurrent ? "Tipos por valor actual" : "Tipos por invertido", { legend: false }));
+function renderBankDetail(summary) {
+  document.querySelectorAll("[data-bank-mode]").forEach(btn => btn.classList.toggle("active", btn.dataset.bankMode === state.summaryModes.bankMoney));
+  const bankDelta = summary.bankAccountsTotal - summary.computedBank;
+  const checkTone = Math.abs(bankDelta) < 0.01 ? "positive" : "negative";
+  const summaryPanel = document.getElementById("bankSummaryPanel");
+  const accountsPanel = document.getElementById("bankAccountsPanel");
+  summaryPanel.classList.toggle("hidden", state.summaryModes.bankMoney !== "summary");
+  accountsPanel.classList.toggle("hidden", state.summaryModes.bankMoney !== "accounts");
+  summaryPanel.innerHTML = `
+    <div class="money-grid">
+      <div class="money-item"><span>Banco</span><strong>${money(summary.bank)}</strong><small class="muted">${state.banks.length} ctas</small></div>
+      <div class="money-item"><span>App</span><strong>${money(summary.computedBank)}</strong><small class="${checkTone}">Dif. ${money(bankDelta)}</small></div>
+    </div>
+    <div class="bank-check ${checkTone}">
+      <i data-lucide="${Math.abs(bankDelta) < 0.01 ? "check-circle-2" : "alert-triangle"}"></i>
+      <span>${state.banks.length ? `Suma ctas ${money(summary.bankAccountsTotal)} · App ${money(summary.computedBank)} · Dif. ${money(bankDelta)}` : "Sin ctas cargadas en la hoja Bancos."}</span>
+    </div>`;
+  accountsPanel.innerHTML = `
+    <div class="bank-list compact-bank-list">${renderBankRows()}</div>
+    ${state.banks.length && state.config.readMode === "apps-script" ? `<button class="btn full" id="saveBanksBtn" type="button"><i data-lucide="save"></i> Guardar ctas</button>` : ""}`;
+  document.getElementById("saveBanksBtn")?.addEventListener("click", saveBanks);
+  lucide.createIcons();
 }
 
 function renderMovements() {
@@ -731,16 +754,11 @@ function renderInvestmentBreakdownCharts(summary) {
   if (selectedType) return renderInvestmentPositionCharts(selectedType);
   const current = INVESTMENT_TYPES.map(type => summary.valueByType[type] || 0);
   const rows = INVESTMENT_TYPES.map((type, idx) => ({ label: type, value: current[idx], color: COLORS.slice(2, 5)[idx] })).filter(row => row.value > 0);
-  renderChartLegend("investmentOverviewLegend", rows);
+  renderColorRowsTable("investmentOverviewTable", rows, ["", "Detalle", "Total", "%"]);
   upsertChart("investmentBreakdownDonut", "doughnut", {
     labels: rows.map(row => `${row.label}: ${money(row.value)} (${pct(row.value / Math.max(sum(rows.map(r => r.value)), 1))})`),
     datasets: [{ data: rows.map(row => row.value), backgroundColor: rows.map(row => row.color), borderColor: "#fff", borderWidth: 2 }]
   }, compactChartOptions("Valor actual", { legend: false }));
-
-  upsertChart("investmentBreakdownBars", "bar", {
-    labels: rows.map(row => row.label),
-    datasets: [{ label: "Actual", data: rows.map(row => row.value), backgroundColor: rows.map(row => row.color), borderRadius: 10 }]
-  }, { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip: moneyTooltip() }, scales: moneyScales() });
 }
 
 function addInvestmentRow() {
@@ -1080,15 +1098,25 @@ function renderInvestmentPositionCharts(type) {
   const positions = state.investments.filter(i => normalizeType(i.tipo) === normalizeType(type) && i.total > 0).sort((a, b) => b.total - a.total);
   const total = sum(positions.map(i => i.total));
   const rows = positions.map((i, idx) => ({ label: i.nombre, value: i.total, color: COLORS[idx % COLORS.length] }));
-  renderChartLegend("investmentOverviewLegend", rows);
+  renderColorRowsTable("investmentOverviewTable", rows, ["", "Detalle", "Total", "Peso"]);
   upsertChart("investmentBreakdownDonut", "doughnut", {
     labels: rows.map(row => `${row.label}: ${money(row.value)} (${pct(row.value / Math.max(total, 1))})`),
     datasets: [{ data: rows.map(row => row.value), backgroundColor: rows.map(row => row.color), borderColor: "#fff", borderWidth: 2 }]
   }, compactChartOptions(`Peso ${type}`, { legend: false }));
-  upsertChart("investmentBreakdownBars", "bar", {
-    labels: rows.map(row => row.label),
-    datasets: [{ label: "Peso", data: rows.map(row => row.value), backgroundColor: rows.map(row => row.color), borderRadius: 10 }]
-  }, { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip: moneyTooltip() }, scales: moneyScales() });
+}
+
+function renderColorRowsTable(id, rows, headers) {
+  const total = sum(rows.map(row => row.value));
+  renderTable(id, headers, rows.map(row => [
+    colorDot(row.color),
+    escapeHtml(row.label),
+    money(row.value),
+    pct(row.value / Math.max(total, 1))
+  ]));
+}
+
+function colorDot(color) {
+  return `<span class="color-dot" style="background:${escapeAttr(color)}"></span>`;
 }
 
 function renderChartLegend(id, rows) {
@@ -1194,7 +1222,7 @@ function showToast(message, type = "") {
   toast.addEventListener("click", event => {
     if (event.target === toast) remove();
   });
-  window.setTimeout(remove, 3000);
+  window.setTimeout(remove, 5000);
 }
 
 function clearToasts() {
