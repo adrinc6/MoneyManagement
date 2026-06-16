@@ -223,7 +223,7 @@ async function refreshData(options = {}) {
     syncOptions();
     renderAll();
     writeDataCache();
-    setNotice(`${state.transactions.length} movs y ${state.banks.length} ctas cargadas.`, "ok");
+    setNotice(`${state.transactions.length} movimientos y ${state.banks.length} cuentas cargadas.`, "ok");
   } catch (error) {
     console.error(error);
     if (cached) {
@@ -613,7 +613,7 @@ function renderBankRows() {
       <span>${escapeHtml(bank.cuenta)}</span>
       <input data-bank-index="${idx}" type="number" step="1" value="${Math.round(safeNumber(bank.dinero))}">
     </label>
-  `).join("") || emptyBlock("No se han detectado ctas. La hoja debe llamarse Bancos y tener columnas Cuenta y Dinero.");
+  `).join("") || emptyBlock("No se han detectado cuentas. La hoja debe llamarse Bancos y tener columnas Cuenta y Dinero.");
 }
 
 function calculateSummary(month) {
@@ -694,8 +694,8 @@ function renderMoneyCharts(summary) {
   upsertChart("bankDistributionChart", "doughnut", {
     labels: bankRows.length ? bankRows.map(row => `${row.label}: ${money(row.value)} (${pct(row.value / bankTotal)})`) : ["Banco"],
     datasets: [{ data: bankRows.length ? bankRows.map(row => row.value) : [Math.max(summary.bank, 0)], backgroundColor: bankRows.length ? bankRows.map(row => row.color) : ["#0f766e"], borderColor: "#fff", borderWidth: 2 }]
-  }, compactChartOptions("Ctas", { legend: false }));
-  renderColorRowsTable("bankDistributionTable", bankRows, ["", "Cta", "Dinero", "%"]);
+  }, compactChartOptions("Cuentas", { legend: false }));
+  renderColorRowsTable("bankDistributionTable", bankRows, ["", "Cuenta", "Dinero", "%"]);
 
   document.querySelectorAll("[data-money-mix]").forEach(btn => btn.classList.toggle("active", btn.dataset.moneyMix === state.summaryModes.moneyMix));
   let rows;
@@ -734,22 +734,23 @@ function renderBankDetail(summary) {
   accountsPanel.classList.toggle("hidden", state.summaryModes.bankMoney !== "accounts");
   summaryPanel.innerHTML = `
     <div class="money-grid">
-      <div class="money-item"><span>Banco</span><strong>${money(summary.bank)}</strong><small class="muted">${state.banks.length} ctas</small></div>
+      <div class="money-item"><span>Banco</span><strong>${money(summary.bank)}</strong><small class="muted">${state.banks.length} cuentas</small></div>
       <div class="money-item"><span>App</span><strong>${money(summary.computedBank)}</strong><small class="${checkTone}">Dif. ${money(bankDelta)}</small></div>
     </div>
     <div class="bank-check ${checkTone}">
       <i data-lucide="${Math.abs(bankDelta) < 0.01 ? "check-circle-2" : "alert-triangle"}"></i>
-      <span>${state.banks.length ? `Suma ctas ${money(summary.bankAccountsTotal)} · App ${money(summary.computedBank)} · Dif. ${money(bankDelta)}` : "Sin ctas cargadas en la hoja Bancos."}</span>
+      <span>${state.banks.length ? `Suma cuentas ${money(summary.bankAccountsTotal)} · App ${money(summary.computedBank)} · Dif. ${money(bankDelta)}` : "Sin cuentas cargadas en la hoja Bancos."}</span>
     </div>`;
   accountsPanel.innerHTML = `
     <div class="bank-list compact-bank-list">${renderBankRows()}</div>
-    ${state.banks.length && state.config.readMode === "apps-script" ? `<button class="btn full" id="saveBanksBtn" type="button"><i data-lucide="save"></i> Guardar ctas</button>` : ""}`;
+    ${state.banks.length && state.config.readMode === "apps-script" ? `<button class="btn full" id="saveBanksBtn" type="button"><i data-lucide="save"></i> Guardar cuentas</button>` : ""}`;
   document.getElementById("saveBanksBtn")?.addEventListener("click", saveBanks);
   lucide.createIcons();
 }
 
 function renderMovements() {
   const drill = state.movementDrill;
+  document.querySelector("#movimientos .section-toolbar").classList.toggle("hidden", drill.level === "years");
   document.getElementById("movementBackBtn").style.visibility = drill.level === "years" ? "hidden" : "visible";
   if (drill.level === "years") renderMovementYears();
   if (drill.level === "months") renderMovementMonths(drill.year);
@@ -1069,7 +1070,7 @@ async function submitMovement(event) {
       state.transactions.push(movement);
       writeDataCache();
       const totalAfter = sum(state.banks.map(b => b.dinero));
-      setNotice(`${movement.tipo} guardado. Dinero ${money(totalBefore)} → ${money(totalAfter)} · ${bankChangeText(account, bankBefore)}`, "ok");
+      setNotice(formatMovementSavedNotice(movement, account, totalBefore, totalAfter, bankBefore), "ok");
     }
     syncOptions();
     renderAll();
@@ -1373,7 +1374,7 @@ function showToast(message, type = "") {
   if (!container) return;
   const toast = document.createElement("div");
   toast.className = `toast ${type === "ok" ? "ok" : type === "warn" ? "warn" : ""}`;
-  toast.innerHTML = `<span>${escapeHtml(shortNotice(message))}</span><button class="toast-close" type="button" aria-label="Cerrar">×</button>`;
+  toast.innerHTML = `<span>${formatNoticeHtml(message)}</span><button class="toast-close" type="button" aria-label="Cerrar">×</button>`;
   container.appendChild(toast);
   const remove = () => {
     toast.classList.add("closing");
@@ -1390,6 +1391,14 @@ function clearToasts() {
   document.querySelectorAll(".toast").forEach(toast => toast.remove());
 }
 
-function shortNotice(message) {
-  return String(message || "").replace(/movimientos/g, "movs").replace(/Movimiento/g, "Mov.").replace(/cuentas/g, "ctas").replace(/Cuentas/g, "Ctas");
+function formatNoticeHtml(message) {
+  return escapeHtml(message).replace(/\s*\/\/\s*/g, "<br>");
+}
+
+function formatMovementSavedNotice(movement, account, totalBefore, totalAfter, bankBefore) {
+  return [
+    `Movimiento guardado`,
+    `Banco: ${money(totalBefore)} a ${money(totalAfter)}`,
+    `${account}: ${money(bankBefore)} a ${money(bankBefore + movement.amount)}`
+  ].join(" // ");
 }
