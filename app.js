@@ -70,7 +70,8 @@ function wireUi() {
   document.getElementById("movementForm").addEventListener("submit", submitMovement);
   document.getElementById("formType").addEventListener("change", syncRegistrarMode);
   document.getElementById("saveConfigBtn").addEventListener("click", saveConfigFromForm);
-  document.getElementById("summaryMonth").addEventListener("change", renderAll);
+  document.getElementById("summaryYear").addEventListener("change", syncSummaryPeriodAndRender);
+  document.getElementById("summaryMonth").addEventListener("change", syncSummaryPeriodAndRender);
   document.getElementById("openMonthSituationBtn").addEventListener("click", () => {
     document.getElementById("monthSituationDialog").showModal();
     renderSummary();
@@ -98,13 +99,13 @@ function wireUi() {
     const btn = event.target.closest("[data-money-mix]");
     if (!btn) return;
     state.summaryModes.moneyMix = btn.dataset.moneyMix;
-    renderMoneyCharts(calculateSummary(document.getElementById("summaryMonth").value || currentMonthKey()));
+    renderMoneyCharts(calculateSummary(getSelectedSummaryMonth()));
   });
   document.getElementById("bankMoneyMode")?.addEventListener("click", event => {
     const btn = event.target.closest("[data-bank-mode]");
     if (!btn) return;
     state.summaryModes.bankMoney = btn.dataset.bankMode;
-    renderBankDetail(calculateSummary(document.getElementById("summaryMonth").value || currentMonthKey()));
+    renderBankDetail(calculateSummary(getSelectedSummaryMonth()));
   });
   document.addEventListener("click", event => {
     if (event.target.closest(".toast")) return;
@@ -379,10 +380,7 @@ function syncOptions() {
   buildDescriptionSuggestions();
   syncRegistrarMode();
 
-  const months = unique([currentMonthKey(), ...state.transactions.map(t => monthKey(t.date))]).sort().reverse();
-  const previousMonth = document.getElementById("summaryMonth").value;
-  fillSelect("summaryMonth", months);
-  document.getElementById("summaryMonth").value = months.includes(previousMonth) ? previousMonth : currentMonthKey();
+  syncSummaryPeriodOptions();
 }
 
 function syncRegistrarMode() {
@@ -423,18 +421,48 @@ function syncRegistrarActionButton() {
   lucide.createIcons();
 }
 
+function syncSummaryPeriodOptions() {
+  const current = getSelectedSummaryMonth();
+  const months = unique([currentMonthKey(), ...state.transactions.map(t => monthKey(t.date))]).sort().reverse();
+  const years = unique(months.map(month => month.slice(0, 4))).sort((a, b) => Number(b) - Number(a));
+  const selected = months.includes(current) ? current : currentMonthKey();
+  fillSelect("summaryYear", years);
+  document.getElementById("summaryYear").value = selected.slice(0, 4);
+  fillSelect("summaryMonth", Array.from({ length: 12 }, (_, idx) => {
+    const value = String(idx + 1).padStart(2, "0");
+    return { value, label: monthName(value) };
+  }));
+  document.getElementById("summaryMonth").value = selected.slice(5, 7);
+}
+
+function getSelectedSummaryMonth() {
+  const current = currentMonthKey();
+  const year = document.getElementById("summaryYear")?.value || current.slice(0, 4);
+  const month = document.getElementById("summaryMonth")?.value || current.slice(5, 7);
+  return `${year}-${month}`;
+}
+
+function syncSummaryPeriodAndRender() {
+  renderAll();
+}
+
 function fillSelect(id, values, placeholder = null) {
   const el = document.getElementById(id);
   const current = el.value;
 
   const options = [
     ...(placeholder ? [`<option value="">${escapeHtml(placeholder)}</option>`] : []),
-    ...values.map(v => `<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`)
+    ...values.map(v => {
+      const value = typeof v === "object" ? v.value : v;
+      const label = typeof v === "object" ? v.label : v;
+      return `<option value="${escapeHtml(value)}">${escapeHtml(label)}</option>`;
+    })
   ];
 
   el.innerHTML = options.join("");
 
-  if (values.includes(current)) {
+  const rawValues = values.map(v => typeof v === "object" ? v.value : v);
+  if (rawValues.includes(current)) {
     el.value = current;
   } else if (placeholder) {
     el.value = "";
@@ -488,7 +516,7 @@ function renderAll() {
 }
 
 function renderSummary() {
-  const month = document.getElementById("summaryMonth").value || currentMonthKey();
+  const month = getSelectedSummaryMonth();
   const summary = calculateSummary(month);
   const situationItems = [
     ["Ingresos", summary.income, "positive"],
@@ -553,7 +581,7 @@ function renderMoneySummary(summary) {
 }
 
 function openMoneyDetail(mode) {
-  const summary = calculateSummary(document.getElementById("summaryMonth").value || currentMonthKey());
+  const summary = calculateSummary(getSelectedSummaryMonth());
   const isBank = mode === "bank";
   const bankDelta = summary.bankAccountsTotal - summary.computedBank;
   const checkTone = Math.abs(bankDelta) < 0.01 ? "positive" : "negative";
@@ -777,7 +805,7 @@ function renderMovementEntries(year, month) {
     .filter(t => String(t.date.getFullYear()) === year && monthKey(t.date) === month)
     .sort((a, b) => b.date - a.date);
   const summary = calculateSummary(month);
-  document.getElementById("movementDrillTitle").innerHTML = `${month} · ${rows.length} movimientos`;
+  document.getElementById("movementDrillTitle").innerHTML = `${monthLabel(month)} · ${rows.length} movimientos`;
   document.getElementById("movementDrill").innerHTML = `
     <article class="panel">
       <div class="panel-body">
@@ -800,8 +828,8 @@ function renderMovementTable(rows) {
     table.innerHTML = `<tbody><tr><td class="empty" colspan="5">Sin datos para mostrar.</td></tr></tbody>`;
     return;
   }
-  table.innerHTML = `<thead><tr><th>Fecha</th><th>Tipo</th><th>Concepto</th><th>Descripcion</th><th>Importe</th></tr></thead><tbody>${
-    rows.map(t => `<tr class="clickable-row" data-movement-index="${state.transactions.indexOf(t)}">${transactionRow(t).map(c => `<td>${c}</td>`).join("")}</tr>`).join("")
+  table.innerHTML = `<thead><tr><th class="col-day">Día</th><th class="col-type">Tipo</th><th class="col-concept">Concepto</th><th class="col-desc">Desc.</th><th class="col-money">Importe</th></tr></thead><tbody>${
+    rows.map(t => `<tr class="clickable-row" data-movement-index="${state.transactions.indexOf(t)}">${transactionRow(t).join("")}</tr>`).join("")
   }</tbody>`;
   table.querySelectorAll("[data-movement-index]").forEach(row => {
     row.addEventListener("click", () => openMovementDetail(Number(row.dataset.movementIndex)));
@@ -827,7 +855,7 @@ function metricBlock(label, value, tone) {
 }
 
 function renderInvestments() {
-  const summary = calculateSummary(document.getElementById("summaryMonth").value || currentMonthKey());
+  const summary = calculateSummary(getSelectedSummaryMonth());
   document.getElementById("investmentCurrentTotal").textContent = money(summary.valueTotal);
   document.getElementById("investmentTotalMetrics").innerHTML = `
     <div><span>Invertido</span><strong>${money(summary.investedTotal)}</strong></div>
@@ -855,7 +883,7 @@ function renderInvestmentEditTable() {
       <td class="amount">${money(i.total, 2)}</td>
     </tr>`;
   }).join("");
-  document.getElementById("investmentEditTable").innerHTML = `<thead><tr><th>Nombre</th><th>Cantidad</th><th>Valor</th><th>Total</th></tr></thead><tbody>${body || `<tr><td class="empty" colspan="4">Sin posiciones.</td></tr>`}</tbody>`;
+  document.getElementById("investmentEditTable").innerHTML = `<thead><tr><th class="col-detail">Detalle</th><th class="col-qty">Cant.</th><th class="col-money">Valor</th><th class="col-money">Total</th></tr></thead><tbody>${body || `<tr><td class="empty" colspan="4">Sin posiciones.</td></tr>`}</tbody>`;
   document.querySelectorAll("#investmentEditTable [data-investment-index]").forEach(row => {
     row.addEventListener("click", () => openInvestmentDetail(Number(row.dataset.investmentIndex)));
   });
@@ -1170,7 +1198,13 @@ function renderTable(id, headers, rows) {
 }
 
 function transactionRow(t) {
-  return [formatDate(t.date), tag(t.tipo), escapeHtml(t.concepto), escapeHtml(t.descripcion), amountCell(t.amount)];
+  return [
+    `<td class="amount col-day">${String(t.date.getDate()).padStart(2, "0")}</td>`,
+    `<td class="col-type">${tag(t.tipo)}</td>`,
+    `<td class="text-clip col-concept" title="${escapeAttr(t.concepto)}">${escapeHtml(t.concepto)}</td>`,
+    `<td class="text-clip col-desc" title="${escapeAttr(t.descripcion)}">${escapeHtml(t.descripcion)}</td>`,
+    `<td class="col-money">${amountCell(t.amount)}</td>`
+  ];
 }
 
 function upsertChart(canvasId, type, data, options) {
@@ -1210,9 +1244,9 @@ function renderInvestmentBreakdownTable(summary) {
   const rows = INVESTMENT_TYPES.map(type => {
     const invested = summary.investedByType[type] || 0;
     const current = summary.valueByType[type] || 0;
-    return `<tr class="clickable-row" data-investment-type="${escapeAttr(type)}"><td>${type}</td><td>${money(invested)}</td><td>${money(current)}</td><td>${amountCell(current - invested)}</td><td>${pctGain(current, invested)}</td></tr>`;
+    return `<tr class="clickable-row" data-investment-type="${escapeAttr(type)}"><td class="text-clip">${type}</td><td class="amount">${money(invested)}</td><td class="amount">${money(current)}</td><td>${amountCell(current - invested)}</td><td class="amount">${pctGain(current, invested)}</td></tr>`;
   }).join("");
-  document.getElementById("investmentBreakdownTable").innerHTML = `<thead><tr><th>Tipo</th><th>Invertido</th><th>Actual</th><th>Ganancia</th><th>%</th></tr></thead><tbody>${rows}</tbody>`;
+  document.getElementById("investmentBreakdownTable").innerHTML = `<thead><tr><th class="col-type">Tipo</th><th class="col-money">Inv.</th><th class="col-money">Actual</th><th class="col-money">Gan.</th><th class="col-pct">%</th></tr></thead><tbody>${rows}</tbody>`;
   document.querySelectorAll("#investmentBreakdownTable [data-investment-type]").forEach(row => row.addEventListener("click", () => openInvestmentOverview(row.dataset.investmentType)));
 }
 
@@ -1273,6 +1307,11 @@ function sum(values) { return values.reduce((a, b) => a + (Number(b) || 0), 0); 
 function unique(values) { return [...new Set(values.filter(v => v !== undefined && v !== null && String(v).trim() !== ""))]; }
 function currentMonthKey() { return monthKey(new Date()); }
 function monthKey(date) { return date ? `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}` : ""; }
+function monthName(month) {
+  const date = new Date(2020, Number(month) - 1, 1);
+  return new Intl.DateTimeFormat("es-ES", { month: "short" }).format(date).replace(".", "");
+}
+function monthLabel(key) { return `${monthName(key.slice(5, 7))} ${key.slice(0, 4)}`; }
 function endOfToday() { const d = new Date(); d.setHours(23, 59, 59, 999); return d; }
 function isIncome(t) { return normalizeType(t.tipo) === "ingreso";}
 function isInvestment(t) { return normalizeType(t.tipo) === "inversion"; }
