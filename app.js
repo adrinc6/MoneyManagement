@@ -1,4 +1,4 @@
-﻿const ENABLE_TEST_MODE = false;
+const ENABLE_TEST_MODE = false;
 
 const DEFAULT_CONFIG = {
   scriptUrl: "",
@@ -42,7 +42,7 @@ const state = {
   charts: {},
   filtered: [],
   movementDrill: { level: "years", year: null, month: null },
-  summaryModes: { situation: "ingresos", investmentMoney: "invested" },
+  summaryModes: { situation: "ingresos", investmentMoney: "invested", moneyMix: "money", investmentOverviewType: null },
   descriptionSuggestions: {}
 };
 
@@ -69,10 +69,7 @@ function wireUi() {
   });
   document.getElementById("closeMonthSituationBtn").addEventListener("click", () => document.getElementById("monthSituationDialog").close());
   document.getElementById("closeMoneyDialogBtn").addEventListener("click", () => document.getElementById("moneyDialog").close());
-  document.getElementById("openInvestmentOverviewBtn").addEventListener("click", () => {
-    document.getElementById("investmentOverviewDialog").showModal();
-    renderInvestments();
-  });
+  document.getElementById("openInvestmentOverviewBtn").addEventListener("click", () => openInvestmentOverview(null));
   document.getElementById("closeInvestmentOverviewBtn").addEventListener("click", () => document.getElementById("investmentOverviewDialog").close());
   document.getElementById("movementBackBtn").addEventListener("click", movementBack);
   document.getElementById("addInvestmentRowBtn").addEventListener("click", addInvestmentRow);
@@ -94,6 +91,12 @@ function wireUi() {
     if (!btn) return;
     state.summaryModes.investmentMoney = btn.dataset.moneyMode;
     renderSummary();
+  });
+  document.getElementById("moneyMixMode")?.addEventListener("click", event => {
+    const btn = event.target.closest("[data-money-mix]");
+    if (!btn) return;
+    state.summaryModes.moneyMix = btn.dataset.moneyMix;
+    renderMoneyCharts(calculateSummary(document.getElementById("summaryMonth").value || currentMonthKey()));
   });
 }
 
@@ -554,29 +557,30 @@ function getSituationBreakdown(month, mode) {
 }
 
 function renderMoneyCharts(summary) {
-  const bankLabels = state.banks.map(b => b.cuenta);
-  const bankValues = state.banks.map(b => b.dinero);
+  const bankRows = adjustedBankChartRows();
+  const bankTotal = sum(bankRows.map(row => row.value));
   upsertChart("bankDistributionChart", "doughnut", {
-    labels: bankLabels.length ? bankLabels : ["Banco"],
-    datasets: [{ data: bankValues.length ? bankValues : [summary.bank], backgroundColor: COLORS, borderColor: "#fff", borderWidth: 2 }]
-  }, compactChartOptions("Distribucion cuentas"));
+    labels: bankRows.length ? bankRows.map(row => `${row.label}: ${money(row.value)} (${pct(row.value / bankTotal)})`) : ["Banco"],
+    datasets: [{ data: bankRows.length ? bankRows.map(row => row.value) : [Math.max(summary.bank, 0)], backgroundColor: COLORS, borderColor: "#fff", borderWidth: 2 }]
+  }, compactChartOptions("Cuentas con saldo positivo"));
 
+  document.querySelectorAll("[data-money-mix]").forEach(btn => btn.classList.toggle("active", btn.dataset.moneyMix === state.summaryModes.moneyMix));
+  const mixValues = state.summaryModes.moneyMix === "money"
+    ? [summary.bank, summary.investedTotal]
+    : [summary.investedTotal, Math.max(summary.valueTotal - summary.investedTotal, 0)];
+  const mixLabels = state.summaryModes.moneyMix === "money" ? ["Dinero", "Invertido"] : ["Invertido", "Ganancia"];
   upsertChart("moneyVsInvestedChart", "doughnut", {
-    labels: ["Dinero", "Invertido"],
-    datasets: [{ data: [summary.bank, summary.investedTotal], backgroundColor: ["#0f766e", "#2563eb"], borderColor: "#fff", borderWidth: 2 }]
-  }, compactChartOptions("Dinero vs invertido"));
+    labels: mixLabels.map((label, idx) => `${label}: ${money(mixValues[idx])} (${pct(mixValues[idx] / Math.max(sum(mixValues), 1))})`),
+    datasets: [{ data: mixValues, backgroundColor: ["#0f766e", "#2563eb"], borderColor: "#fff", borderWidth: 2 }]
+  }, compactChartOptions(state.summaryModes.moneyMix === "money" ? "Dinero vs invertido" : "Invertido vs ganancia"));
 
   const isCurrent = state.summaryModes.investmentMoney === "current";
-  const values = INVESTMENT_TYPES.map(type => isCurrent ? summary.valueByType[type] || 0 : summary.investedByType[type] || 0);
-  upsertChart("investmentTypesChart", "bar", {
-    labels: INVESTMENT_TYPES,
-    datasets: [{
-      label: isCurrent ? "Valor actual" : "Invertido",
-      data: values,
-      backgroundColor: COLORS.slice(2, 5),
-      borderRadius: 8
-    }]
-  }, { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip: moneyTooltip() }, scales: moneyScales() });
+  const typeRows = INVESTMENT_TYPES.map(type => ({ type, value: isCurrent ? summary.valueByType[type] || 0 : summary.investedByType[type] || 0 })).filter(row => row.value > 0);
+  const typeTotal = sum(typeRows.map(row => row.value));
+  upsertChart("investmentTypesChart", "doughnut", {
+    labels: typeRows.map(row => `${row.type}: ${money(row.value)} (${pct(row.value / typeTotal)})`),
+    datasets: [{ data: typeRows.map(row => row.value), backgroundColor: COLORS.slice(2, 5), borderColor: "#fff", borderWidth: 2 }]
+  }, compactChartOptions(isCurrent ? "Tipos por valor actual" : "Tipos por invertido"));
 }
 
 function renderMovements() {
@@ -696,11 +700,7 @@ function renderInvestments() {
   if (document.getElementById("investmentOverviewDialog").open) {
     renderInvestmentBreakdownCharts(summary);
   }
-  renderTable("investmentBreakdownTable", ["Tipo", "Invertido", "Actual", "Ganancia", "%"], INVESTMENT_TYPES.map(type => {
-    const invested = summary.investedByType[type] || 0;
-    const current = summary.valueByType[type] || 0;
-    return [type, money(invested), money(current), amountCell(current - invested), pctGain(current, invested)];
-  }));
+  renderInvestmentBreakdownTable(summary);
   renderInvestmentEditTable();
 }
 
@@ -711,13 +711,11 @@ function renderInvestmentEditTable() {
     const idx = state.investments.indexOf(i);
     const group = i.tipo !== lastType ? `<tr><th colspan="4">${escapeHtml(i.tipo || "Sin tipo")}</th></tr>` : "";
     lastType = i.tipo;
-    const invested = calculateSummary(document.getElementById("summaryMonth").value || currentMonthKey()).investedByType[i.tipo] || 0;
-    const share = invested ? i.total / invested : 0;
     return `${group}<tr class="clickable-row" data-investment-index="${idx}">
-      <td>${escapeHtml(i.nombre)}</td>
-      <td>${money(i.cantidad, 4)}</td>
-      <td>${money(i.valor, 4)}</td>
-      <td>${money(i.total)} <small class="muted">${pct(share)}</small></td>
+      <td class="investment-name" title="${escapeAttr(i.nombre)}">${escapeHtml(i.nombre)}</td>
+      <td class="amount">${numberFmt(i.cantidad, 2)}</td>
+      <td class="amount">${money(i.valor, 2)}</td>
+      <td class="amount">${money(i.total, 2)}</td>
     </tr>`;
   }).join("");
   document.getElementById("investmentEditTable").innerHTML = `<thead><tr><th>Nombre</th><th>Cantidad</th><th>Valor</th><th>Total</th></tr></thead><tbody>${body || `<tr><td class="empty" colspan="4">Sin posiciones.</td></tr>`}</tbody>`;
@@ -727,6 +725,9 @@ function renderInvestmentEditTable() {
 }
 
 function renderInvestmentBreakdownCharts(summary) {
+  const selectedType = state.summaryModes.investmentOverviewType;
+  document.getElementById("investmentOverviewTitle").textContent = selectedType ? selectedType : "Inversiones";
+  if (selectedType) return renderInvestmentPositionCharts(selectedType);
   const invested = INVESTMENT_TYPES.map(type => summary.investedByType[type] || 0);
   const current = INVESTMENT_TYPES.map(type => summary.valueByType[type] || 0);
   const gains = INVESTMENT_TYPES.map((type, idx) => current[idx] - invested[idx]);
@@ -1039,6 +1040,46 @@ function compactChartOptions(title) {
   };
 }
 
+function adjustedBankChartRows() {
+  const map = new Map();
+  state.banks.forEach(bank => map.set(normalizeType(bank.cuenta), { label: bank.cuenta, value: Number(bank.dinero) || 0 }));
+  const save = map.get("bbva-save") || map.get("bbva save");
+  const credit = map.get("bbva-credito") || map.get("bbva credito");
+  if (save && credit) save.value += Math.min(credit.value, 0);
+  return [...map.values()].filter(row => row.value > 0).sort((a, b) => b.value - a.value);
+}
+
+function openInvestmentOverview(type) {
+  state.summaryModes.investmentOverviewType = type;
+  document.getElementById("investmentOverviewDialog").showModal();
+  renderInvestments();
+}
+
+function renderInvestmentBreakdownTable(summary) {
+  const rows = INVESTMENT_TYPES.map(type => {
+    const invested = summary.investedByType[type] || 0;
+    const current = summary.valueByType[type] || 0;
+    return `<tr class="clickable-row" data-investment-type="${escapeAttr(type)}"><td>${type}</td><td>${money(invested)}</td><td>${money(current)}</td><td>${amountCell(current - invested)}</td><td>${pctGain(current, invested)}</td></tr>`;
+  }).join("");
+  document.getElementById("investmentBreakdownTable").innerHTML = `<thead><tr><th>Tipo</th><th>Invertido</th><th>Actual</th><th>Ganancia</th><th>%</th></tr></thead><tbody>${rows}</tbody>`;
+  document.querySelectorAll("#investmentBreakdownTable [data-investment-type]").forEach(row => row.addEventListener("click", () => openInvestmentOverview(row.dataset.investmentType)));
+}
+
+function renderInvestmentPositionCharts(type) {
+  const positions = state.investments.filter(i => normalizeType(i.tipo) === normalizeType(type) && i.total > 0).sort((a, b) => b.total - a.total);
+  const total = sum(positions.map(i => i.total));
+  const labels = positions.map(i => `${i.nombre}: ${money(i.total)} (${pct(i.total / total)})`);
+  const values = positions.map(i => i.total);
+  upsertChart("investmentBreakdownDonut", "doughnut", {
+    labels,
+    datasets: [{ data: values, backgroundColor: COLORS, borderColor: "#fff", borderWidth: 2 }]
+  }, compactChartOptions(`Peso ${type}`));
+  upsertChart("investmentBreakdownBars", "bar", {
+    labels: positions.map(i => i.nombre),
+    datasets: [{ label: "Peso", data: values, backgroundColor: COLORS, borderRadius: 8 }]
+  }, { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip: moneyTooltip() }, scales: moneyScales() });
+}
+
 function moneyTooltip() {
   return { callbacks: { label: context => `${context.label || context.dataset.label || ""}: ${money(context.parsed?.y ?? context.parsed)}` } };
 }
@@ -1104,6 +1145,7 @@ function parseNumber(value) {
 function formatDate(date) { return date ? `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}` : ""; }
 function money(value, decimals = 2) { return new Intl.NumberFormat("es-ES", { style: "currency", currency: "EUR", maximumFractionDigits: decimals, minimumFractionDigits: decimals }).format(Number(value) || 0); }
 function pct(value) { return new Intl.NumberFormat("es-ES", { style: "percent", maximumFractionDigits: 1 }).format(Number(value) || 0); }
+function numberFmt(value, decimals = 2) { return new Intl.NumberFormat("es-ES", { maximumFractionDigits: decimals }).format(Number(value) || 0); }
 function safeNumber(value) { return Number.isFinite(value) ? value : 0; }
 function escapeHtml(value) { return String(value ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" }[c])); }
 function escapeAttr(value) { return escapeHtml(value).replace(/`/g, "&#096;"); }

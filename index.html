@@ -192,6 +192,10 @@
         </div>
       </div>
       <div id="investedMoneyDetail">
+        <div class="segmented" id="moneyMixMode">
+          <button class="active" data-money-mix="money" type="button">Dinero</button>
+          <button data-money-mix="profit" type="button">Invertido</button>
+        </div>
         <div class="chart-grid">
           <div class="chart-card"><canvas id="moneyVsInvestedChart"></canvas></div>
           <div class="chart-card"><canvas id="investmentTypesChart"></canvas></div>
@@ -206,7 +210,7 @@
 
   <dialog id="investmentOverviewDialog">
     <div class="dialog-head">
-      <h2>Inversiones</h2>
+      <h2 id="investmentOverviewTitle">Inversiones</h2>
       <button class="icon-btn" id="closeInvestmentOverviewBtn" aria-label="Cerrar"><i data-lucide="x"></i></button>
     </div>
     <div class="panel-body">
@@ -251,6 +255,6 @@
     </form>
   </dialog>
 
-  <script src="app.js?v=20260616-resumen-inversiones"></script>
+  <script src="app.js?v=20260616-graficos-inversiones-bancos"></script>
 </body>
 </html>
