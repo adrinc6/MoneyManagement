@@ -79,6 +79,8 @@ No subas `ControlFinanzas.xlsx` a GitHub si contiene datos reales. Lo recomendab
 
 Para abrir la app mas rapido, los datos leidos de Google Sheets se guardan en `localStorage` del navegador durante 24 horas. Al entrar se usa esa cache si sigue vigente; el boton de actualizar fuerza una lectura nueva desde Google Sheets. Cuando se guardan movimientos, traspasos, bancos o inversiones desde la app, la cache local se actualiza tambien para que la pantalla no espere a recargarlo todo.
 
+Como las escrituras a Apps Script se envian en modo `no-cors`, el navegador no siempre puede confirmar si Google Sheets ya las ha aplicado. Por eso la app guarda tambien una copia de cambios locales pendientes en `moneyPendingChanges`: al actualizar, si Google Sheets todavia no trae esos cambios, la app mantiene la version local y avisa para que vuelvas a revalidar. Si la lectura fresca ya coincide con la copia local, se limpia ese pendiente automaticamente.
+
 ## Configurar Apps Script
 
 1. Abre tu Google Sheet.
