@@ -1,5 +1,6 @@
 const DEFAULT_MOVEMENT_SHEET = 'Control Finanzas';
 const DEFAULT_INVESTMENT_SHEET = 'Inversiones';
+const DEFAULT_BANK_SHEET = 'Bancos';
 const APP_TOKEN = '';
 
 function doGet(e) {
@@ -8,6 +9,7 @@ function doGet(e) {
   const action = params.action || 'all';
   const movementSheet = params.movementSheet || DEFAULT_MOVEMENT_SHEET;
   const investmentSheet = params.investmentSheet || DEFAULT_INVESTMENT_SHEET;
+  const bankSheet = params.bankSheet || DEFAULT_BANK_SHEET;
   const dataSheet = params.dataSheet || 'Datos';
 
   let payload;
@@ -18,6 +20,7 @@ function doGet(e) {
         ok: true,
         transactions: readMovements_(movementSheet),
         investments: readInvestments_(investmentSheet),
+        banks: readBanks_(bankSheet),
         categories: readCategories_(dataSheet)
       };
     } else {
@@ -41,10 +44,27 @@ function doPost(e) {
     requireToken_(payload.token || '');
     if (payload.action === 'addMovement') {
       addMovement_(payload.movement, payload.sheetName || DEFAULT_MOVEMENT_SHEET);
+      if (payload.account) adjustBank_(payload.bankSheet || DEFAULT_BANK_SHEET, payload.account, Number(payload.movement && (payload.movement.amount || payload.movement.importe) || 0));
+      return json_({ ok: true });
+    }
+    if (payload.action === 'updateMovement') {
+      updateMovement_(payload.movement, payload.sheetName || DEFAULT_MOVEMENT_SHEET);
+      return json_({ ok: true });
+    }
+    if (payload.action === 'deleteMovement') {
+      deleteMovement_(payload.rowNumber, payload.sheetName || DEFAULT_MOVEMENT_SHEET);
       return json_({ ok: true });
     }
     if (payload.action === 'saveInvestments') {
       saveInvestments_(payload.investments || [], payload.sheetName || DEFAULT_INVESTMENT_SHEET);
+      return json_({ ok: true });
+    }
+    if (payload.action === 'saveBanks') {
+      saveBanks_(payload.banks || [], payload.bankSheet || DEFAULT_BANK_SHEET);
+      return json_({ ok: true });
+    }
+    if (payload.action === 'transferBank') {
+      transferBank_(payload.bankSheet || DEFAULT_BANK_SHEET, payload.from, payload.to, Number(payload.amount || 0));
       return json_({ ok: true });
     }
     return json_({ ok: false, error: 'Unknown action' });
@@ -88,14 +108,48 @@ function readMovements_(sheetName) {
   if (!sheet) throw new Error(`Sheet not found: ${sheetName}`);
   const values = sheet.getDataRange().getValues();
   return values.slice(1)
-    .filter(row => row[0] && row[4] && row[7])
-    .map(row => ({
-      fecha: normalizeDate_(row[0]),
-      tipo: row[4],
-      concepto: row[5],
-      descripcion: row[6],
-      importe: parseNumber_(row[7])
+    .map((row, index) => ({ row, rowNumber: index + 2 }))
+    .filter(item => item.row[0] && item.row[4] && item.row[7] !== '')
+    .map(item => ({
+      rowNumber: item.rowNumber,
+      fecha: normalizeDate_(item.row[0]),
+      tipo: item.row[4],
+      concepto: item.row[5],
+      descripcion: item.row[6],
+      importe: parseNumber_(item.row[7])
     }));
+}
+
+function updateMovement_(movement, sheetName) {
+  if (!movement) throw new Error('Missing movement');
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
+  if (!sheet) throw new Error(`Sheet not found: ${sheetName}`);
+  const rowNumber = Number(movement.rowNumber || 0);
+  if (rowNumber < 2 || rowNumber > sheet.getLastRow()) throw new Error('Invalid rowNumber');
+
+  const date = new Date(movement.date || movement.fecha);
+  if (Number.isNaN(date.getTime())) throw new Error('Invalid date');
+  const amount = Number(movement.amount || movement.importe);
+  if (!Number.isFinite(amount)) throw new Error('Invalid amount');
+
+  sheet.getRange(rowNumber, 1, 1, 8).setValues([[
+    date,
+    `=YEAR(A${rowNumber})`,
+    `=MONTH(A${rowNumber})`,
+    `=DAY(A${rowNumber})`,
+    movement.tipo || '',
+    movement.concepto || '',
+    movement.descripcion || '',
+    amount
+  ]]);
+}
+
+function deleteMovement_(rowNumber, sheetName) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
+  if (!sheet) throw new Error(`Sheet not found: ${sheetName}`);
+  const row = Number(rowNumber || 0);
+  if (row < 2 || row > sheet.getLastRow()) throw new Error('Invalid rowNumber');
+  sheet.deleteRow(row);
 }
 
 function readInvestments_(sheetName) {
@@ -113,6 +167,62 @@ function readInvestments_(sheetName) {
       total: parseNumber_(row[5])
     }))
     .filter(row => row.data && row.nombre && row.tipo && Number.isFinite(row.total) && row.total > 0);
+}
+
+function readBanks_(sheetName) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
+  if (!sheet) throw new Error(`Sheet not found: ${sheetName}`);
+  const values = sheet.getDataRange().getDisplayValues();
+  return values.slice(1)
+    .map((row, index) => ({
+      rowNumber: index + 2,
+      cuenta: String(row[0] || '').trim(),
+      dinero: parseNumber_(row[1])
+    }))
+    .filter(row => row.cuenta && Number.isFinite(row.dinero));
+}
+
+function saveBanks_(banks, sheetName) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(sheetName);
+  if (!sheet) throw new Error(`Sheet not found: ${sheetName}`);
+
+  banks.forEach(item => {
+    if (!item || !item.cuenta) return;
+    const rowNumber = Number(item.rowNumber || findBankRow_(sheet, item.cuenta) || 0);
+    const values = [[item.cuenta, Number(item.dinero || 0)]];
+    if (rowNumber >= 2 && rowNumber <= sheet.getMaxRows()) {
+      sheet.getRange(rowNumber, 1, 1, 2).setValues(values);
+    } else {
+      sheet.appendRow(values[0]);
+    }
+  });
+}
+
+function transferBank_(sheetName, from, to, amount) {
+  if (!from || !to || from === to || !Number.isFinite(amount) || amount <= 0) throw new Error('Invalid transfer');
+  adjustBank_(sheetName, from, -amount);
+  adjustBank_(sheetName, to, amount);
+}
+
+function adjustBank_(sheetName, account, delta) {
+  if (!account || !Number.isFinite(delta) || delta === 0) return;
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
+  if (!sheet) throw new Error(`Sheet not found: ${sheetName}`);
+  const row = findBankRow_(sheet, account);
+  if (!row) throw new Error(`Bank account not found: ${account}`);
+  const current = parseNumber_(sheet.getRange(row, 2).getValue());
+  sheet.getRange(row, 2).setValue((Number.isFinite(current) ? current : 0) + delta);
+}
+
+function findBankRow_(sheet, account) {
+  const rowCount = sheet.getLastRow() - 1;
+  if (rowCount <= 0) return 0;
+  const values = sheet.getRange(2, 1, rowCount, 1).getValues();
+  for (let i = 0; i < values.length; i++) {
+    if (String(values[i][0]).trim() === String(account).trim()) return i + 2;
+  }
+  return 0;
 }
 
 function saveInvestments_(investments, sheetName) {

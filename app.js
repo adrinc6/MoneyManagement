@@ -6,12 +6,13 @@ const DEFAULT_CONFIG = {
   sheetId: "",
   movementSheet: "Control Finanzas",
   investmentSheet: "Inversiones",
+  bankSheet: "Bancos",
   dataSheet: "Datos",
   readMode: "apps-script",
   initialCash: 6122.08
 };
 
-const STATIC_TYPES = ["Gasto", "Ingreso", "Retiro", "Inversion"];
+const STATIC_TYPES = ["Gasto", "Ingreso", "Inversion", "Transferencia"];
 const STATIC_CONCEPTS = ["Comida", "Cuidado personal", "Deporte", "Fiesta", "Inversion", "Ocio", "Otros", "Piso", "Supermercado", "Universidad", "Viajes"];
 const INVESTMENT_TYPES = ["Bolsa", "Fondos", "Cartera"];
 const COLORS = ["#15803d", "#c2410c", "#2563eb", "#b45309", "#7c3aed", "#0891b2", "#be123c", "#64748b"];
@@ -36,10 +37,12 @@ const state = {
   config: loadConfig(),
   transactions: [],
   investments: [],
+  banks: [],
   categories: { types: STATIC_TYPES, concepts: STATIC_CONCEPTS },
   charts: {},
   filtered: [],
   movementDrill: { level: "years", year: null, month: null },
+  summaryModes: { situation: "ingresos", investmentMoney: "invested" },
   descriptionSuggestions: {}
 };
 
@@ -57,6 +60,7 @@ function wireUi() {
   });
   document.getElementById("refreshBtn").addEventListener("click", refreshData);
   document.getElementById("movementForm").addEventListener("submit", submitMovement);
+  document.getElementById("formType").addEventListener("change", syncRegistrarMode);
   document.getElementById("saveConfigBtn").addEventListener("click", saveConfigFromForm);
   document.getElementById("summaryMonth").addEventListener("change", renderAll);
   document.getElementById("openMonthSituationBtn").addEventListener("click", () => {
@@ -64,10 +68,33 @@ function wireUi() {
     renderSummary();
   });
   document.getElementById("closeMonthSituationBtn").addEventListener("click", () => document.getElementById("monthSituationDialog").close());
+  document.getElementById("closeMoneyDialogBtn").addEventListener("click", () => document.getElementById("moneyDialog").close());
+  document.getElementById("openInvestmentOverviewBtn").addEventListener("click", () => {
+    document.getElementById("investmentOverviewDialog").showModal();
+    renderInvestments();
+  });
+  document.getElementById("closeInvestmentOverviewBtn").addEventListener("click", () => document.getElementById("investmentOverviewDialog").close());
   document.getElementById("movementBackBtn").addEventListener("click", movementBack);
   document.getElementById("addInvestmentRowBtn").addEventListener("click", addInvestmentRow);
   document.getElementById("saveInvestmentsBtn").addEventListener("click", saveInvestments);
   document.getElementById("formDescription").addEventListener("input", suggestTypeConceptFromDescription);
+  document.getElementById("closeMovementDetailBtn").addEventListener("click", () => document.getElementById("movementDetailDialog").close());
+  document.getElementById("movementDetailForm").addEventListener("submit", saveMovementDetail);
+  document.getElementById("deleteMovementBtn").addEventListener("click", deleteMovementDetail);
+  document.getElementById("closeInvestmentDetailBtn").addEventListener("click", () => document.getElementById("investmentDetailDialog").close());
+  document.getElementById("investmentDetailForm").addEventListener("submit", saveInvestmentDetail);
+  document.getElementById("monthSituationMode").addEventListener("click", event => {
+    const btn = event.target.closest("[data-situation-mode]");
+    if (!btn) return;
+    state.summaryModes.situation = btn.dataset.situationMode;
+    renderSummary();
+  });
+  document.getElementById("investmentMoneyMode").addEventListener("click", event => {
+    const btn = event.target.closest("[data-money-mode]");
+    if (!btn) return;
+    state.summaryModes.investmentMoney = btn.dataset.moneyMode;
+    renderSummary();
+  });
 }
 
 function showView(id) {
@@ -99,6 +126,7 @@ function hydrateConfigForm() {
   document.getElementById("configSheetId").value = state.config.sheetId;
   document.getElementById("configMovementSheet").value = state.config.movementSheet;
   document.getElementById("configInvestmentSheet").value = state.config.investmentSheet;
+  document.getElementById("configBankSheet").value = state.config.bankSheet || "Bancos";
   document.getElementById("configDataSheet").value = state.config.dataSheet;
   document.getElementById("configReadMode").value = state.config.readMode;
   document.getElementById("configInitialCash").value = state.config.initialCash;
@@ -111,6 +139,7 @@ function saveConfigFromForm() {
     sheetId: document.getElementById("configSheetId").value.trim(),
     movementSheet: document.getElementById("configMovementSheet").value.trim() || "Control Finanzas",
     investmentSheet: document.getElementById("configInvestmentSheet").value.trim() || "Inversiones",
+    bankSheet: document.getElementById("configBankSheet").value.trim() || "Bancos",
     dataSheet: document.getElementById("configDataSheet").value.trim() || "Datos",
     readMode: document.getElementById("configReadMode").value,
     initialCash: Number(document.getElementById("configInitialCash").value || 0)
@@ -129,25 +158,35 @@ async function refreshData() {
     if (ENABLE_TEST_MODE) {
       state.transactions = [...TEST_TRANSACTIONS];
       state.investments = [...TEST_INVESTMENTS];
+      state.banks = [
+        { rowNumber: 2, cuenta: "Santander-Cuenta", dinero: 2400 },
+        { rowNumber: 3, cuenta: "Revolut-Ahorro", dinero: 1300 }
+      ];
       state.categories = { types: STATIC_TYPES, concepts: STATIC_CONCEPTS };
     } else if (state.config.readMode === "public-csv") {
       state.transactions = await fetchPublicCsvTransactions();
       state.investments = await fetchPublicCsvInvestments();
+      state.banks = await fetchPublicCsvBanks();
       state.categories = await fetchPublicCsvCategories();
     } else {
       const payload = await fetchAppsScriptData();
       if (!payload.ok) throw new Error(payload.error || "Apps Script devolvio error");
+      if (!Object.prototype.hasOwnProperty.call(payload, "banks")) {
+        throw new Error("Apps Script no devuelve la hoja Bancos. Pega y despliega el apps-script.gs actualizado");
+      }
       state.transactions = (payload.transactions || []).map(normalizeTransaction).filter(Boolean);
       state.investments = (payload.investments || []).map(normalizeInvestment).filter(Boolean);
+      state.banks = (payload.banks || []).map(normalizeBank).filter(Boolean);
       state.categories = normalizeCategories(payload.categories);
     }
     syncOptions();
     renderAll();
-    setNotice(`${state.transactions.length} movimientos cargados.`, "ok");
+    setNotice(`${state.transactions.length} movimientos y ${state.banks.length} cuentas cargadas.`, "ok");
   } catch (error) {
     console.error(error);
     state.transactions = [];
     state.investments = [];
+    state.banks = [];
     state.categories = { types: STATIC_TYPES, concepts: STATIC_CONCEPTS };
     syncOptions();
     renderAll();
@@ -157,7 +196,7 @@ async function refreshData() {
 
 async function fetchAppsScriptData() {
   if (!state.config.scriptUrl) throw new Error("falta la URL de Apps Script");
-  const url = `${state.config.scriptUrl}?action=all&token=${encodeURIComponent(state.config.appToken)}&movementSheet=${encodeURIComponent(state.config.movementSheet)}&investmentSheet=${encodeURIComponent(state.config.investmentSheet)}&dataSheet=${encodeURIComponent(state.config.dataSheet)}`;
+  const url = `${state.config.scriptUrl}?action=all&token=${encodeURIComponent(state.config.appToken)}&movementSheet=${encodeURIComponent(state.config.movementSheet)}&investmentSheet=${encodeURIComponent(state.config.investmentSheet)}&bankSheet=${encodeURIComponent(state.config.bankSheet || "Bancos")}&dataSheet=${encodeURIComponent(state.config.dataSheet)}`;
   return jsonp(url);
 }
 
@@ -174,6 +213,14 @@ async function fetchPublicCsvInvestments() {
   const csv = await fetchCsv(state.config.sheetId, state.config.investmentSheet);
   return parseCsv(csv).slice(1).map((row, i) => normalizeInvestment({
     rowNumber: i + 2, data: row[0], nombre: row[1], tipo: row[2], cantidad: row[3], valor: row[4], total: row[5]
+  })).filter(Boolean);
+}
+
+async function fetchPublicCsvBanks() {
+  if (!state.config.sheetId) return [];
+  const csv = await fetchCsv(state.config.sheetId, state.config.bankSheet || "Bancos");
+  return parseCsv(csv).slice(1).map((row, i) => normalizeBank({
+    rowNumber: i + 2, cuenta: row[0], dinero: row[1]
   })).filter(Boolean);
 }
 
@@ -204,7 +251,7 @@ function jsonp(url) {
 }
 
 function syncOptions() {
-  const forbiddenTypes = ["efectivo", "otros"];
+  const forbiddenTypes = ["efectivo", "retiro", "otros"];
 
   const types = unique([
     ...STATIC_TYPES,
@@ -222,13 +269,38 @@ function syncOptions() {
 
   fillSelect("formType", types, "Seleccione");
   fillSelect("formConcept", concepts, "Seleccione");
+  fillSelect("editMovementType", types, "Seleccione");
+  fillSelect("editMovementConcept", concepts, "Seleccione");
+  fillSelect("editInvestmentType", INVESTMENT_TYPES);
+
+  const accounts = state.banks.map(b => b.cuenta);
+  fillSelect("formAccount", accounts, accounts.length ? null : "Sin cuentas");
+  fillSelect("formTransferFrom", accounts, accounts.length ? null : "Origen");
+  fillSelect("formTransferTo", accounts, accounts.length ? null : "Destino");
 
   buildDescriptionSuggestions();
+  syncRegistrarMode();
 
   const months = unique([currentMonthKey(), ...state.transactions.map(t => monthKey(t.date))]).sort().reverse();
   const previousMonth = document.getElementById("summaryMonth").value;
   fillSelect("summaryMonth", months);
   document.getElementById("summaryMonth").value = months.includes(previousMonth) ? previousMonth : currentMonthKey();
+}
+
+function syncRegistrarMode() {
+  const isTransfer = normalizeType(document.getElementById("formType").value) === "transferencia";
+  document.querySelectorAll(".movement-only").forEach(el => el.classList.toggle("hidden", isTransfer));
+  document.querySelectorAll(".transfer-only").forEach(el => el.classList.toggle("hidden", !isTransfer));
+  ["formDate", "formConcept", "formDescription"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.required = !isTransfer;
+  });
+  document.getElementById("formTransferFrom").required = isTransfer;
+  document.getElementById("formTransferTo").required = isTransfer;
+  document.getElementById("submitMovement").innerHTML = isTransfer
+    ? `<i data-lucide="repeat-2"></i> Transferir entre cuentas`
+    : `<i data-lucide="send"></i> Enviar a Google Sheets`;
+  lucide.createIcons();
 }
 
 function fillSelect(id, values, placeholder = null) {
@@ -301,7 +373,8 @@ function renderSummary() {
   const situationItems = [
     ["Ingresos", summary.income, "positive"],
     ["Gastos", summary.expenses, "negative"],
-    ["Inversion", summary.investedMonth, ""]
+    ["Inversion", summary.investedMonth, ""],
+    ["Balance", summary.balance, summary.balance >= 0 ? "positive" : "negative"]
   ];
   document.getElementById("monthSituationStrip").innerHTML = situationItems
     .map(([label, value, tone]) => summaryItem(label, money(value), tone))
@@ -311,24 +384,30 @@ function renderSummary() {
 }
 
 function renderMonthSituationDialog(summary) {
-  const entries = [
-    ["Ingresos", summary.income],
-    ["Gastos", summary.expenses],
-    ["Inversion", summary.investedMonth]
-  ];
-  const total = sum(entries.map(e => e[1]));
-  renderTable("monthSituationTable", ["Categoria", "Cantidad", "%"], entries.map(([label, value]) => [
+  renderMonthSituationBars(summary);
+  document.querySelectorAll("[data-situation-mode]").forEach(btn => {
+    btn.classList.toggle("active", btn.dataset.situationMode === state.summaryModes.situation);
+  });
+
+  const rows = getSituationBreakdown(summary.month, state.summaryModes.situation);
+  const total = sum(rows.map(e => e[1]));
+  renderTable("monthSituationTable", ["Detalle", "Cantidad", "%"], rows.map(([label, value]) => [
     escapeHtml(label),
     money(value),
     total ? pct(value / total) : "0,0 %"
   ]));
   upsertChart("monthSituationChart", "doughnut", {
-    labels: entries.map(([label, value]) => `${label}: ${money(value)} (${total ? pct(value / total) : "0,0 %"})`),
-    datasets: [{ data: entries.map(e => e[1]), backgroundColor: COLORS, borderWidth: 2, borderColor: "#fff" }]
+    labels: rows.map(([label, value]) => `${label}: ${money(value)} (${total ? pct(value / total) : "0,0 %"})`),
+    datasets: [{ data: rows.map(e => e[1]), backgroundColor: COLORS, borderWidth: 2, borderColor: "#fff" }]
   }, { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: "bottom" } }, cutout: "58%" });
 }
 
 function renderMoneySummary(summary) {
+  document.querySelectorAll("[data-money-mode]").forEach(btn => {
+    btn.classList.toggle("active", btn.dataset.moneyMode === state.summaryModes.investmentMoney);
+  });
+  const bankDelta = summary.bankAccountsTotal - summary.computedBank;
+  const checkTone = Math.abs(bankDelta) < 0.01 ? "positive" : "negative";
   const parts = INVESTMENT_TYPES.map(type => {
     const invested = summary.investedByType[type] || 0;
     const current = summary.valueByType[type] || 0;
@@ -336,12 +415,70 @@ function renderMoneySummary(summary) {
   }).join("");
   document.getElementById("moneySummary").innerHTML = `
     <div class="money-grid">
-      <div class="money-item"><span>Banco</span><strong>${money(summary.bank)}</strong></div>
-      <div class="money-item"><span>Invertido total</span><strong>${money(summary.investedTotal)}</strong></div>
+      <button class="money-item money-action" id="openBankMoneyBtn" type="button">
+        <span>Banco</span>
+        <strong>${money(summary.bank)}</strong>
+        <small class="${checkTone}">${state.banks.length ? (Math.abs(bankDelta) < 0.01 ? "Check OK" : `Diferencia ${money(bankDelta)}`) : "Sin Bancos"}</small>
+      </button>
+      <button class="money-item money-action" id="openInvestedMoneyBtn" type="button">
+        <span>Invertido</span>
+        <strong>${money(summary.investedTotal)}</strong>
+        <small class="muted">Actual: ${money(summary.valueTotal)}</small>
+      </button>
+    </div>
+  `;
+
+  document.getElementById("openBankMoneyBtn")?.addEventListener("click", () => openMoneyDetail("bank"));
+  document.getElementById("openInvestedMoneyBtn")?.addEventListener("click", () => openMoneyDetail("invested"));
+
+  document.getElementById("bookMoneyTotal").textContent = money(summary.totalMoneyBook);
+}
+
+function openMoneyDetail(mode) {
+  const summary = calculateSummary(document.getElementById("summaryMonth").value || currentMonthKey());
+  const isBank = mode === "bank";
+  const bankDelta = summary.bankAccountsTotal - summary.computedBank;
+  const checkTone = Math.abs(bankDelta) < 0.01 ? "positive" : "negative";
+  const parts = INVESTMENT_TYPES.map(type => {
+    const invested = summary.investedByType[type] || 0;
+    const current = summary.valueByType[type] || 0;
+    return `<div class="money-item"><span>${type}</span><strong>${money(invested)}</strong><small class="muted">Actual: ${money(current)} · ${pctGain(current, invested)}</small></div>`;
+  }).join("");
+
+  document.getElementById("moneyDialogTitle").textContent = isBank ? "Banco" : "Invertido";
+  document.getElementById("bankMoneyDetail").classList.toggle("hidden", !isBank);
+  document.getElementById("investedMoneyDetail").classList.toggle("hidden", isBank);
+  document.getElementById("moneyDialogSummary").innerHTML = isBank ? `
+    <div class="money-grid">
+      <div class="money-item"><span>Banco</span><strong>${money(summary.bank)}</strong><small class="muted">${state.banks.length} cuentas</small></div>
+      <div class="money-item"><span>App</span><strong>${money(summary.computedBank)}</strong><small class="${checkTone}">Diferencia ${money(bankDelta)}</small></div>
+    </div>
+    <div class="bank-check ${checkTone}">
+      <i data-lucide="${Math.abs(bankDelta) < 0.01 ? "check-circle-2" : "alert-triangle"}"></i>
+      <span>${state.banks.length ? `Suma de cuentas ${money(summary.bankAccountsTotal)} · App ${money(summary.computedBank)} · Diferencia ${money(bankDelta)}` : "Sin cuentas cargadas en la hoja Bancos."}</span>
+    </div>
+    <div class="bank-list">${renderBankRows()}</div>
+    ${state.banks.length && state.config.readMode === "apps-script" ? `<button class="btn full" id="saveBanksBtn" type="button"><i data-lucide="save"></i> Guardar cuentas</button>` : ""}
+  ` : `
+    <div class="money-grid">
+      <div class="money-item"><span>Invertido</span><strong>${money(summary.investedTotal)}</strong><small class="muted">Coste historico</small></div>
+      <div class="money-item"><span>Actual</span><strong>${money(summary.valueTotal)}</strong><small class="${summary.profitLoss >= 0 ? "positive" : "negative"}">${money(summary.profitLoss)} · ${pct(summary.profitLossPct)}</small></div>
       ${parts}
     </div>
   `;
-  document.getElementById("bookMoneyTotal").textContent = money(summary.totalMoneyBook);
+  document.getElementById("saveBanksBtn")?.addEventListener("click", saveBanks);
+  document.getElementById("moneyDialog").showModal();
+  renderMoneyCharts(summary);
+  lucide.createIcons();
+}
+
+function renderBankRows() {
+  return state.banks.map((bank, idx) => `
+    <label class="bank-row">
+      <span>${escapeHtml(bank.cuenta)}</span>
+      <input data-bank-index="${idx}" type="number" step="0.01" value="${safeNumber(bank.dinero)}">
+    </label>
+  `).join("") || emptyBlock("No se han detectado cuentas. La hoja debe llamarse Bancos y tener columnas Cuenta y Dinero.");
 }
 
 function calculateSummary(month) {
@@ -352,11 +489,13 @@ function calculateSummary(month) {
   const expenses = Math.abs(sum(txMonth.filter(isMonthlyExpense).map(t => t.amount)));
   const investedMonth = Math.abs(sum(txMonth.filter(isInvestment).map(t => t.amount)));
   const balance = sum(txMonth.map(t => t.amount));
-  const bank = state.config.initialCash
+  const computedBank = state.config.initialCash
     + sum(untilToday.filter(t => normalizeType(t.tipo) === "ingreso").map(t => t.amount))
     + sum(untilToday.filter(t => normalizeType(t.tipo) === "gasto").map(t => t.amount))
     - sum(untilToday.filter(t => normalizeType(t.tipo) === "retiro").map(t => t.amount))
     + sum(untilToday.filter(t => isInvestment(t)).map(t => t.amount));
+  const bankAccountsTotal = sum(state.banks.map(b => b.dinero));
+  const bank = state.banks.length ? bankAccountsTotal : computedBank;
   const investedByType = {};
   const valueByType = {};
   INVESTMENT_TYPES.forEach(type => {
@@ -367,11 +506,77 @@ function calculateSummary(month) {
   const valueTotal = sum(Object.values(valueByType));
   return {
     month, income, expenses, investedMonth, balance, bank,
+    computedBank, bankAccountsTotal,
     investedByType, valueByType, investedTotal, valueTotal,
     totalMoneyBook: bank + investedTotal,
     profitLoss: valueTotal - investedTotal,
     profitLossPct: investedTotal ? (valueTotal - investedTotal) / investedTotal : 0
   };
+}
+
+function renderMonthSituationBars(summary) {
+  const outflow = summary.expenses + summary.investedMonth;
+  const max = Math.max(summary.income, outflow, 1);
+  const expensePct = outflow ? summary.expenses / outflow : 0;
+  const investmentPct = outflow ? summary.investedMonth / outflow : 0;
+  document.getElementById("monthSituationBars").innerHTML = `
+    <div class="balance-bar-row">
+      <div><strong>Ingresos</strong><span>${money(summary.income)}</span></div>
+      <div class="balance-track"><span class="income" style="width:${Math.max(3, summary.income / max * 100)}%"></span></div>
+    </div>
+    <div class="balance-bar-row">
+      <div><strong>Gastos + inversion</strong><span>${money(outflow)} · Gasto ${pct(expensePct)} · Inversion ${pct(investmentPct)}</span></div>
+      <div class="balance-track stacked">
+        <span class="expense" style="width:${Math.max(0, outflow ? expensePct * outflow / max * 100 : 0)}%"></span>
+        <span class="investment" style="width:${Math.max(0, outflow ? investmentPct * outflow / max * 100 : 0)}%"></span>
+      </div>
+    </div>
+    <div class="balance-result ${summary.balance >= 0 ? "positive" : "negative"}">
+      Balance ${money(summary.balance)}
+    </div>
+  `;
+}
+
+function getSituationBreakdown(month, mode) {
+  const [year, monthNum] = month.split("-").map(Number);
+  const txMonth = state.transactions.filter(t => t.date.getFullYear() === year && t.date.getMonth() + 1 === monthNum);
+  const rows = {};
+  const selected = txMonth.filter(t => {
+    if (mode === "ingresos") return isIncome(t);
+    if (mode === "gastos") return isMonthlyExpense(t);
+    return isInvestment(t);
+  });
+  selected.forEach(t => {
+    const key = mode === "gastos" ? t.concepto : t.descripcion || t.concepto || "Sin descripcion";
+    rows[key] = (rows[key] || 0) + Math.abs(t.amount);
+  });
+  return Object.entries(rows).sort((a, b) => b[1] - a[1]);
+}
+
+function renderMoneyCharts(summary) {
+  const bankLabels = state.banks.map(b => b.cuenta);
+  const bankValues = state.banks.map(b => b.dinero);
+  upsertChart("bankDistributionChart", "doughnut", {
+    labels: bankLabels.length ? bankLabels : ["Banco"],
+    datasets: [{ data: bankValues.length ? bankValues : [summary.bank], backgroundColor: COLORS, borderColor: "#fff", borderWidth: 2 }]
+  }, compactChartOptions("Distribucion cuentas"));
+
+  upsertChart("moneyVsInvestedChart", "doughnut", {
+    labels: ["Dinero", "Invertido"],
+    datasets: [{ data: [summary.bank, summary.investedTotal], backgroundColor: ["#0f766e", "#2563eb"], borderColor: "#fff", borderWidth: 2 }]
+  }, compactChartOptions("Dinero vs invertido"));
+
+  const isCurrent = state.summaryModes.investmentMoney === "current";
+  const values = INVESTMENT_TYPES.map(type => isCurrent ? summary.valueByType[type] || 0 : summary.investedByType[type] || 0);
+  upsertChart("investmentTypesChart", "bar", {
+    labels: INVESTMENT_TYPES,
+    datasets: [{
+      label: isCurrent ? "Valor actual" : "Invertido",
+      data: values,
+      backgroundColor: COLORS.slice(2, 5),
+      borderRadius: 8
+    }]
+  }, { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip: moneyTooltip() }, scales: moneyScales() });
 }
 
 function renderMovements() {
@@ -384,12 +589,12 @@ function renderMovements() {
 
 function renderMovementYears() {
   const years = unique(state.transactions.map(t => String(t.date.getFullYear()))).sort((a, b) => Number(b) - Number(a));
-  document.getElementById("movementDrillTitle").textContent = "Selecciona un añoo";
+  document.getElementById("movementDrillTitle").textContent = "Selecciona un año";
   document.getElementById("movementDrill").innerHTML = `<div class="year-grid">${years.map(year => {
     const tx = state.transactions.filter(t => String(t.date.getFullYear()) === year);
     const yearly = summarizeTransactions(tx);
     return `<button class="year-card" data-year="${year}">
-      <span>Ano</span>
+      <span>Año</span>
       <strong>${year}</strong>
       <small>${tx.length} movimientos</small>
     </button>`;
@@ -403,7 +608,7 @@ function renderMovementYears() {
 
 function renderMovementMonths(year) {
   const months = unique(state.transactions.filter(t => String(t.date.getFullYear()) === year).map(t => monthKey(t.date))).sort().reverse();
-  document.getElementById("movementDrillTitle").textContent = `Ano ${year}`;
+  document.getElementById("movementDrillTitle").textContent = `Año ${year}`;
   document.getElementById("movementDrill").innerHTML = `<div class="month-card-list">${months.map(month => {
     const s = calculateSummary(month);
     const monthNumber = String(Number(month.slice(5, 7)));
@@ -444,8 +649,22 @@ function renderMovementEntries(year, month) {
       </div>
       <div class="table-wrap"><table id="movementTable"></table></div>
     </article>`;
-  renderTable("movementTable", ["Fecha", "Tipo", "Concepto", "Descripcion", "Importe"], rows.map(transactionRow));
+  renderMovementTable(rows);
   state.filtered = rows;
+}
+
+function renderMovementTable(rows) {
+  const table = document.getElementById("movementTable");
+  if (!rows.length) {
+    table.innerHTML = `<tbody><tr><td class="empty" colspan="5">Sin datos para mostrar.</td></tr></tbody>`;
+    return;
+  }
+  table.innerHTML = `<thead><tr><th>Fecha</th><th>Tipo</th><th>Concepto</th><th>Descripcion</th><th>Importe</th></tr></thead><tbody>${
+    rows.map(t => `<tr class="clickable-row" data-movement-index="${state.transactions.indexOf(t)}">${transactionRow(t).map(c => `<td>${c}</td>`).join("")}</tr>`).join("")
+  }</tbody>`;
+  table.querySelectorAll("[data-movement-index]").forEach(row => {
+    row.addEventListener("click", () => openMovementDetail(Number(row.dataset.movementIndex)));
+  });
 }
 
 function movementBack() {
@@ -469,6 +688,14 @@ function metricBlock(label, value, tone) {
 function renderInvestments() {
   const summary = calculateSummary(document.getElementById("summaryMonth").value || currentMonthKey());
   document.getElementById("investmentCurrentTotal").textContent = money(summary.valueTotal);
+  document.getElementById("investmentTotalMetrics").innerHTML = `
+    <div><span>Invertido</span><strong>${money(summary.investedTotal)}</strong></div>
+    <div><span>Ganancia</span><strong class="${summary.profitLoss >= 0 ? "positive" : "negative"}">${money(summary.profitLoss)}</strong></div>
+    <div><span>%</span><strong class="${summary.profitLoss >= 0 ? "positive" : "negative"}">${pct(summary.profitLossPct)}</strong></div>
+  `;
+  if (document.getElementById("investmentOverviewDialog").open) {
+    renderInvestmentBreakdownCharts(summary);
+  }
   renderTable("investmentBreakdownTable", ["Tipo", "Invertido", "Actual", "Ganancia", "%"], INVESTMENT_TYPES.map(type => {
     const invested = summary.investedByType[type] || 0;
     const current = summary.valueByType[type] || 0;
@@ -482,23 +709,45 @@ function renderInvestmentEditTable() {
   let lastType = "";
   const body = sorted.map((i) => {
     const idx = state.investments.indexOf(i);
-    const group = i.tipo !== lastType ? `<tr><th colspan="6">${escapeHtml(i.tipo || "Sin tipo")}</th></tr>` : "";
+    const group = i.tipo !== lastType ? `<tr><th colspan="4">${escapeHtml(i.tipo || "Sin tipo")}</th></tr>` : "";
     lastType = i.tipo;
-    return `${group}<tr data-investment-index="${idx}">
-      <td><input data-field="data" value="${escapeAttr(i.data)}"></td>
-      <td><input data-field="nombre" value="${escapeAttr(i.nombre)}"></td>
-      <td><input data-field="tipo" value="${escapeAttr(i.tipo)}"></td>
-      <td><input data-field="cantidad" type="number" step="0.0001" value="${safeNumber(i.cantidad)}"></td>
-      <td><input data-field="valor" type="number" step="0.0001" value="${safeNumber(i.valor)}"></td>
-      <td><input data-field="total" type="number" step="0.01" value="${safeNumber(i.total)}"></td>
+    const invested = calculateSummary(document.getElementById("summaryMonth").value || currentMonthKey()).investedByType[i.tipo] || 0;
+    const share = invested ? i.total / invested : 0;
+    return `${group}<tr class="clickable-row" data-investment-index="${idx}">
+      <td>${escapeHtml(i.nombre)}</td>
+      <td>${money(i.cantidad, 4)}</td>
+      <td>${money(i.valor, 4)}</td>
+      <td>${money(i.total)} <small class="muted">${pct(share)}</small></td>
     </tr>`;
   }).join("");
-  document.getElementById("investmentEditTable").innerHTML = `<thead><tr><th>DATA</th><th>Nombre</th><th>Tipo</th><th>Cantidad</th><th>Valor</th><th>Total</th></tr></thead><tbody>${body || `<tr><td class="empty" colspan="6">Sin posiciones.</td></tr>`}</tbody>`;
+  document.getElementById("investmentEditTable").innerHTML = `<thead><tr><th>Nombre</th><th>Cantidad</th><th>Valor</th><th>Total</th></tr></thead><tbody>${body || `<tr><td class="empty" colspan="4">Sin posiciones.</td></tr>`}</tbody>`;
+  document.querySelectorAll("#investmentEditTable [data-investment-index]").forEach(row => {
+    row.addEventListener("click", () => openInvestmentDetail(Number(row.dataset.investmentIndex)));
+  });
+}
+
+function renderInvestmentBreakdownCharts(summary) {
+  const invested = INVESTMENT_TYPES.map(type => summary.investedByType[type] || 0);
+  const current = INVESTMENT_TYPES.map(type => summary.valueByType[type] || 0);
+  const gains = INVESTMENT_TYPES.map((type, idx) => current[idx] - invested[idx]);
+  upsertChart("investmentBreakdownDonut", "doughnut", {
+    labels: INVESTMENT_TYPES.map((type, idx) => `${type}: ${money(current[idx])} (${pctGain(current[idx], invested[idx])})`),
+    datasets: [{ data: current, backgroundColor: COLORS.slice(2, 5), borderColor: "#fff", borderWidth: 2 }]
+  }, compactChartOptions("Valor actual"));
+
+  upsertChart("investmentBreakdownBars", "bar", {
+    labels: INVESTMENT_TYPES,
+    datasets: [
+      { label: "Invertido", data: invested, backgroundColor: "#2563eb", borderRadius: 8 },
+      { label: "Actual", data: current, backgroundColor: "#15803d", borderRadius: 8 },
+      { label: "Ganancia", data: gains, backgroundColor: gains.map(v => v >= 0 ? "#0f766e" : "#c2410c"), borderRadius: 8 }
+    ]
+  }, { responsive: true, maintainAspectRatio: false, plugins: { tooltip: moneyTooltip() }, scales: moneyScales() });
 }
 
 function addInvestmentRow() {
   state.investments.push({ rowNumber: null, data: "", nombre: "", tipo: "Cartera", cantidad: 0, valor: 0, total: 0 });
-  renderInvestmentEditTable();
+  openInvestmentDetail(state.investments.length - 1);
 }
 
 async function saveInvestments() {
@@ -536,28 +785,127 @@ function readInvestmentEditor() {
   });
 }
 
+function openMovementDetail(index) {
+  const t = state.transactions[index];
+  if (!t) return;
+  document.getElementById("editMovementIndex").value = index;
+  document.getElementById("editMovementDate").value = formatDate(t.date);
+  document.getElementById("editMovementType").value = t.tipo;
+  document.getElementById("editMovementConcept").value = t.concepto;
+  document.getElementById("editMovementDescription").value = t.descripcion;
+  document.getElementById("editMovementAmount").value = t.amount;
+  document.getElementById("movementDetailDialog").showModal();
+}
+
+async function saveMovementDetail(event) {
+  event.preventDefault();
+  const index = Number(document.getElementById("editMovementIndex").value);
+  const previous = state.transactions[index];
+  if (!previous) return;
+  const movement = normalizeTransaction({
+    rowNumber: previous.rowNumber,
+    fecha: document.getElementById("editMovementDate").value,
+    tipo: document.getElementById("editMovementType").value,
+    concepto: document.getElementById("editMovementConcept").value,
+    descripcion: document.getElementById("editMovementDescription").value,
+    importe: document.getElementById("editMovementAmount").value
+  });
+  if (!movement) return;
+  if (state.config.readMode === "apps-script" && state.config.scriptUrl && previous.rowNumber) {
+    await postAppsScript({ action: "updateMovement", movement, sheetName: state.config.movementSheet });
+    setNotice("Movimiento actualizado.", "ok");
+  } else {
+    setNotice("Cambio local: para guardar en Sheets necesitas Apps Script y rowNumber.", "warn");
+  }
+  state.transactions[index] = movement;
+  document.getElementById("movementDetailDialog").close();
+  syncOptions();
+  renderAll();
+}
+
+async function deleteMovementDetail() {
+  const index = Number(document.getElementById("editMovementIndex").value);
+  const movement = state.transactions[index];
+  if (!movement) return;
+  if (state.config.readMode === "apps-script" && state.config.scriptUrl && movement.rowNumber) {
+    await postAppsScript({ action: "deleteMovement", rowNumber: movement.rowNumber, sheetName: state.config.movementSheet });
+    setNotice("Movimiento eliminado.", "ok");
+  } else {
+    setNotice("Eliminado solo en pantalla: para borrar en Sheets necesitas Apps Script y rowNumber.", "warn");
+  }
+  state.transactions.splice(index, 1);
+  document.getElementById("movementDetailDialog").close();
+  syncOptions();
+  renderAll();
+}
+
+function openInvestmentDetail(index) {
+  const item = state.investments[index];
+  if (!item) return;
+  document.getElementById("editInvestmentIndex").value = index;
+  document.getElementById("editInvestmentData").value = item.data;
+  document.getElementById("editInvestmentName").value = item.nombre;
+  document.getElementById("editInvestmentType").value = item.tipo || INVESTMENT_TYPES[0];
+  document.getElementById("editInvestmentQuantity").value = safeNumber(item.cantidad);
+  document.getElementById("editInvestmentValue").value = safeNumber(item.valor);
+  document.getElementById("editInvestmentTotal").value = safeNumber(item.total);
+  document.getElementById("investmentDetailDialog").showModal();
+}
+
+function saveInvestmentDetail(event) {
+  event.preventDefault();
+  const index = Number(document.getElementById("editInvestmentIndex").value);
+  const item = state.investments[index];
+  if (!item) return;
+  Object.assign(item, {
+    data: document.getElementById("editInvestmentData").value.trim(),
+    nombre: document.getElementById("editInvestmentName").value.trim(),
+    tipo: document.getElementById("editInvestmentType").value,
+    cantidad: Number(document.getElementById("editInvestmentQuantity").value || 0),
+    valor: Number(document.getElementById("editInvestmentValue").value || 0),
+    total: Number(document.getElementById("editInvestmentTotal").value || 0)
+  });
+  document.getElementById("investmentDetailDialog").close();
+  renderInvestments();
+}
+
 async function submitMovement(event) {
   event.preventDefault();
-  const movement = movementFromForm();
   if (!state.config.scriptUrl || state.config.readMode !== "apps-script") {
     setNotice("Configura Apps Script antes de enviar movimientos.", "warn");
     return;
   }
+  const isTransfer = normalizeType(document.getElementById("formType").value) === "transferencia";
   const btn = document.getElementById("submitMovement");
   btn.disabled = true;
   try {
-    await fetch(state.config.scriptUrl, {
-      method: "POST",
-      mode: "no-cors",
-      headers: { "Content-Type": "text/plain;charset=utf-8" },
-      body: JSON.stringify({ action: "addMovement", token: state.config.appToken, movement, sheetName: state.config.movementSheet })
-    });
-    state.transactions.push(movement);
+    if (isTransfer) {
+      const amount = Math.abs(Number(document.getElementById("formAmount").value || 0));
+      const from = document.getElementById("formTransferFrom").value;
+      const to = document.getElementById("formTransferTo").value;
+      if (!amount || !from || !to || from === to) throw new Error("elige origen, destino e importe valido");
+      await postAppsScript({ action: "transferBank", bankSheet: state.config.bankSheet || "Bancos", from, to, amount });
+      applyBankDelta(from, -amount);
+      applyBankDelta(to, amount);
+      setNotice("Transferencia realizada.", "ok");
+    } else {
+      const movement = movementFromForm();
+      await postAppsScript({
+        action: "addMovement",
+        movement,
+        sheetName: state.config.movementSheet,
+        bankSheet: state.config.bankSheet || "Bancos",
+        account: document.getElementById("formAccount").value
+      });
+      applyBankDelta(document.getElementById("formAccount").value, movement.amount);
+      state.transactions.push(movement);
+      setNotice("Movimiento enviado.", "ok");
+    }
     syncOptions();
     renderAll();
-    setNotice("Movimiento enviado.", "ok");
     event.target.reset();
     setDefaultDate();
+    syncRegistrarMode();
   } catch (error) {
     setNotice(`No se pudo enviar: ${error.message}`, "warn");
   } finally {
@@ -578,6 +926,38 @@ function movementFromForm() {
   });
 }
 
+function applyBankDelta(account, amount) {
+  const bank = state.banks.find(b => b.cuenta === account);
+  if (bank) bank.dinero += Number(amount) || 0;
+}
+
+async function saveBanks() {
+  document.querySelectorAll("[data-bank-index]").forEach(input => {
+    const idx = Number(input.dataset.bankIndex);
+    if (state.banks[idx]) state.banks[idx].dinero = Number(input.value || 0);
+  });
+  if (!state.config.scriptUrl || state.config.readMode !== "apps-script") {
+    renderSummary();
+    return;
+  }
+  try {
+    await postAppsScript({ action: "saveBanks", bankSheet: state.config.bankSheet || "Bancos", banks: state.banks });
+    setNotice("Cuentas guardadas.", "ok");
+  } catch (error) {
+    setNotice(`No se pudieron guardar cuentas: ${error.message}`, "warn");
+  }
+  renderSummary();
+}
+
+async function postAppsScript(payload) {
+  await fetch(state.config.scriptUrl, {
+    method: "POST",
+    mode: "no-cors",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: JSON.stringify({ token: state.config.appToken, ...payload })
+  });
+}
+
 function normalizeTransaction(row) {
   const date = parseDate(row.fecha || row.FECHA || row.date || row[0]);
   const tipo = prettyType(String(row.tipo || row.TIPO || row[4] || "").trim());
@@ -585,7 +965,7 @@ function normalizeTransaction(row) {
   const descripcion = String(row.descripcion || row.DESCRIPCION || row["DESCRIPCION"] || row[6] || "").trim();
   const amount = parseNumber(row.importe ?? row.IMPORTE ?? row[7]);
   if (!date || !tipo || Number.isNaN(amount)) return null;
-  return { date, tipo, concepto: concepto || "Otros", descripcion, amount };
+  return { rowNumber: Number(row.rowNumber || row.row || 0) || null, date, tipo, concepto: concepto || "Otros", descripcion, amount };
 }
 
 function normalizeInvestment(row) {
@@ -595,6 +975,13 @@ function normalizeInvestment(row) {
   const tipo = prettyType(String(row.tipo || row.TIPO || row[2] || "").trim());
   if (!data || !nombre || !tipo || Number.isNaN(total) || total < 0) return null;
   return { rowNumber: Number(row.rowNumber || row.row || 0) || null, data, nombre, tipo, cantidad: parseNumber(row.cantidad ?? row.CANTIDAD ?? row[3]), valor: parseNumber(row.valor ?? row.VALOR ?? row[4]), total };
+}
+
+function normalizeBank(row) {
+  const cuenta = String(row.cuenta || row.CUENTA || row[0] || "").trim();
+  const dinero = parseNumber(row.dinero ?? row.DINERO ?? row[1]);
+  if (!cuenta || Number.isNaN(dinero)) return null;
+  return { rowNumber: Number(row.rowNumber || row.row || 0) || null, cuenta, dinero };
 }
 
 function normalizeCategories(categories) {
@@ -639,6 +1026,27 @@ function upsertChart(canvasId, type, data, options) {
   state.charts[canvasId] = new Chart(document.getElementById(canvasId), { type, data, options });
 }
 
+function compactChartOptions(title) {
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      title: { display: Boolean(title), text: title },
+      legend: { position: "bottom" },
+      tooltip: moneyTooltip()
+    },
+    cutout: "58%"
+  };
+}
+
+function moneyTooltip() {
+  return { callbacks: { label: context => `${context.label || context.dataset.label || ""}: ${money(context.parsed?.y ?? context.parsed)}` } };
+}
+
+function moneyScales() {
+  return { y: { beginAtZero: true, ticks: { callback: value => money(value, 0) } }, x: { grid: { display: false } } };
+}
+
 function summaryItem(title, value, tone) {
   return `<div class="summary-item"><span>${escapeHtml(title)}</span><strong class="${tone || ""}">${escapeHtml(value)}</strong></div>`;
 }
@@ -658,7 +1066,7 @@ function isMonthlyExpense(t) { return !isIncome(t) && !isInvestment(t);}
 function normalizeType(value) { return removeAccents(String(value || "")).toLowerCase().trim(); }
 function prettyType(value) {
   const n = normalizeType(value);
-  const map = { inversion: "Inversion", descripcion: "Descripcion" };
+  const map = { inversion: "Inversion", descripcion: "Descripcion", transferencia: "Transferencia" };
   return map[n] || String(value || "").trim();
 }
 
@@ -706,5 +1114,3 @@ function setNotice(message, type) {
   el.textContent = message || "";
   el.className = `sync-status ${message ? "show" : ""} ${type === "ok" ? "ok" : type === "warn" ? "warn" : ""}`;
 }
-
-
