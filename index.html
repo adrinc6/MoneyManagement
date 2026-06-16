@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="es">
 <head>
   <meta charset="UTF-8" />
@@ -9,238 +9,162 @@
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <div class="shell">
-    <aside class="sidebar">
-      <div class="brand">
-        <div class="brand-mark"><i data-lucide="wallet-cards"></i></div>
-        <div>
-          <h1>MoneyManagement</h1>
-          <p>Control Finanzas</p>
-        </div>
+  <main class="app">
+    <header class="app-header">
+      <div>
+        <p class="eyebrow">MoneyManagement</p>
+        <h1 id="viewTitle">Registrar</h1>
       </div>
-      <nav class="nav" aria-label="Secciones">
-        <button class="active" data-view-button="principal"><i data-lucide="send"></i> Enviar gasto</button>
-        <button data-view-button="resumen"><i data-lucide="layout-dashboard"></i> Resumen</button>
-        <button data-view-button="movimientos"><i data-lucide="list-filter"></i> Movimientos</button>
-        <button data-view-button="inversiones"><i data-lucide="line-chart"></i> Inversiones</button>
-        <button data-view-button="ajustes"><i data-lucide="settings"></i> Ajustes</button>
-      </nav>
-      <div class="connection">
-        <p><span id="statusDot" class="dot"></span><span id="statusText">Sin conectar</span></p>
-        <p id="statusDetail">Configura Google Sheets o usa la demo.</p>
+      <div class="refresh-group">
+        <span id="sourceNotice" class="sync-status"></span>
+        <button class="icon-btn" id="refreshBtn" aria-label="Actualizar"><i data-lucide="refresh-cw"></i></button>
       </div>
-    </aside>
+    </header>
 
-    <main>
-      <section id="principal" class="view active">
-        <div class="topbar">
+    <section id="registrar" class="view active">
+      <article class="panel">
+        <div class="panel-header">
           <div>
-            <h2>Enviar gasto</h2>
-            <p>Formulario directo para rellenar la hoja Control Finanzas.</p>
-          </div>
-          <div class="actions">
-            <button class="btn" id="refreshBtn"><i data-lucide="refresh-cw"></i> Actualizar</button>
-            <button class="btn blue" id="openSummaryBtn"><i data-lucide="panel-top-open"></i> Resumen del mes</button>
+            <h2>Nuevo movimiento</h2>
+            <p>Rellena Control Finanzas.</p>
           </div>
         </div>
-
-        <div id="sourceNotice" class="notice">La app esta en modo demo hasta que pegues la URL de Apps Script en Ajustes.</div>
-
-        <div class="grid home-grid">
-          <article class="panel">
-            <div class="panel-header">
-              <div>
-                <h3>Nuevo movimiento</h3>
-                <p>Fecha, tipo, concepto, descripcion e importe en euros.</p>
-              </div>
-            </div>
-            <div class="panel-body">
-              <form id="movementForm" class="form-grid">
-                <label>Fecha <input id="formDate" type="date" required /></label>
-                <label>Tipo <select id="formType" required></select></label>
-                <label>Concepto <select id="formConcept" required></select></label>
-                <label>Importe EUR <input id="formAmount" type="number" step="0.01" min="0" placeholder="0.00" required /></label>
-                <label class="wide">Descripcion <input id="formDescription" placeholder="Compra, alquiler, nomina..." required /></label>
-                <div class="wide actions">
-                  <button class="btn primary" id="submitMovement" type="submit"><i data-lucide="send"></i> Enviar a Google Sheets</button>
-                  <button class="btn" id="addLocalBtn" type="button"><i data-lucide="database"></i> Probar solo aqui</button>
-                </div>
-              </form>
-            </div>
-          </article>
-
-          <aside class="panel">
-            <div class="panel-header">
-              <div>
-                <h3>Resumen rapido</h3>
-                <p>Replica las formulas de Resumen Finanzas para el mes elegido.</p>
-              </div>
-              <label style="min-width:150px;">Mes <select id="summaryMonth"></select></label>
-            </div>
-            <div class="panel-body">
-              <div class="summary-strip" id="quickSummary"></div>
-              <div style="margin-top:16px;" class="chart-box small"><canvas id="quickCategoryChart"></canvas></div>
-            </div>
-          </aside>
+        <div class="panel-body">
+          <form id="movementForm" class="form-grid">
+            <label>Fecha <input id="formDate" type="date" required /></label>
+            <label>Tipo <select id="formType" required></select></label>
+            <label>Concepto <select id="formConcept" required></select></label>
+            <label>Importe EUR <input id="formAmount" type="number" step="0.01" placeholder="0.00" required /></label>
+            <label class="wide">Descripcion <input id="formDescription" placeholder="Compra, alquiler, nomina..." required /></label>
+            <button class="btn primary wide" id="submitMovement" type="submit"><i data-lucide="send"></i> Enviar a Google Sheets</button>
+          </form>
         </div>
+      </article>
+    </section>
 
-        <div class="grid content-grid" style="margin-top:16px;">
-          <article class="panel">
-            <div class="panel-header"><div><h3>Ultimos movimientos</h3><p>Cargados desde Control Finanzas.</p></div></div>
-            <div class="table-wrap"><table id="recentTable"></table></div>
-          </article>
-          <article class="panel">
-            <div class="panel-header"><div><h3>Chequeo del mes</h3><p>Ingresos, gastos, inversion y balance.</p></div></div>
-            <div class="panel-body"><div class="chart-box small"><canvas id="monthFlowChart"></canvas></div></div>
-          </article>
-        </div>
-      </section>
+    <section id="resumen" class="view">
+      <div class="section-toolbar">
+        <label>Mes <select id="summaryMonth"></select></label>
+      </div>
 
-      <section id="resumen" class="view">
-        <div class="topbar">
+      <button class="panel tappable" id="openMonthSituationBtn" type="button">
+        <div class="panel-header">
           <div>
-            <h2>Resumen mensual</h2>
-            <p id="summarySubtitle">Calculado desde toda la hoja Control Finanzas.</p>
+            <h2>Situacion mes</h2>
+            <p>Ingresos, gastos e inversion.</p>
           </div>
-          <div class="actions">
-            <label>Mes <select id="dashboardMonth"></select></label>
-          </div>
+          <i data-lucide="chevron-right"></i>
         </div>
-        <div class="grid kpis" id="kpiGrid"></div>
-        <div class="grid content-grid" style="margin-top:16px;">
-          <article class="panel">
-            <div class="panel-header"><div><h3>Evolucion mensual</h3><p>Ingresos, gastos, inversion y balance.</p></div></div>
-            <div class="panel-body"><div class="chart-box"><canvas id="monthlyChart"></canvas></div></div>
-          </article>
-          <article class="panel">
-            <div class="panel-header"><div><h3>Gastos por concepto</h3><p id="categorySubtitle">Mes seleccionado.</p></div></div>
-            <div class="panel-body"><div class="chart-box"><canvas id="categoryChart"></canvas></div></div>
-          </article>
+        <div class="panel-body">
+          <div class="summary-strip" id="monthSituationStrip"></div>
         </div>
-        <div class="grid content-grid" style="margin-top:16px;">
-          <article class="panel">
-            <div class="panel-header"><div><h3>Dinero total</h3><p>Banco estimado mas valor actual de inversiones.</p></div></div>
-            <div class="panel-body"><div class="chart-box small"><canvas id="wealthChart"></canvas></div></div>
-          </article>
-          <article class="panel">
-            <div class="panel-header"><div><h3>Detalle tipo Resumen Finanzas</h3><p>Banco, inversiones y P/L.</p></div></div>
-            <div class="table-wrap"><table id="summaryTable"></table></div>
-          </article>
-        </div>
-      </section>
+      </button>
 
-      <section id="movimientos" class="view">
-        <div class="topbar">
+      <article class="panel">
+        <div class="panel-header">
           <div>
-            <h2>Movimientos</h2>
-            <p>Consulta completa de Control Finanzas con filtros.</p>
+            <h2>Dinero</h2>
+            <p>Banco e invertido por partes.</p>
           </div>
-          <div class="actions"><button class="btn" id="exportCsvBtn"><i data-lucide="download"></i> CSV</button></div>
         </div>
-        <div class="panel">
-          <div class="panel-body">
-            <div class="filters">
-              <label>Mes <select id="movementMonthFilter"></select></label>
-              <label>Tipo <select id="typeFilter"></select></label>
-              <label>Concepto <select id="conceptFilter"></select></label>
-              <label>Busqueda <input id="searchFilter" placeholder="Descripcion, concepto..." /></label>
-              <label>Orden <select id="sortFilter"><option value="date-desc">Recientes primero</option><option value="date-asc">Antiguos primero</option><option value="amount-desc">Importe mayor</option><option value="amount-asc">Importe menor</option></select></label>
-            </div>
-          </div>
-          <div class="table-wrap"><table id="movementTable"></table></div>
+        <div class="panel-body">
+          <div id="moneySummary"></div>
         </div>
-      </section>
+      </article>
 
-      <section id="inversiones" class="view">
-        <div class="topbar">
+      <article class="total-panel">
+        <span>Dinero total sin realizar ganancias</span>
+        <strong id="bookMoneyTotal">0,00 EUR</strong>
+      </article>
+    </section>
+
+    <section id="movimientos" class="view">
+      <div class="section-toolbar">
+        <button class="btn" id="movementBackBtn"><i data-lucide="arrow-left"></i> Volver</button>
+      </div>
+      <div id="movementDrillTitle" class="drill-title"></div>
+      <div id="movementDrill"></div>
+    </section>
+
+    <section id="inversiones" class="view">
+      <article class="total-panel">
+        <span>Valor actual total</span>
+        <strong id="investmentCurrentTotal">0,00 EUR</strong>
+      </article>
+
+      <article class="panel">
+        <div class="panel-header">
           <div>
-            <h2>Inversiones</h2>
-            <p>Posiciones, asignacion, invertido historico y modificacion de filas.</p>
+            <h2>Desglose</h2>
+            <p>Invertido vs dinero actual.</p>
           </div>
-          <div class="actions"><button class="btn primary" id="saveInvestmentsBtn"><i data-lucide="save"></i> Guardar cambios</button></div>
         </div>
-        <div class="grid triple" id="investmentKpis"></div>
-        <div class="grid content-grid" style="margin-top:16px;">
-          <article class="panel">
-            <div class="panel-header"><div><h3>Distribucion por tipo</h3><p>Valor actual agrupado.</p></div></div>
-            <div class="panel-body"><div class="chart-box"><canvas id="investmentChart"></canvas></div></div>
-          </article>
-          <article class="panel">
-            <div class="panel-header"><div><h3>Comprobaciones</h3><p>Invertido vs valor actual.</p></div></div>
-            <div class="table-wrap"><table id="investmentCheckTable"></table></div>
-          </article>
-        </div>
-        <article class="panel" style="margin-top:16px;">
-          <div class="panel-header">
-            <div><h3>Editar posiciones</h3><p>DATA, nombre, tipo, cantidad, valor y total. Las filas nuevas se anaden al final.</p></div>
-            <button class="btn" id="addInvestmentRowBtn"><i data-lucide="plus"></i> Nueva fila</button>
-          </div>
-          <div class="table-wrap"><table id="investmentEditTable"></table></div>
-        </article>
-      </section>
+        <div class="table-wrap"><table id="investmentBreakdownTable"></table></div>
+      </article>
 
-      <section id="ajustes" class="view">
-        <div class="topbar">
+      <article class="panel">
+        <div class="panel-header">
           <div>
-            <h2>Ajustes</h2>
-            <p>Conexion con Google Sheets y despliegue en GitHub Pages.</p>
+            <h2>Posiciones</h2>
+            <p>Bolsa, fondos y cartera.</p>
+          </div>
+          <button class="btn" id="addInvestmentRowBtn"><i data-lucide="plus"></i></button>
+        </div>
+        <div class="table-wrap"><table id="investmentEditTable"></table></div>
+      </article>
+
+      <button class="btn primary full" id="saveInvestmentsBtn"><i data-lucide="save"></i> Guardar inversiones</button>
+    </section>
+
+    <section id="ajustes" class="view">
+      <article class="panel">
+        <div class="panel-header">
+          <div>
+            <h2>Conexion</h2>
+            <p>Datos guardados solo en este navegador.</p>
           </div>
         </div>
-        <div class="grid content-grid">
-          <article class="panel">
-            <div class="panel-header"><div><h3>Fuente de datos</h3><p>La configuracion se guarda solo en este navegador.</p></div></div>
-            <div class="panel-body">
-              <div class="form-grid">
-                <label class="wide">URL de Apps Script <input id="configScriptUrl" placeholder="https://script.google.com/macros/s/.../exec" /></label>
-                <label class="wide">Token opcional <input id="configAppToken" placeholder="Debe coincidir con APP_TOKEN en apps-script.gs" /></label>
-                <label class="wide">ID de Google Sheet <input id="configSheetId" placeholder="Opcional para modo CSV publico" /></label>
-                <label>Hoja movimientos <input id="configMovementSheet" value="Control Finanzas" /></label>
-                <label>Hoja inversiones <input id="configInvestmentSheet" value="Inversiones" /></label>
-                <label>Hoja datos <input id="configDataSheet" value="Datos" /></label>
-                <label>Modo lectura
-                  <select id="configReadMode">
-                    <option value="apps-script">Apps Script</option>
-                    <option value="public-csv">CSV publico</option>
-                    <option value="demo">Demo local</option>
-                  </select>
-                </label>
-                <label>Banco inicial <input id="configInitialCash" type="number" step="0.01" value="6122.08" /></label>
-              </div>
-              <div class="actions" style="margin-top:14px;">
-                <button class="btn primary" id="saveConfigBtn"><i data-lucide="save"></i> Guardar ajustes</button>
-                <button class="btn" id="demoBtn"><i data-lucide="sparkles"></i> Usar demo</button>
-              </div>
-            </div>
-          </article>
-          <article class="panel">
-            <div class="panel-header"><div><h3>Como conectarlo</h3><p>La opcion recomendada para GitHub Pages.</p></div></div>
-            <div class="panel-body">
-              <ol>
-                <li>Abre tu Google Sheet y ve a Extensiones > Apps Script.</li>
-                <li>Pega el contenido de <strong>apps-script.gs</strong>.</li>
-                <li>Implementa como aplicacion web, ejecutando como tu usuario.</li>
-                <li>En acceso, usa "Cualquier usuario con el enlace".</li>
-                <li>Pega aqui la URL terminada en <strong>/exec</strong>.</li>
-              </ol>
-              <div class="notice ok">No hace falta subir el Excel a GitHub. GitHub Pages sirve la web; Google Sheets guarda los datos.</div>
-            </div>
-          </article>
+        <div class="panel-body">
+          <div class="form-grid">
+            <label class="wide">URL de Apps Script <input id="configScriptUrl" placeholder="https://script.google.com/macros/s/.../exec" /></label>
+            <label class="wide">Token opcional <input id="configAppToken" placeholder="Debe coincidir con APP_TOKEN" /></label>
+            <label class="wide">ID de Google Sheet <input id="configSheetId" placeholder="Opcional para CSV publico" /></label>
+            <label>Hoja movimientos <input id="configMovementSheet" value="Control Finanzas" /></label>
+            <label>Hoja inversiones <input id="configInvestmentSheet" value="Inversiones" /></label>
+            <label>Hoja datos <input id="configDataSheet" value="Datos" /></label>
+            <label>Modo lectura
+              <select id="configReadMode">
+                <option value="apps-script">Apps Script</option>
+                <option value="public-csv">CSV publico</option>
+              </select>
+            </label>
+            <label>Banco inicial <input id="configInitialCash" type="number" step="0.01" value="6122.08" /></label>
+          </div>
+          <button class="btn primary full" id="saveConfigBtn"><i data-lucide="save"></i> Guardar ajustes</button>
         </div>
-      </section>
-    </main>
-  </div>
+      </article>
+    </section>
+  </main>
 
-  <dialog id="summaryDialog">
+  <nav class="bottom-nav" aria-label="Navegacion principal">
+    <button data-view-button="movimientos"><i data-lucide="list-filter"></i><span>Movs</span></button>
+    <button data-view-button="resumen"><i data-lucide="layout-dashboard"></i><span>Resumen</span></button>
+    <button class="fab active" data-view-button="registrar"><i data-lucide="plus"></i><span>Registrar</span></button>
+    <button data-view-button="inversiones"><i data-lucide="line-chart"></i><span>Inversion</span></button>
+    <button data-view-button="ajustes"><i data-lucide="settings"></i><span>Ajustes</span></button>
+  </nav>
+
+  <dialog id="monthSituationDialog">
     <div class="dialog-head">
-      <h3>Resumen del mes</h3>
-      <button class="btn icon-btn" id="closeSummaryBtn" aria-label="Cerrar"><i data-lucide="x"></i></button>
+      <h2>Situacion mes</h2>
+      <button class="icon-btn" id="closeMonthSituationBtn" aria-label="Cerrar"><i data-lucide="x"></i></button>
     </div>
     <div class="panel-body">
-      <div class="grid kpis" id="dialogKpis"></div>
-      <div style="margin-top:16px;" class="table-wrap"><table id="dialogSummaryTable"></table></div>
+      <div class="chart-box"><canvas id="monthSituationChart"></canvas></div>
+      <div class="table-wrap"><table id="monthSituationTable"></table></div>
     </div>
   </dialog>
+
   <script src="app.js"></script>
 </body>
 </html>
-

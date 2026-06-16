@@ -12,11 +12,13 @@ App estatica para GitHub Pages que usa Google Sheets como base de datos de finan
 
 ## Pantallas
 
-- `Enviar gasto`: pagina principal para insertar filas en `Control Finanzas`.
-- `Resumen`: calcula en la web lo que antes hacia `Resumen Finanzas`, con selector de mes.
-- `Movimientos`: carga toda la hoja `Control Finanzas` y permite filtrar, buscar y exportar CSV.
-- `Inversiones`: revisa posiciones, asignacion por tipo, P/L y permite modificar filas de `Inversiones`.
+- `Registrar`: pantalla central de la navegacion inferior para insertar filas en `Control Finanzas`.
+- `Resumen`: calcula en la web lo que antes hacia `Resumen Finanzas`, con selector de mes, situacion mensual y dinero total sin ganancias no realizadas.
+- `Movimientos`: vista jerarquica por años, luego meses, luego movimientos del mes.
+- `Inversiones`: resumen por Bolsa, Fondos y Cartera, con invertido vs valor actual, P/L y posiciones editables.
 - `Ajustes`: conexion con Google Sheets.
+
+La navegacion esta pensada para movil: movimientos y resumen quedan a la izquierda, registrar en el centro, inversiones y ajustes a la derecha.
 
 ## Modelo esperado en Google Sheets
 
@@ -58,6 +60,11 @@ La app replica la logica principal de `Resumen Finanzas`:
 - Banco estimado: banco inicial + ingresos + gastos - retiros + inversiones hasta hoy.
 - Inversion por tipo: usa la `DESCRIPCION` de los movimientos de inversion (`Bolsa`, `Fondos`, `Cartera`).
 - Valor actual: suma `VALOR TOTAL` en `Inversiones` por tipo.
+- Dinero total sin realizar ganancias: banco estimado + dinero invertido historico, no el valor actual de mercado.
+
+## Modo prueba
+
+El modo prueba queda desactivado por defecto con `ENABLE_TEST_MODE = false` en `app.js`. Con ese valor no aparece ningun boton ni flujo de prueba en la interfaz.
 
 ## Conexion recomendada
 
