@@ -1,4 +1,4 @@
-﻿const ENABLE_TEST_MODE = false;
+const ENABLE_TEST_MODE = false;
 
 const DEFAULT_CONFIG = {
   scriptUrl: "",
@@ -42,7 +42,7 @@ const state = {
   charts: {},
   filtered: [],
   movementDrill: { level: "years", year: null, month: null },
-  summaryModes: { situation: "ingresos", investmentMoney: "invested" },
+  summaryModes: { situation: "ingresos", investmentMoney: "invested", moneyMix: "money", investmentOverviewType: null },
   descriptionSuggestions: {}
 };
 
@@ -69,10 +69,7 @@ function wireUi() {
   });
   document.getElementById("closeMonthSituationBtn").addEventListener("click", () => document.getElementById("monthSituationDialog").close());
   document.getElementById("closeMoneyDialogBtn").addEventListener("click", () => document.getElementById("moneyDialog").close());
-  document.getElementById("openInvestmentOverviewBtn").addEventListener("click", () => {
-    document.getElementById("investmentOverviewDialog").showModal();
-    renderInvestments();
-  });
+  document.getElementById("openInvestmentOverviewBtn").addEventListener("click", () => openInvestmentOverview(null));
   document.getElementById("closeInvestmentOverviewBtn").addEventListener("click", () => document.getElementById("investmentOverviewDialog").close());
   document.getElementById("movementBackBtn").addEventListener("click", movementBack);
   document.getElementById("addInvestmentRowBtn").addEventListener("click", addInvestmentRow);
@@ -89,11 +86,15 @@ function wireUi() {
     state.summaryModes.situation = btn.dataset.situationMode;
     renderSummary();
   });
-  document.getElementById("investmentMoneyMode").addEventListener("click", event => {
-    const btn = event.target.closest("[data-money-mode]");
+  document.getElementById("moneyMixMode")?.addEventListener("click", event => {
+    const btn = event.target.closest("[data-money-mix]");
     if (!btn) return;
-    state.summaryModes.investmentMoney = btn.dataset.moneyMode;
-    renderSummary();
+    state.summaryModes.moneyMix = btn.dataset.moneyMix;
+    renderMoneyCharts(calculateSummary(document.getElementById("summaryMonth").value || currentMonthKey()));
+  });
+  document.addEventListener("click", event => {
+    if (event.target.closest(".toast")) return;
+    window.setTimeout(() => clearToasts(), 0);
   });
 }
 
@@ -181,7 +182,7 @@ async function refreshData() {
     }
     syncOptions();
     renderAll();
-    setNotice(`${state.transactions.length} movimientos y ${state.banks.length} cuentas cargadas.`, "ok");
+    setNotice(`${state.transactions.length} movs y ${state.banks.length} ctas cargadas.`, "ok");
   } catch (error) {
     console.error(error);
     state.transactions = [];
@@ -403,9 +404,6 @@ function renderMonthSituationDialog(summary) {
 }
 
 function renderMoneySummary(summary) {
-  document.querySelectorAll("[data-money-mode]").forEach(btn => {
-    btn.classList.toggle("active", btn.dataset.moneyMode === state.summaryModes.investmentMoney);
-  });
   const bankDelta = summary.bankAccountsTotal - summary.computedBank;
   const checkTone = Math.abs(bankDelta) < 0.01 ? "positive" : "negative";
   const parts = INVESTMENT_TYPES.map(type => {
@@ -450,15 +448,15 @@ function openMoneyDetail(mode) {
   document.getElementById("investedMoneyDetail").classList.toggle("hidden", isBank);
   document.getElementById("moneyDialogSummary").innerHTML = isBank ? `
     <div class="money-grid">
-      <div class="money-item"><span>Banco</span><strong>${money(summary.bank)}</strong><small class="muted">${state.banks.length} cuentas</small></div>
+      <div class="money-item"><span>Banco</span><strong>${money(summary.bank)}</strong><small class="muted">${state.banks.length} ctas</small></div>
       <div class="money-item"><span>App</span><strong>${money(summary.computedBank)}</strong><small class="${checkTone}">Diferencia ${money(bankDelta)}</small></div>
     </div>
     <div class="bank-check ${checkTone}">
       <i data-lucide="${Math.abs(bankDelta) < 0.01 ? "check-circle-2" : "alert-triangle"}"></i>
-      <span>${state.banks.length ? `Suma de cuentas ${money(summary.bankAccountsTotal)} · App ${money(summary.computedBank)} · Diferencia ${money(bankDelta)}` : "Sin cuentas cargadas en la hoja Bancos."}</span>
+      <span>${state.banks.length ? `Suma ctas ${money(summary.bankAccountsTotal)} · App ${money(summary.computedBank)} · Dif. ${money(bankDelta)}` : "Sin ctas cargadas en la hoja Bancos."}</span>
     </div>
     <div class="bank-list">${renderBankRows()}</div>
-    ${state.banks.length && state.config.readMode === "apps-script" ? `<button class="btn full" id="saveBanksBtn" type="button"><i data-lucide="save"></i> Guardar cuentas</button>` : ""}
+    ${state.banks.length && state.config.readMode === "apps-script" ? `<button class="btn full" id="saveBanksBtn" type="button"><i data-lucide="save"></i> Guardar ctas</button>` : ""}
   ` : `
     <div class="money-grid">
       <div class="money-item"><span>Invertido</span><strong>${money(summary.investedTotal)}</strong><small class="muted">Coste historico</small></div>
@@ -478,7 +476,7 @@ function renderBankRows() {
       <span>${escapeHtml(bank.cuenta)}</span>
       <input data-bank-index="${idx}" type="number" step="0.01" value="${safeNumber(bank.dinero)}">
     </label>
-  `).join("") || emptyBlock("No se han detectado cuentas. La hoja debe llamarse Bancos y tener columnas Cuenta y Dinero.");
+  `).join("") || emptyBlock("No se han detectado ctas. La hoja debe llamarse Bancos y tener columnas Cuenta y Dinero.");
 }
 
 function calculateSummary(month) {
@@ -554,29 +552,30 @@ function getSituationBreakdown(month, mode) {
 }
 
 function renderMoneyCharts(summary) {
-  const bankLabels = state.banks.map(b => b.cuenta);
-  const bankValues = state.banks.map(b => b.dinero);
+  const bankRows = adjustedBankChartRows();
+  const bankTotal = sum(bankRows.map(row => row.value));
   upsertChart("bankDistributionChart", "doughnut", {
-    labels: bankLabels.length ? bankLabels : ["Banco"],
-    datasets: [{ data: bankValues.length ? bankValues : [summary.bank], backgroundColor: COLORS, borderColor: "#fff", borderWidth: 2 }]
-  }, compactChartOptions("Distribucion cuentas"));
+    labels: bankRows.length ? bankRows.map(row => `${row.label}: ${money(row.value)} (${pct(row.value / bankTotal)})`) : ["Banco"],
+    datasets: [{ data: bankRows.length ? bankRows.map(row => row.value) : [Math.max(summary.bank, 0)], backgroundColor: COLORS, borderColor: "#fff", borderWidth: 2 }]
+  }, compactChartOptions("Cuentas con saldo positivo", { legend: false }));
 
+  document.querySelectorAll("[data-money-mix]").forEach(btn => btn.classList.toggle("active", btn.dataset.moneyMix === state.summaryModes.moneyMix));
+  const mixValues = state.summaryModes.moneyMix === "money"
+    ? [summary.bank, summary.investedTotal]
+    : [summary.investedTotal, Math.max(summary.valueTotal - summary.investedTotal, 0)];
+  const mixLabels = state.summaryModes.moneyMix === "money" ? ["Dinero", "Invertido"] : ["Invertido", "Ganancia"];
   upsertChart("moneyVsInvestedChart", "doughnut", {
-    labels: ["Dinero", "Invertido"],
-    datasets: [{ data: [summary.bank, summary.investedTotal], backgroundColor: ["#0f766e", "#2563eb"], borderColor: "#fff", borderWidth: 2 }]
-  }, compactChartOptions("Dinero vs invertido"));
+    labels: mixLabels.map((label, idx) => `${label}: ${money(mixValues[idx])} (${pct(mixValues[idx] / Math.max(sum(mixValues), 1))})`),
+    datasets: [{ data: mixValues, backgroundColor: ["#0f766e", "#2563eb"], borderColor: "#fff", borderWidth: 2 }]
+  }, compactChartOptions(state.summaryModes.moneyMix === "money" ? "Dinero vs invertido" : "Invertido vs ganancia", { legend: false }));
 
-  const isCurrent = state.summaryModes.investmentMoney === "current";
-  const values = INVESTMENT_TYPES.map(type => isCurrent ? summary.valueByType[type] || 0 : summary.investedByType[type] || 0);
-  upsertChart("investmentTypesChart", "bar", {
-    labels: INVESTMENT_TYPES,
-    datasets: [{
-      label: isCurrent ? "Valor actual" : "Invertido",
-      data: values,
-      backgroundColor: COLORS.slice(2, 5),
-      borderRadius: 8
-    }]
-  }, { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip: moneyTooltip() }, scales: moneyScales() });
+  const isCurrent = true;
+  const typeRows = INVESTMENT_TYPES.map(type => ({ type, value: isCurrent ? summary.valueByType[type] || 0 : summary.investedByType[type] || 0 })).filter(row => row.value > 0);
+  const typeTotal = sum(typeRows.map(row => row.value));
+  upsertChart("investmentTypesChart", "doughnut", {
+    labels: typeRows.map(row => `${row.type}: ${money(row.value)} (${pct(row.value / typeTotal)})`),
+    datasets: [{ data: typeRows.map(row => row.value), backgroundColor: COLORS.slice(2, 5), borderColor: "#fff", borderWidth: 2 }]
+  }, compactChartOptions(isCurrent ? "Tipos por valor actual" : "Tipos por invertido", { legend: false }));
 }
 
 function renderMovements() {
@@ -696,11 +695,7 @@ function renderInvestments() {
   if (document.getElementById("investmentOverviewDialog").open) {
     renderInvestmentBreakdownCharts(summary);
   }
-  renderTable("investmentBreakdownTable", ["Tipo", "Invertido", "Actual", "Ganancia", "%"], INVESTMENT_TYPES.map(type => {
-    const invested = summary.investedByType[type] || 0;
-    const current = summary.valueByType[type] || 0;
-    return [type, money(invested), money(current), amountCell(current - invested), pctGain(current, invested)];
-  }));
+  renderInvestmentBreakdownTable(summary);
   renderInvestmentEditTable();
 }
 
@@ -711,13 +706,11 @@ function renderInvestmentEditTable() {
     const idx = state.investments.indexOf(i);
     const group = i.tipo !== lastType ? `<tr><th colspan="4">${escapeHtml(i.tipo || "Sin tipo")}</th></tr>` : "";
     lastType = i.tipo;
-    const invested = calculateSummary(document.getElementById("summaryMonth").value || currentMonthKey()).investedByType[i.tipo] || 0;
-    const share = invested ? i.total / invested : 0;
     return `${group}<tr class="clickable-row" data-investment-index="${idx}">
-      <td>${escapeHtml(i.nombre)}</td>
-      <td>${money(i.cantidad, 4)}</td>
-      <td>${money(i.valor, 4)}</td>
-      <td>${money(i.total)} <small class="muted">${pct(share)}</small></td>
+      <td class="investment-name" title="${escapeAttr(i.nombre)}">${escapeHtml(i.nombre)}</td>
+      <td class="amount">${numberFmt(i.cantidad, 2)}</td>
+      <td class="amount">${money(i.valor, 2)}</td>
+      <td class="amount">${money(i.total, 2)}</td>
     </tr>`;
   }).join("");
   document.getElementById("investmentEditTable").innerHTML = `<thead><tr><th>Nombre</th><th>Cantidad</th><th>Valor</th><th>Total</th></tr></thead><tbody>${body || `<tr><td class="empty" colspan="4">Sin posiciones.</td></tr>`}</tbody>`;
@@ -727,22 +720,21 @@ function renderInvestmentEditTable() {
 }
 
 function renderInvestmentBreakdownCharts(summary) {
-  const invested = INVESTMENT_TYPES.map(type => summary.investedByType[type] || 0);
+  const selectedType = state.summaryModes.investmentOverviewType;
+  document.getElementById("investmentOverviewTitle").textContent = selectedType ? selectedType : "Inversiones";
+  if (selectedType) return renderInvestmentPositionCharts(selectedType);
   const current = INVESTMENT_TYPES.map(type => summary.valueByType[type] || 0);
-  const gains = INVESTMENT_TYPES.map((type, idx) => current[idx] - invested[idx]);
+  const rows = INVESTMENT_TYPES.map((type, idx) => ({ label: type, value: current[idx], color: COLORS.slice(2, 5)[idx] })).filter(row => row.value > 0);
+  renderChartLegend("investmentOverviewLegend", rows);
   upsertChart("investmentBreakdownDonut", "doughnut", {
-    labels: INVESTMENT_TYPES.map((type, idx) => `${type}: ${money(current[idx])} (${pctGain(current[idx], invested[idx])})`),
-    datasets: [{ data: current, backgroundColor: COLORS.slice(2, 5), borderColor: "#fff", borderWidth: 2 }]
-  }, compactChartOptions("Valor actual"));
+    labels: rows.map(row => `${row.label}: ${money(row.value)} (${pct(row.value / Math.max(sum(rows.map(r => r.value)), 1))})`),
+    datasets: [{ data: rows.map(row => row.value), backgroundColor: rows.map(row => row.color), borderColor: "#fff", borderWidth: 2 }]
+  }, compactChartOptions("Valor actual", { legend: false }));
 
   upsertChart("investmentBreakdownBars", "bar", {
-    labels: INVESTMENT_TYPES,
-    datasets: [
-      { label: "Invertido", data: invested, backgroundColor: "#2563eb", borderRadius: 8 },
-      { label: "Actual", data: current, backgroundColor: "#15803d", borderRadius: 8 },
-      { label: "Ganancia", data: gains, backgroundColor: gains.map(v => v >= 0 ? "#0f766e" : "#c2410c"), borderRadius: 8 }
-    ]
-  }, { responsive: true, maintainAspectRatio: false, plugins: { tooltip: moneyTooltip() }, scales: moneyScales() });
+    labels: rows.map(row => row.label),
+    datasets: [{ label: "Actual", data: rows.map(row => row.value), backgroundColor: rows.map(row => row.color), borderRadius: 10 }]
+  }, { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip: moneyTooltip() }, scales: moneyScales() });
 }
 
 function addInvestmentRow() {
@@ -884,10 +876,12 @@ async function submitMovement(event) {
       const from = document.getElementById("formTransferFrom").value;
       const to = document.getElementById("formTransferTo").value;
       if (!amount || !from || !to || from === to) throw new Error("elige origen, destino e importe valido");
+      const fromBefore = getBankAmount(from);
+      const toBefore = getBankAmount(to);
       await postAppsScript({ action: "transferBank", bankSheet: state.config.bankSheet || "Bancos", from, to, amount });
       applyBankDelta(from, -amount);
       applyBankDelta(to, amount);
-      setNotice("Transferencia realizada.", "ok");
+      setNotice(`Traspaso hecho. ${bankChangeText(from, fromBefore)} · ${bankChangeText(to, toBefore)}`, "ok");
     } else {
       const movement = movementFromForm();
       await postAppsScript({
@@ -897,9 +891,13 @@ async function submitMovement(event) {
         bankSheet: state.config.bankSheet || "Bancos",
         account: document.getElementById("formAccount").value
       });
-      applyBankDelta(document.getElementById("formAccount").value, movement.amount);
+      const account = document.getElementById("formAccount").value;
+      const bankBefore = getBankAmount(account);
+      const totalBefore = sum(state.banks.map(b => b.dinero));
+      applyBankDelta(account, movement.amount);
       state.transactions.push(movement);
-      setNotice("Movimiento enviado.", "ok");
+      const totalAfter = sum(state.banks.map(b => b.dinero));
+      setNotice(`${movement.tipo} guardado. Dinero ${money(totalBefore)} → ${money(totalAfter)} · ${bankChangeText(account, bankBefore)}`, "ok");
     }
     syncOptions();
     renderAll();
@@ -929,6 +927,14 @@ function movementFromForm() {
 function applyBankDelta(account, amount) {
   const bank = state.banks.find(b => b.cuenta === account);
   if (bank) bank.dinero += Number(amount) || 0;
+}
+
+function getBankAmount(account) {
+  return safeNumber(state.banks.find(b => b.cuenta === account)?.dinero);
+}
+
+function bankChangeText(account, before) {
+  return `${account || "Cuenta"} ${money(before)} → ${money(getBankAmount(account))}`;
 }
 
 async function saveBanks() {
@@ -1026,17 +1032,69 @@ function upsertChart(canvasId, type, data, options) {
   state.charts[canvasId] = new Chart(document.getElementById(canvasId), { type, data, options });
 }
 
-function compactChartOptions(title) {
+function compactChartOptions(title, options = {}) {
   return {
     responsive: true,
     maintainAspectRatio: false,
     plugins: {
       title: { display: Boolean(title), text: title },
-      legend: { position: "bottom" },
+      legend: { display: options.legend !== false, position: "bottom" },
       tooltip: moneyTooltip()
     },
-    cutout: "58%"
+    cutout: options.cutout || "52%"
   };
+}
+
+function adjustedBankChartRows() {
+  const map = new Map();
+  state.banks.forEach(bank => map.set(normalizeType(bank.cuenta), { label: bank.cuenta, value: Number(bank.dinero) || 0 }));
+  const save = map.get("bbva-save") || map.get("bbva save");
+  const credit = map.get("bbva-credito") || map.get("bbva credito");
+  if (save && credit) save.value += Math.min(credit.value, 0);
+  return [...map.values()].filter(row => row.value > 0).sort((a, b) => b.value - a.value);
+}
+
+function openInvestmentOverview(type) {
+  state.summaryModes.investmentOverviewType = type;
+  document.getElementById("investmentOverviewDialog").showModal();
+  renderInvestments();
+}
+
+function renderInvestmentBreakdownTable(summary) {
+  const rows = INVESTMENT_TYPES.map(type => {
+    const invested = summary.investedByType[type] || 0;
+    const current = summary.valueByType[type] || 0;
+    return `<tr class="clickable-row" data-investment-type="${escapeAttr(type)}"><td>${type}</td><td>${money(invested)}</td><td>${money(current)}</td><td>${amountCell(current - invested)}</td><td>${pctGain(current, invested)}</td></tr>`;
+  }).join("");
+  document.getElementById("investmentBreakdownTable").innerHTML = `<thead><tr><th>Tipo</th><th>Invertido</th><th>Actual</th><th>Ganancia</th><th>%</th></tr></thead><tbody>${rows}</tbody>`;
+  document.querySelectorAll("#investmentBreakdownTable [data-investment-type]").forEach(row => row.addEventListener("click", () => openInvestmentOverview(row.dataset.investmentType)));
+}
+
+function renderInvestmentPositionCharts(type) {
+  const positions = state.investments.filter(i => normalizeType(i.tipo) === normalizeType(type) && i.total > 0).sort((a, b) => b.total - a.total);
+  const total = sum(positions.map(i => i.total));
+  const rows = positions.map((i, idx) => ({ label: i.nombre, value: i.total, color: COLORS[idx % COLORS.length] }));
+  renderChartLegend("investmentOverviewLegend", rows);
+  upsertChart("investmentBreakdownDonut", "doughnut", {
+    labels: rows.map(row => `${row.label}: ${money(row.value)} (${pct(row.value / Math.max(total, 1))})`),
+    datasets: [{ data: rows.map(row => row.value), backgroundColor: rows.map(row => row.color), borderColor: "#fff", borderWidth: 2 }]
+  }, compactChartOptions(`Peso ${type}`, { legend: false }));
+  upsertChart("investmentBreakdownBars", "bar", {
+    labels: rows.map(row => row.label),
+    datasets: [{ label: "Peso", data: rows.map(row => row.value), backgroundColor: rows.map(row => row.color), borderRadius: 10 }]
+  }, { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip: moneyTooltip() }, scales: moneyScales() });
+}
+
+function renderChartLegend(id, rows) {
+  const total = sum(rows.map(row => row.value));
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.innerHTML = rows.map(row => `
+    <div class="legend-row">
+      <span class="legend-swatch" style="background:${row.color}"></span>
+      <span>${escapeHtml(row.label)}: ${money(row.value)} (${pct(row.value / Math.max(total, 1))})</span>
+    </div>
+  `).join("") || emptyBlock("Sin datos para mostrar.");
 }
 
 function moneyTooltip() {
@@ -1102,15 +1160,41 @@ function parseNumber(value) {
 }
 
 function formatDate(date) { return date ? `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}` : ""; }
-function money(value, decimals = 2) { return new Intl.NumberFormat("es-ES", { style: "currency", currency: "EUR", maximumFractionDigits: decimals, minimumFractionDigits: decimals }).format(Number(value) || 0); }
+function money(value, decimals = 2) { return new Intl.NumberFormat("es-ES", { style: "currency", currency: "EUR", maximumFractionDigits: decimals, minimumFractionDigits: 0 }).format(Number(value) || 0); }
 function pct(value) { return new Intl.NumberFormat("es-ES", { style: "percent", maximumFractionDigits: 1 }).format(Number(value) || 0); }
+function numberFmt(value, decimals = 2) { return new Intl.NumberFormat("es-ES", { maximumFractionDigits: decimals }).format(Number(value) || 0); }
 function safeNumber(value) { return Number.isFinite(value) ? value : 0; }
 function escapeHtml(value) { return String(value ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" }[c])); }
 function escapeAttr(value) { return escapeHtml(value).replace(/`/g, "&#096;"); }
 function removeAccents(value) { return String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, ""); }
 
 function setNotice(message, type) {
-  const el = document.getElementById("sourceNotice");
-  el.textContent = message || "";
-  el.className = `sync-status ${message ? "show" : ""} ${type === "ok" ? "ok" : type === "warn" ? "warn" : ""}`;
+  showToast(message, type);
+}
+
+function showToast(message, type = "") {
+  if (!message) return;
+  const container = document.getElementById("toastContainer");
+  if (!container) return;
+  const toast = document.createElement("div");
+  toast.className = `toast ${type === "ok" ? "ok" : type === "warn" ? "warn" : ""}`;
+  toast.innerHTML = `<span>${escapeHtml(shortNotice(message))}</span><button class="toast-close" type="button" aria-label="Cerrar">×</button>`;
+  container.appendChild(toast);
+  const remove = () => {
+    toast.classList.add("closing");
+    window.setTimeout(() => toast.remove(), 220);
+  };
+  toast.querySelector(".toast-close").addEventListener("click", remove);
+  toast.addEventListener("click", event => {
+    if (event.target === toast) remove();
+  });
+  window.setTimeout(remove, 3000);
+}
+
+function clearToasts() {
+  document.querySelectorAll(".toast").forEach(toast => toast.remove());
+}
+
+function shortNotice(message) {
+  return String(message || "").replace(/movimientos/g, "movs").replace(/Movimiento/g, "Mov.").replace(/cuentas/g, "ctas").replace(/Cuentas/g, "Ctas");
 }

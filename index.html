@@ -153,6 +153,7 @@
       </article>
     </section>
   </main>
+  <div class="toast-container" id="toastContainer" aria-live="polite"></div>
 
   <nav class="bottom-nav" aria-label="Navegacion principal">
     <button data-view-button="movimientos"><i data-lucide="list-filter"></i><span>Movs</span></button>
@@ -192,13 +193,13 @@
         </div>
       </div>
       <div id="investedMoneyDetail">
+        <div class="segmented" id="moneyMixMode">
+          <button class="active" data-money-mix="money" type="button">Dinero</button>
+          <button data-money-mix="profit" type="button">Invertido</button>
+        </div>
         <div class="chart-grid">
           <div class="chart-card"><canvas id="moneyVsInvestedChart"></canvas></div>
           <div class="chart-card"><canvas id="investmentTypesChart"></canvas></div>
-        </div>
-        <div class="segmented" id="investmentMoneyMode">
-          <button class="active" data-money-mode="invested" type="button">Invertido</button>
-          <button data-money-mode="current" type="button">Actual</button>
         </div>
       </div>
     </div>
@@ -206,13 +207,14 @@
 
   <dialog id="investmentOverviewDialog">
     <div class="dialog-head">
-      <h2>Inversiones</h2>
+      <h2 id="investmentOverviewTitle">Inversiones</h2>
       <button class="icon-btn" id="closeInvestmentOverviewBtn" aria-label="Cerrar"><i data-lucide="x"></i></button>
     </div>
     <div class="panel-body">
-      <div class="chart-grid">
-        <div class="chart-card"><canvas id="investmentBreakdownDonut"></canvas></div>
-        <div class="chart-card"><canvas id="investmentBreakdownBars"></canvas></div>
+      <div class="investment-viz">
+        <div class="chart-card donut-card"><canvas id="investmentBreakdownDonut"></canvas></div>
+        <div class="chart-legend" id="investmentOverviewLegend"></div>
+        <div class="chart-card bars-card"><canvas id="investmentBreakdownBars"></canvas></div>
       </div>
     </div>
   </dialog>
@@ -251,6 +253,6 @@
     </form>
   </dialog>
 
-  <script src="app.js?v=20260616-resumen-inversiones"></script>
+  <script src="app.js?v=20260616-toasts-fecha-banco"></script>
 </body>
 </html>
