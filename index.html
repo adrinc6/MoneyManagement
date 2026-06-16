@@ -2,7 +2,7 @@
 <html lang="es">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <title>MoneyManagement</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
   <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
@@ -153,6 +153,7 @@
       </article>
     </section>
   </main>
+  <div class="toast-container" id="toastContainer" aria-live="polite"></div>
 
   <nav class="bottom-nav" aria-label="Navegacion principal">
     <button data-view-button="movimientos"><i data-lucide="list-filter"></i><span>Movs</span></button>
@@ -187,32 +188,40 @@
     <div class="panel-body">
       <div id="moneyDialogSummary"></div>
       <div id="bankMoneyDetail">
-        <div class="chart-grid single">
-          <div class="chart-card"><canvas id="bankDistributionChart"></canvas></div>
+        <div class="segmented" id="bankMoneyMode">
+          <button class="active" data-bank-mode="summary" type="button">Resumen</button>
+          <button data-bank-mode="accounts" type="button">Ctas</button>
         </div>
+        <div id="bankSummaryPanel"></div>
+        <div id="bankAccountsPanel" class="hidden"></div>
+        <div class="chart-grid single">
+          <div class="chart-card large-donut"><canvas id="bankDistributionChart"></canvas></div>
+        </div>
+        <div class="table-wrap"><table id="bankDistributionTable"></table></div>
       </div>
       <div id="investedMoneyDetail">
-        <div class="chart-grid">
-          <div class="chart-card"><canvas id="moneyVsInvestedChart"></canvas></div>
-          <div class="chart-card"><canvas id="investmentTypesChart"></canvas></div>
+        <div class="segmented" id="moneyMixMode">
+          <button class="active" data-money-mix="types" type="button">Tipos</button>
+          <button data-money-mix="profit" type="button">Ganancia</button>
+          <button data-money-mix="money" type="button">Dinero</button>
         </div>
-        <div class="segmented" id="investmentMoneyMode">
-          <button class="active" data-money-mode="invested" type="button">Invertido</button>
-          <button data-money-mode="current" type="button">Actual</button>
+        <div class="chart-grid single">
+          <div class="chart-card large-donut"><canvas id="moneyVsInvestedChart"></canvas></div>
         </div>
+        <div class="table-wrap"><table id="investmentMixTable"></table></div>
       </div>
     </div>
   </dialog>
 
   <dialog id="investmentOverviewDialog">
     <div class="dialog-head">
-      <h2>Inversiones</h2>
+      <h2 id="investmentOverviewTitle">Inversiones</h2>
       <button class="icon-btn" id="closeInvestmentOverviewBtn" aria-label="Cerrar"><i data-lucide="x"></i></button>
     </div>
     <div class="panel-body">
-      <div class="chart-grid">
-        <div class="chart-card"><canvas id="investmentBreakdownDonut"></canvas></div>
-        <div class="chart-card"><canvas id="investmentBreakdownBars"></canvas></div>
+      <div class="investment-viz">
+        <div class="chart-card donut-card"><canvas id="investmentBreakdownDonut"></canvas></div>
+        <div class="table-wrap"><table id="investmentOverviewTable"></table></div>
       </div>
     </div>
   </dialog>
@@ -251,6 +260,6 @@
     </form>
   </dialog>
 
-  <script src="app.js?v=20260616-resumen-inversiones"></script>
+  <script src="app.js?v=20260616-nozoom-resumen-tablas"></script>
 </body>
 </html>
