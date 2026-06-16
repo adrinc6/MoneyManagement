@@ -17,6 +17,7 @@ const STATIC_CONCEPTS = ["Comida", "Cuidado personal", "Deporte", "Fiesta", "Inv
 const INVESTMENT_TYPES = ["Bolsa", "Fondos", "Cartera"];
 const COLORS = ["#15803d", "#c2410c", "#2563eb", "#b45309", "#7c3aed", "#0891b2", "#be123c", "#64748b"];
 const DATA_CACHE_KEY = "moneyDataCache";
+const PENDING_CACHE_KEY = "moneyPendingChanges";
 const DATA_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
 const TEST_TRANSACTIONS = ENABLE_TEST_MODE ? [
@@ -45,7 +46,8 @@ const state = {
   filtered: [],
   movementDrill: { level: "years", year: null, month: null },
   summaryModes: { situation: "ingresos", investmentMoney: "invested", moneyMix: "types", bankMoney: "summary", investmentOverviewType: null },
-  descriptionSuggestions: {}
+  descriptionSuggestions: {},
+  pendingMergeInfo: null
 };
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -163,6 +165,7 @@ function saveConfigFromForm() {
   };
   localStorage.setItem("moneyConfig", JSON.stringify(state.config));
   clearDataCache();
+  clearPendingCache();
   refreshData({ force: true });
 }
 
@@ -190,8 +193,9 @@ async function refreshData(options = {}) {
   }
 
   try {
+    let freshData;
     if (ENABLE_TEST_MODE) {
-      applyDataSnapshot({
+      freshData = {
         transactions: [...TEST_TRANSACTIONS],
         investments: [...TEST_INVESTMENTS],
         banks: [
@@ -199,31 +203,36 @@ async function refreshData(options = {}) {
           { rowNumber: 3, cuenta: "Revolut-Ahorro", dinero: 1300 }
         ],
         categories: { types: STATIC_TYPES, concepts: STATIC_CONCEPTS }
-      });
+      };
     } else if (state.config.readMode === "public-csv") {
-      applyDataSnapshot({
+      freshData = {
         transactions: await fetchPublicCsvTransactions(),
         investments: await fetchPublicCsvInvestments(),
         banks: await fetchPublicCsvBanks(),
         categories: await fetchPublicCsvCategories()
-      });
+      };
     } else {
       const payload = await fetchAppsScriptData();
       if (!payload.ok) throw new Error(payload.error || "Apps Script devolvio error");
       if (!Object.prototype.hasOwnProperty.call(payload, "banks")) {
         throw new Error("Apps Script no devuelve la hoja Bancos. Pega y despliega el apps-script.gs actualizado");
       }
-      applyDataSnapshot({
+      freshData = {
         transactions: payload.transactions || [],
         investments: payload.investments || [],
         banks: payload.banks || [],
         categories: payload.categories
-      });
+      };
     }
+    applyDataSnapshot(mergePendingLocalChanges(freshData));
     syncOptions();
     renderAll();
     writeDataCache();
-    setNotice(`${state.transactions.length} movimientos y ${state.banks.length} cuentas cargadas.`, "ok");
+    if (state.pendingMergeInfo?.length) {
+      setNotice(`Datos actualizados con cambios locales pendientes: ${state.pendingMergeInfo.join(", ")}. Pulsa actualizar para revalidar.`, "warn");
+    } else {
+      setNotice(`${state.transactions.length} movimientos y ${state.banks.length} cuentas cargadas.`, "ok");
+    }
   } catch (error) {
     console.error(error);
     if (cached) {
@@ -281,6 +290,92 @@ function writeDataCache() {
 
 function clearDataCache() {
   localStorage.removeItem(DATA_CACHE_KEY);
+}
+
+function readPendingCache() {
+  try {
+    const pending = JSON.parse(localStorage.getItem(PENDING_CACHE_KEY) || "null");
+    if (!pending || pending.configKey !== dataCacheConfigKey()) return null;
+    return pending;
+  } catch {
+    return null;
+  }
+}
+
+function writePendingCache(pending) {
+  const next = { ...pending, configKey: dataCacheConfigKey(), savedAt: Date.now() };
+  const hasPending = ["transactions", "investments", "banks"].some(key => Array.isArray(next[key]));
+  if (!hasPending) return clearPendingCache();
+  localStorage.setItem(PENDING_CACHE_KEY, JSON.stringify(next));
+}
+
+function clearPendingCache() {
+  localStorage.removeItem(PENDING_CACHE_KEY);
+}
+
+function rememberPendingSnapshot(...sections) {
+  const pending = readPendingCache() || {};
+  sections.forEach(section => {
+    if (section === "transactions") pending.transactions = state.transactions.map(serializeTransaction);
+    if (section === "investments") pending.investments = state.investments;
+    if (section === "banks") pending.banks = state.banks;
+  });
+  writePendingCache(pending);
+}
+
+function mergePendingLocalChanges(freshData) {
+  state.pendingMergeInfo = [];
+  const pending = readPendingCache();
+  if (!pending) return freshData;
+
+  const merged = { ...freshData };
+  const nextPending = { ...pending };
+
+  [["transactions", sameTransactions, "movimientos"], ["investments", sameInvestments, "inversiones"], ["banks", sameBanks, "bancos"]].forEach(([key, matcher, label]) => {
+    if (!Array.isArray(pending[key])) return;
+    if (matcher(freshData[key] || [], pending[key])) {
+      delete nextPending[key];
+      return;
+    }
+    merged[key] = pending[key];
+    state.pendingMergeInfo.push(label);
+  });
+
+  writePendingCache(nextPending);
+  return merged;
+}
+
+function sameTransactions(a, b) {
+  return sameCollection(a, b, transactionSignature);
+}
+
+function sameInvestments(a, b) {
+  return sameCollection(a, b, investmentSignature);
+}
+
+function sameBanks(a, b) {
+  return sameCollection(a, b, bankSignature);
+}
+
+function sameCollection(a, b, signature) {
+  const left = a.map(item => signature(item)).sort();
+  const right = b.map(item => signature(item)).sort();
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function transactionSignature(row) {
+  const t = normalizeTransaction(row);
+  return t ? [formatDate(t.date), normalizeType(t.tipo), normalizeType(t.concepto), t.descripcion, safeNumber(t.amount).toFixed(2)].join("|") : "";
+}
+
+function investmentSignature(row) {
+  const i = normalizeInvestment(row);
+  return i ? [i.data, i.nombre, normalizeType(i.tipo), safeNumber(i.cantidad).toFixed(4), safeNumber(i.valor).toFixed(4), safeNumber(i.total).toFixed(2)].join("|") : "";
+}
+
+function bankSignature(row) {
+  const b = normalizeBank(row);
+  return b ? [b.cuenta, safeNumber(b.dinero).toFixed(2)].join("|") : "";
 }
 
 function serializeTransaction(t) {
@@ -920,7 +1015,8 @@ async function saveInvestments() {
   readInvestmentEditor();
   if (!state.config.scriptUrl || state.config.readMode !== "apps-script") {
     writeDataCache();
-    setNotice("Para modificar inversiones necesitas Apps Script.", "warn");
+    rememberPendingSnapshot("investments");
+    setNotice("Para modificar inversiones necesitas Apps Script. Cambio guardado solo en cache local.", "warn");
     renderInvestments();
     return;
   }
@@ -934,7 +1030,8 @@ async function saveInvestments() {
       body: JSON.stringify({ action: "saveInvestments", token: state.config.appToken, sheetName: state.config.investmentSheet, investments: state.investments })
     });
     writeDataCache();
-    setNotice("Cambios de inversiones enviados.", "ok");
+    rememberPendingSnapshot("investments");
+    setNotice("Cambios de inversiones enviados. Se mantendran en cache hasta confirmarlos al actualizar.", "ok");
   } catch (error) {
     setNotice(`No se pudieron guardar inversiones: ${error.message}`, "warn");
   } finally {
@@ -987,6 +1084,7 @@ async function saveMovementDetail(event) {
   }
   state.transactions[index] = movement;
   writeDataCache();
+  rememberPendingSnapshot("transactions");
   document.getElementById("movementDetailDialog").close();
   syncOptions();
   renderAll();
@@ -1004,6 +1102,7 @@ async function deleteMovementDetail() {
   }
   state.transactions.splice(index, 1);
   writeDataCache();
+  rememberPendingSnapshot("transactions");
   document.getElementById("movementDetailDialog").close();
   syncOptions();
   renderAll();
@@ -1036,6 +1135,7 @@ function saveInvestmentDetail(event) {
     total: Number(document.getElementById("editInvestmentTotal").value || 0)
   });
   writeDataCache();
+  rememberPendingSnapshot("investments");
   document.getElementById("investmentDetailDialog").close();
   renderInvestments();
 }
@@ -1061,6 +1161,7 @@ async function submitMovement(event) {
       applyBankDelta(from, -amount);
       applyBankDelta(to, amount);
       writeDataCache();
+      rememberPendingSnapshot("banks");
       setNotice(`Traspaso hecho. ${bankChangeText(from, fromBefore)} · ${bankChangeText(to, toBefore)}`, "ok");
     } else {
       const movement = movementFromForm();
@@ -1077,6 +1178,7 @@ async function submitMovement(event) {
       applyBankDelta(account, movement.amount);
       state.transactions.push(movement);
       writeDataCache();
+      rememberPendingSnapshot("transactions", "banks");
       const totalAfter = sum(state.banks.map(b => b.dinero));
       setNotice(formatMovementSavedNotice(movement, account, totalBefore, totalAfter, bankBefore), "ok");
     }
@@ -1125,13 +1227,15 @@ async function saveBanks() {
   });
   if (!state.config.scriptUrl || state.config.readMode !== "apps-script") {
     writeDataCache();
+    rememberPendingSnapshot("banks");
     renderSummary();
     return;
   }
   try {
     await postAppsScript({ action: "saveBanks", bankSheet: state.config.bankSheet || "Bancos", banks: state.banks });
     writeDataCache();
-    setNotice("Cuentas guardadas.", "ok");
+    rememberPendingSnapshot("banks");
+    setNotice("Cuentas guardadas. Se mantendran en cache hasta confirmarlas al actualizar.", "ok");
   } catch (error) {
     setNotice(`No se pudieron guardar cuentas: ${error.message}`, "warn");
   }
