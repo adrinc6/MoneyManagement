@@ -96,6 +96,12 @@ function wireUi() {
     if (event.target.closest(".toast")) return;
     window.setTimeout(() => clearToasts(), 0);
   });
+  document.getElementById("moneyMixMode")?.addEventListener("click", event => {
+    const btn = event.target.closest("[data-money-mix]");
+    if (!btn) return;
+    state.summaryModes.moneyMix = btn.dataset.moneyMix;
+    renderMoneyCharts(calculateSummary(document.getElementById("summaryMonth").value || currentMonthKey()));
+  });
 }
 
 function showView(id) {
