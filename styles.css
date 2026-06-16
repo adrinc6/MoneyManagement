@@ -116,7 +116,7 @@ p { color: var(--muted); }
 
 .form-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
 }
 .wide, .full { grid-column: 1 / -1; width: 100%; }
@@ -647,8 +647,15 @@ dialog[open] {
   min-width: 0;
 }
 input[type="date"] {
+  width: 100%;
   max-width: 100%;
   min-width: 0;
+  appearance: none;
+  -webkit-appearance: none;
+}
+input[type="date"]::-webkit-date-and-time-value {
+  min-width: 0;
+  text-align: left;
 }
 .toast-container {
   position: fixed;

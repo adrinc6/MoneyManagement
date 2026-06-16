@@ -75,6 +75,10 @@ No subas `ControlFinanzas.xlsx` a GitHub si contiene datos reales. Lo recomendab
 3. Publicar la web con GitHub Pages.
 4. Usar Google Apps Script como puente para leer y escribir.
 
+## Cache y rendimiento
+
+Para abrir la app mas rapido, los datos leidos de Google Sheets se guardan en `localStorage` del navegador durante 24 horas. Al entrar se usa esa cache si sigue vigente; el boton de actualizar fuerza una lectura nueva desde Google Sheets. Cuando se guardan movimientos, traspasos, bancos o inversiones desde la app, la cache local se actualiza tambien para que la pantalla no espere a recargarlo todo.
+
 ## Configurar Apps Script
 
 1. Abre tu Google Sheet.
