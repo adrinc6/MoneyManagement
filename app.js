@@ -58,7 +58,13 @@ document.addEventListener("DOMContentLoaded", () => {
 
 function wireUi() {
   document.querySelectorAll("[data-view-button]").forEach(btn => {
-    btn.addEventListener("click", () => showView(btn.dataset.viewButton));
+    btn.addEventListener("click", () => {
+      if (btn.dataset.viewButton === "registrar" && btn.classList.contains("active")) {
+        document.getElementById("movementForm").requestSubmit();
+        return;
+      }
+      showView(btn.dataset.viewButton);
+    });
   });
   document.getElementById("refreshBtn").addEventListener("click", () => refreshData({ force: true }));
   document.getElementById("movementForm").addEventListener("submit", submitMovement);
@@ -109,6 +115,7 @@ function wireUi() {
 function showView(id) {
   document.querySelectorAll(".view").forEach(v => v.classList.toggle("active", v.id === id));
   document.querySelectorAll("[data-view-button]").forEach(b => b.classList.toggle("active", b.dataset.viewButton === id));
+  syncRegistrarActionButton();
   document.getElementById("viewTitle").textContent = {
     registrar: "Registrar",
     resumen: "Resumen",
@@ -388,9 +395,31 @@ function syncRegistrarMode() {
   });
   document.getElementById("formTransferFrom").required = isTransfer;
   document.getElementById("formTransferTo").required = isTransfer;
-  document.getElementById("submitMovement").innerHTML = isTransfer
+  const submitLabel = isTransfer
     ? `<i data-lucide="repeat-2"></i> Transferir entre cuentas`
-    : `<i data-lucide="send"></i> Enviar a Google Sheets`;
+    : `<i data-lucide="save"></i> Guardar registro`;
+  document.getElementById("submitMovement").innerHTML = submitLabel;
+  syncRegistrarActionButton();
+  lucide.createIcons();
+}
+
+function syncRegistrarActionButton() {
+  const registrarButton = document.querySelector('[data-view-button="registrar"]');
+  if (!registrarButton) return;
+  const isRegistrarActive = registrarButton.classList.contains("active");
+  const isTransfer = normalizeType(document.getElementById("formType")?.value || "") === "transferencia";
+
+  if (isRegistrarActive) {
+    registrarButton.classList.add("save-mode");
+    registrarButton.setAttribute("aria-label", isTransfer ? "Transferir entre cuentas" : "Guardar registro");
+    registrarButton.innerHTML = isTransfer
+      ? `<i data-lucide="repeat-2"></i><span>Transferir</span>`
+      : `<i data-lucide="save"></i><span>Guardar</span>`;
+  } else {
+    registrarButton.classList.remove("save-mode");
+    registrarButton.setAttribute("aria-label", "Registrar");
+    registrarButton.innerHTML = `<i data-lucide="plus"></i><span>Registrar</span>`;
+  }
   lucide.createIcons();
 }
 
