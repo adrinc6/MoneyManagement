@@ -1,9 +1,10 @@
+const APP_TOKEN = '';
 const DEFAULT_MOVEMENT_SHEET = 'Control Finanzas';
 const DEFAULT_INVESTMENT_SHEET = 'Inversiones';
 const DEFAULT_BANK_SHEET = 'Bancos';
 const DEFAULT_FUTURE_MOVEMENT_SHEET = 'Movimientos futuros';
 const DEFAULT_OBJECTIVE_SHEET = 'Objetivos';
-const APP_TOKEN = '';
+const DEFAULT_PENDING_SHEET = 'Pendientes';
 
 function doGet(e) {
   const params = e && e.parameter ? e.parameter : {};
@@ -47,47 +48,49 @@ function doGet(e) {
 
 function doPost(e) {
   let payload = {};
+  let pendingId = '';
   try {
     payload = JSON.parse(e.postData.contents || '{}');
     requireToken_(payload.token || '');
+    pendingId = appendPendingPost_(payload);
     if (payload.action === 'addMovement') {
       addMovement_(payload.movement, payload.sheetName || DEFAULT_MOVEMENT_SHEET);
       if (payload.account) adjustBank_(payload.bankSheet || DEFAULT_BANK_SHEET, payload.account, Number(payload.movement && (payload.movement.amount || payload.movement.importe) || 0));
-      return json_({ ok: true });
+      return finishPost_(pendingId, { ok: true });
     }
     if (payload.action === 'addFutureMovement') {
       addFutureMovement_(payload.movement, payload.sheetName || DEFAULT_FUTURE_MOVEMENT_SHEET, payload.account || '');
-      return json_({ ok: true });
+      return finishPost_(pendingId, { ok: true });
     }
     if (payload.action === 'addMovementsBatch') {
       addMovementsBatch_(payload.movements || [], payload.movementSheet || DEFAULT_MOVEMENT_SHEET, payload.futureMovementSheet || DEFAULT_FUTURE_MOVEMENT_SHEET, payload.bankSheet || DEFAULT_BANK_SHEET, payload.account || '');
-      return json_({ ok: true });
+      return finishPost_(pendingId, { ok: true });
     }
     if (payload.action === 'updateMovement') {
       updateMovement_(payload.movement, payload.sheetName || DEFAULT_MOVEMENT_SHEET);
-      return json_({ ok: true });
+      return finishPost_(pendingId, { ok: true });
     }
     if (payload.action === 'deleteMovement') {
       deleteMovement_(payload.rowNumber, payload.sheetName || DEFAULT_MOVEMENT_SHEET);
-      return json_({ ok: true });
+      return finishPost_(pendingId, { ok: true });
     }
     if (payload.action === 'saveInvestments') {
       saveInvestments_(payload.investments || [], payload.sheetName || DEFAULT_INVESTMENT_SHEET);
-      return json_({ ok: true });
+      return finishPost_(pendingId, { ok: true });
     }
     if (payload.action === 'saveInvestmentGoals') {
       saveInvestmentGoals_(payload.goals || {}, payload.sheetName || DEFAULT_OBJECTIVE_SHEET);
-      return json_({ ok: true });
+      return finishPost_(pendingId, { ok: true });
     }
     if (payload.action === 'saveBanks') {
       saveBanks_(payload.banks || [], payload.bankSheet || DEFAULT_BANK_SHEET);
-      return json_({ ok: true });
+      return finishPost_(pendingId, { ok: true });
     }
     if (payload.action === 'transferBank') {
       transferBank_(payload.bankSheet || DEFAULT_BANK_SHEET, payload.from, payload.to, Number(payload.amount || 0));
-      return json_({ ok: true });
+      return finishPost_(pendingId, { ok: true });
     }
-    return json_({ ok: false, error: 'Unknown action' });
+    return finishPost_(pendingId, { ok: false, error: 'Unknown action' });
   } catch (err) {
     return json_({ ok: false, error: String(err && err.message ? err.message : err) });
   }
@@ -97,6 +100,39 @@ function requireToken_(token) {
   if (APP_TOKEN && token !== APP_TOKEN) {
     throw new Error('Invalid app token');
   }
+}
+
+function appendPendingPost_(payload) {
+  const id = Utilities.getUuid();
+  const sheet = getOrCreateSheet_(DEFAULT_PENDING_SHEET, ['ID', 'Fecha', 'Accion', 'Payload']);
+  sheet.appendRow([id, new Date(), payload.action || '', JSON.stringify(sanitizePendingPayload_(payload))]);
+  return id;
+}
+
+function finishPost_(pendingId, payload) {
+  removePendingPost_(pendingId);
+  return json_(payload);
+}
+
+function removePendingPost_(pendingId) {
+  if (!pendingId) return;
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(DEFAULT_PENDING_SHEET);
+  if (!sheet) return;
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return;
+  const ids = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
+  for (let i = 0; i < ids.length; i++) {
+    if (String(ids[i][0]) === String(pendingId)) {
+      sheet.deleteRow(i + 2);
+      return;
+    }
+  }
+}
+
+function sanitizePendingPayload_(payload) {
+  const copy = Object.assign({}, payload);
+  delete copy.token;
+  return copy;
 }
 
 function addMovement_(movement, sheetName) {
