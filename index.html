@@ -31,9 +31,9 @@
             <h2>Nuevo movimiento</h2>
             <p>Rellena Control Finanzas.</p>
           </div>
+          <div class="segmented compact-switch register-switch" id="registerModeSwitch"><button class="active" data-register-mode="single" type="button">Puntual</button><button data-register-mode="recurring" type="button">Periódico</button></div>
         </div>
         <div class="panel-body">
-          <div class="segmented register-switch" id="registerModeSwitch"><button class="active" data-register-mode="single" type="button">Puntual</button><button data-register-mode="recurring" type="button">Periódico</button></div>
           <form id="movementForm" class="form-grid">
             <label>Tipo <select id="formType" required></select></label>
             <label class="movement-only">Fecha <input id="formDate" type="date" required /></label>
@@ -95,21 +95,34 @@
     </section>
 
     <section id="movimientos" class="view">
-      <div class="section-toolbar">
-        <div class="segmented no-margin" id="movementModeSwitch"><button class="active" data-movement-mode="realized" type="button">Realizados</button><button data-movement-mode="future" type="button">Futuros</button></div>
+      <div class="drill-heading">
+        <div id="movementDrillTitle" class="drill-title"></div>
+        <div class="segmented compact-switch no-margin" id="movementModeSwitch"><button class="active" data-movement-mode="realized" type="button">Realizados</button><button data-movement-mode="future" type="button">Futuros</button></div>
+      </div>
+      <div class="section-toolbar movement-toolbar">
         <button class="btn" id="movementBackBtn"><i data-lucide="arrow-left"></i> Volver</button>
       </div>
-      <div id="movementDrillTitle" class="drill-title"></div>
       <div id="movementDrill"></div>
     </section>
 
     <section id="inversiones" class="view">
-      <article class="panel investment-goals-panel"><div class="panel-header"><div><h2>Objetivos</h2><p>Mensual, anual y total.</p></div><button class="btn" id="editInvestmentGoalsBtn" type="button"><i data-lucide="edit-3"></i> Editar</button></div><div class="panel-body" id="investmentGoals"></div></article>
-      <button class="total-panel tappable investment-total-card" id="openInvestmentOverviewBtn" type="button">
-        <span>Valor actual total</span>
-        <strong id="investmentCurrentTotal">0,00 EUR</strong>
-        <div class="total-metrics" id="investmentTotalMetrics"></div>
-      </button>
+      <article class="total-panel investment-total-card">
+        <div class="investment-summary-head">
+          <div class="investment-summary-title">
+            <h2 id="investmentPanelLabel">Inversión</h2>
+            <button class="icon-btn minimal-icon hidden" id="editInvestmentGoalsBtn" type="button" aria-label="Editar objetivos"><i data-lucide="edit-3"></i></button>
+          </div>
+          <div class="segmented compact-switch no-margin" id="investmentPanelSwitch">
+            <button class="active" data-investment-panel="current" type="button">Inversión</button>
+            <button data-investment-panel="goals" type="button">Objetivos</button>
+          </div>
+        </div>
+        <button class="investment-summary-body tappable" id="openInvestmentOverviewBtn" type="button">
+          <strong id="investmentCurrentTotal">0,00 EUR</strong>
+          <div class="total-metrics" id="investmentTotalMetrics"></div>
+        </button>
+        <div class="investment-goals-body hidden" id="investmentGoals"></div>
+      </article>
 
       <article class="panel">
         <div class="panel-header">

@@ -2,6 +2,7 @@ const DEFAULT_MOVEMENT_SHEET = 'Control Finanzas';
 const DEFAULT_INVESTMENT_SHEET = 'Inversiones';
 const DEFAULT_BANK_SHEET = 'Bancos';
 const DEFAULT_FUTURE_MOVEMENT_SHEET = 'Movimientos futuros';
+const DEFAULT_OBJECTIVE_SHEET = 'Objetivos';
 const APP_TOKEN = '';
 
 function doGet(e) {
@@ -13,6 +14,7 @@ function doGet(e) {
   const bankSheet = params.bankSheet || DEFAULT_BANK_SHEET;
   const dataSheet = params.dataSheet || 'Datos';
   const futureMovementSheet = params.futureMovementSheet || DEFAULT_FUTURE_MOVEMENT_SHEET;
+  const objectiveSheet = params.objectiveSheet || DEFAULT_OBJECTIVE_SHEET;
 
   let payload;
   try {
@@ -26,6 +28,7 @@ function doGet(e) {
         movedFutureMovements,
         investments: readInvestments_(investmentSheet),
         banks: readBanks_(bankSheet),
+        investmentGoals: readInvestmentGoals_(objectiveSheet),
         categories: readCategories_(dataSheet)
       };
     } else {
@@ -70,6 +73,10 @@ function doPost(e) {
     }
     if (payload.action === 'saveInvestments') {
       saveInvestments_(payload.investments || [], payload.sheetName || DEFAULT_INVESTMENT_SHEET);
+      return json_({ ok: true });
+    }
+    if (payload.action === 'saveInvestmentGoals') {
+      saveInvestmentGoals_(payload.goals || {}, payload.sheetName || DEFAULT_OBJECTIVE_SHEET);
       return json_({ ok: true });
     }
     if (payload.action === 'saveBanks') {
@@ -257,6 +264,19 @@ function readInvestments_(sheetName) {
     .filter(row => row.data && row.nombre && row.tipo && Number.isFinite(row.total) && row.total > 0);
 }
 
+function readInvestmentGoals_(sheetName) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
+  const goals = { monthly: 0, yearly: 0, total: 0 };
+  if (!sheet) return goals;
+  const values = sheet.getDataRange().getDisplayValues();
+  values.slice(1).forEach(row => {
+    const key = normalizeGoalKey_(row[0]);
+    const value = parseNumber_(row[1]);
+    if (key && Number.isFinite(value)) goals[key] = value;
+  });
+  return goals;
+}
+
 function readBanks_(sheetName) {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
   if (!sheet) throw new Error(`Sheet not found: ${sheetName}`);
@@ -337,6 +357,18 @@ function saveInvestments_(investments, sheetName) {
   });
 }
 
+function saveInvestmentGoals_(goals, sheetName) {
+  const sheet = getOrCreateSheet_(sheetName, ['Tiempo', 'Valor']);
+  const rows = [
+    ['Mensual', Number(goals.monthly || goals.mensual || 0)],
+    ['Anual', Number(goals.yearly || goals.anual || 0)],
+    ['Total', Number(goals.total || 0)]
+  ];
+  const lastRow = sheet.getLastRow();
+  if (lastRow > 1) sheet.getRange(2, 1, lastRow - 1, 2).clearContent();
+  sheet.getRange(2, 1, rows.length, 2).setValues(rows);
+}
+
 function readCategories_(sheetName) {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
   if (!sheet) return { types: [], concepts: [] };
@@ -366,6 +398,14 @@ function parseNumber_(value) {
     cleaned = cleaned.replace(',', '.');
   }
   return Number(cleaned);
+}
+
+function normalizeGoalKey_(value) {
+  const text = String(value || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+  if (text === 'mensual') return 'monthly';
+  if (text === 'anual') return 'yearly';
+  if (text === 'total') return 'total';
+  return '';
 }
 
 function json_(payload) {

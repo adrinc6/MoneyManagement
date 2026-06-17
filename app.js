@@ -8,6 +8,7 @@ const DEFAULT_CONFIG = {
   futureMovementSheet: "Movimientos futuros",
   investmentSheet: "Inversiones",
   bankSheet: "Bancos",
+  objectiveSheet: "Objetivos",
   dataSheet: "Datos",
   readMode: "apps-script",
   initialCash: 6122.08
@@ -47,7 +48,7 @@ const state = {
   charts: {},
   filtered: [],
   movementDrill: { level: "years", year: null, month: null },
-  summaryModes: { situation: "ingresos", investmentMoney: "invested", moneyMix: "types", bankMoney: "summary", investmentOverviewType: null },
+  summaryModes: { situation: "ingresos", investmentMoney: "invested", moneyMix: "types", bankMoney: "summary", investmentOverviewType: null, investmentPanel: "current" },
   descriptionSuggestions: {},
   pendingMergeInfo: null,
   movementMode: "realized",
@@ -78,6 +79,7 @@ function wireUi() {
   document.getElementById("registerModeSwitch").addEventListener("click", setRegisterModeFromClick);
   document.getElementById("recurrenceType").addEventListener("change", renderRecurrencePicker);
   document.getElementById("movementModeSwitch").addEventListener("click", setMovementModeFromClick);
+  document.getElementById("investmentPanelSwitch").addEventListener("click", setInvestmentPanelFromClick);
   document.getElementById("editInvestmentGoalsBtn").addEventListener("click", editInvestmentGoals);
   document.getElementById("formType").addEventListener("change", syncRegistrarMode);
   document.getElementById("saveConfigBtn").addEventListener("click", saveConfigFromForm);
@@ -171,6 +173,7 @@ function saveConfigFromForm() {
     futureMovementSheet: document.getElementById("configFutureMovementSheet").value.trim() || "Movimientos futuros",
     investmentSheet: document.getElementById("configInvestmentSheet").value.trim() || "Inversiones",
     bankSheet: document.getElementById("configBankSheet").value.trim() || "Bancos",
+    objectiveSheet: state.config.objectiveSheet || "Objetivos",
     dataSheet: document.getElementById("configDataSheet").value.trim() || "Datos",
     readMode: document.getElementById("configReadMode").value,
     initialCash: Number(document.getElementById("configInitialCash").value || 0)
@@ -212,6 +215,7 @@ async function refreshData(options = {}) {
         transactions: [...TEST_TRANSACTIONS],
         futureTransactions: [],
         investments: [...TEST_INVESTMENTS],
+        investmentGoals: state.investmentGoals,
         banks: [
           { rowNumber: 2, cuenta: "Santander-Cuenta", dinero: 2400 },
           { rowNumber: 3, cuenta: "Revolut-Ahorro", dinero: 1300 }
@@ -224,6 +228,7 @@ async function refreshData(options = {}) {
         futureTransactions: await fetchPublicCsvFutureTransactions(),
         investments: await fetchPublicCsvInvestments(),
         banks: await fetchPublicCsvBanks(),
+        investmentGoals: await fetchPublicCsvInvestmentGoals(),
         categories: await fetchPublicCsvCategories()
       };
     } else {
@@ -238,6 +243,7 @@ async function refreshData(options = {}) {
         futureTransactions: payload.futureTransactions || [],
         investments: payload.investments || [],
         banks: payload.banks || [],
+        investmentGoals: payload.investmentGoals,
         categories: payload.categories
       };
     }
@@ -275,12 +281,13 @@ function applyDataSnapshot(data) {
   state.futureTransactions = (data.futureTransactions || []).map(normalizeTransaction).filter(Boolean);
   state.investments = (data.investments || []).map(normalizeInvestment).filter(Boolean);
   state.banks = (data.banks || []).map(normalizeBank).filter(Boolean);
+  state.investmentGoals = normalizeInvestmentGoals(data.investmentGoals ?? state.investmentGoals);
   state.categories = normalizeCategories(data.categories);
 }
 
 function dataCacheConfigKey() {
-  const { scriptUrl, appToken, sheetId, movementSheet, futureMovementSheet, investmentSheet, bankSheet, dataSheet, readMode } = state.config;
-  return JSON.stringify({ scriptUrl, appToken, sheetId, movementSheet, futureMovementSheet, investmentSheet, bankSheet, dataSheet, readMode });
+  const { scriptUrl, appToken, sheetId, movementSheet, futureMovementSheet, investmentSheet, bankSheet, objectiveSheet, dataSheet, readMode } = state.config;
+  return JSON.stringify({ scriptUrl, appToken, sheetId, movementSheet, futureMovementSheet, investmentSheet, bankSheet, objectiveSheet, dataSheet, readMode });
 }
 
 function readDataCache() {
@@ -303,6 +310,7 @@ function writeDataCache() {
         futureTransactions: state.futureTransactions.map(serializeTransaction),
         investments: state.investments,
         banks: state.banks,
+        investmentGoals: state.investmentGoals,
         categories: state.categories
       }
     }));
@@ -413,7 +421,7 @@ function formatCacheAge(ageMs) {
 
 async function fetchAppsScriptData() {
   if (!state.config.scriptUrl) throw new Error("falta la URL de Apps Script");
-  const url = `${state.config.scriptUrl}?action=all&token=${encodeURIComponent(state.config.appToken)}&movementSheet=${encodeURIComponent(state.config.movementSheet)}&futureMovementSheet=${encodeURIComponent(state.config.futureMovementSheet || "Movimientos futuros")}&investmentSheet=${encodeURIComponent(state.config.investmentSheet)}&bankSheet=${encodeURIComponent(state.config.bankSheet || "Bancos")}&dataSheet=${encodeURIComponent(state.config.dataSheet)}`;
+  const url = `${state.config.scriptUrl}?action=all&token=${encodeURIComponent(state.config.appToken)}&movementSheet=${encodeURIComponent(state.config.movementSheet)}&futureMovementSheet=${encodeURIComponent(state.config.futureMovementSheet || "Movimientos futuros")}&investmentSheet=${encodeURIComponent(state.config.investmentSheet)}&bankSheet=${encodeURIComponent(state.config.bankSheet || "Bancos")}&objectiveSheet=${encodeURIComponent(state.config.objectiveSheet || "Objetivos")}&dataSheet=${encodeURIComponent(state.config.dataSheet)}`;
   return jsonp(url);
 }
 
@@ -890,7 +898,7 @@ function renderBankDetail(summary) {
 
 function renderMovements() {
   const drill = state.movementDrill;
-  document.querySelector("#movimientos .section-toolbar").classList.toggle("hidden", drill.level === "years");
+  document.querySelector("#movimientos .movement-toolbar").classList.toggle("hidden", drill.level === "years");
   document.getElementById("movementBackBtn").style.visibility = drill.level === "years" ? "hidden" : "visible";
   if (drill.level === "years") renderMovementYears();
   if (drill.level === "months") renderMovementMonths(drill.year);
@@ -1027,6 +1035,14 @@ function metricBlock(label, value, tone) {
 
 function renderInvestments() {
   const summary = calculateSummary(getSelectedSummaryMonth());
+  const showingGoals = state.summaryModes.investmentPanel === "goals";
+  document.getElementById("investmentPanelLabel").textContent = showingGoals ? "Objetivos" : "Inversión";
+  document.getElementById("editInvestmentGoalsBtn").classList.toggle("hidden", !showingGoals);
+  document.getElementById("openInvestmentOverviewBtn").classList.toggle("hidden", showingGoals);
+  document.getElementById("investmentGoals").classList.toggle("hidden", !showingGoals);
+  document.querySelectorAll("[data-investment-panel]").forEach(btn => {
+    btn.classList.toggle("active", btn.dataset.investmentPanel === state.summaryModes.investmentPanel);
+  });
   document.getElementById("investmentCurrentTotal").textContent = money(summary.valueTotal);
   document.getElementById("investmentTotalMetrics").innerHTML = `
     <div><span>Invertido</span><strong>${money(summary.investedTotal)}</strong></div>
@@ -1039,6 +1055,13 @@ function renderInvestments() {
   renderInvestmentGoals(summary);
   renderInvestmentBreakdownTable(summary);
   renderInvestmentEditTable();
+}
+
+function setInvestmentPanelFromClick(event) {
+  const btn = event.target.closest("[data-investment-panel]");
+  if (!btn) return;
+  state.summaryModes.investmentPanel = btn.dataset.investmentPanel;
+  renderInvestments();
 }
 
 function renderInvestmentEditTable() {
@@ -1386,14 +1409,65 @@ function loadInvestmentGoals() {
   catch { return { monthly: 0, yearly: 0, total: 0 }; }
 }
 
-function editInvestmentGoals() {
+async function editInvestmentGoals() {
   const current = state.investmentGoals;
-  const monthly = Number(prompt('Objetivo mensual', current.monthly) || current.monthly || 0);
-  const yearly = Number(prompt('Objetivo anual', current.yearly) || current.yearly || 0);
-  const total = Number(prompt('Objetivo total', current.total) || current.total || 0);
+  const monthly = promptInvestmentGoal('Objetivo mensual', current.monthly);
+  if (monthly === null) return;
+  const yearly = promptInvestmentGoal('Objetivo anual', current.yearly);
+  if (yearly === null) return;
+  const total = promptInvestmentGoal('Objetivo total', current.total);
+  if (total === null) return;
   state.investmentGoals = { monthly, yearly, total };
   localStorage.setItem('investmentGoals', JSON.stringify(state.investmentGoals));
-  renderInvestmentGoals(calculateSummary(getSelectedSummaryMonth()));
+  writeDataCache();
+  renderInvestments();
+  if (state.config.scriptUrl && state.config.readMode === "apps-script") {
+    try {
+      await postAppsScript({ action: "saveInvestmentGoals", sheetName: state.config.objectiveSheet || "Objetivos", goals: state.investmentGoals });
+      setNotice('Objetivos guardados en Google Sheets.', 'ok');
+    } catch (error) {
+      setNotice(`Objetivos guardados solo en este navegador: ${error.message}`, 'warn');
+    }
+  } else {
+    setNotice('Objetivos guardados en este navegador.', 'ok');
+  }
+}
+
+async function fetchPublicCsvInvestmentGoals() {
+  if (!state.config.sheetId) return state.investmentGoals;
+  const csv = await fetchCsv(state.config.sheetId, state.config.objectiveSheet || "Objetivos");
+  const rows = parseCsv(csv).slice(1);
+  return normalizeInvestmentGoals(Object.fromEntries(rows.map(row => [row[0], row[1]])));
+}
+
+function promptInvestmentGoal(label, currentValue) {
+  const value = prompt(label, currentValue || 0);
+  if (value === null) return null;
+  const parsed = parseNumber(value);
+  return Number.isFinite(parsed) ? parsed : Number(currentValue || 0);
+}
+
+function normalizeInvestmentGoals(value) {
+  const goals = { monthly: 0, yearly: 0, total: 0 };
+  if (!value || typeof value !== "object") return goals;
+  Object.entries(value).forEach(([key, raw]) => {
+    const normalized = normalizeGoalKey(key);
+    const parsed = parseNumber(raw);
+    if (normalized && Number.isFinite(parsed)) goals[normalized] = parsed;
+  });
+  ["monthly", "yearly", "total"].forEach(key => {
+    const parsed = parseNumber(value[key]);
+    if (Number.isFinite(parsed)) goals[key] = parsed;
+  });
+  return goals;
+}
+
+function normalizeGoalKey(value) {
+  const text = normalizeType(value);
+  if (text === "mensual" || text === "monthly") return "monthly";
+  if (text === "anual" || text === "yearly") return "yearly";
+  if (text === "total") return "total";
+  return "";
 }
 
 function renderInvestmentGoals(summary) {
@@ -1414,9 +1488,33 @@ function renderInvestmentGoals(summary) {
     ['Total', state.investmentGoals.total, realizedTotal, plannedTotal]
   ];
   el.innerHTML = cards.map(([label, goal, done, planned]) => {
-    const pctDone = goal ? Math.min(100, done / goal * 100) : 0;
-    const pctPlanned = goal ? Math.min(100 - pctDone, planned / goal * 100) : 0;
-    return `<div class="goal-row"><div><strong>${label}</strong><span>${money(done)} aportado · ${money(planned)} programado · ${money(Math.max(goal - done - planned, 0))} restante</span></div><div class="goal-track"><span class="done" style="width:${pctDone}%"></span><span class="planned" style="width:${pctPlanned}%"></span></div><small>Objetivo ${money(goal)}</small></div>`;
+    const totalProgress = done + planned;
+    const remaining = Math.max(goal - totalProgress, 0);
+    const overrun = Math.max(totalProgress - goal, 0);
+    const denominator = Math.max(goal, totalProgress, 1);
+    const pctDone = Math.min(100, done / denominator * 100);
+    const pctPlanned = Math.min(100 - pctDone, planned / denominator * 100);
+    const pctRemaining = Math.max(0, 100 - pctDone - pctPlanned);
+    return `
+      <div class="goal-row">
+        <div class="goal-heading">
+          <strong>${escapeHtml(label)}</strong>
+          <div class="goal-meta">
+            <span>Objetivo ${money(goal)}</span>
+            ${overrun ? `<span class="goal-overrun">Te pasas ${money(overrun)}</span>` : ''}
+          </div>
+        </div>
+        <div class="goal-track">
+          <span class="done" style="width:${pctDone}%"></span>
+          <span class="planned" style="width:${pctPlanned}%"></span>
+          <span class="remaining" style="width:${pctRemaining}%"></span>
+        </div>
+        <div class="goal-metrics">
+          <div class="done"><strong>${money(done)}</strong><span>Aportado</span></div>
+          <div class="planned"><strong>${money(planned)}</strong><span>Programado</span></div>
+          <div class="remaining"><strong>${money(remaining)}</strong><span>Restante</span></div>
+        </div>
+      </div>`;
   }).join('');
 }
 
