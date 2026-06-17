@@ -882,3 +882,43 @@ html, body {
     grid-template-columns: minmax(0, 1fr) 110px;
   }
 }
+.register-switch { margin: 0 0 14px; }
+.no-margin { margin: 0; }
+.recurring-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfcfc;
+}
+.recurrence-picker p { margin: 0 0 8px; color: var(--muted); font-size: .83rem; }
+.choice-grid { display: grid; gap: 6px; }
+.choice-grid.weekly { grid-template-columns: repeat(7, minmax(0, 1fr)); }
+.choice-grid.monthly { grid-template-columns: repeat(7, minmax(0, 1fr)); }
+.choice-grid label { display: block; }
+.choice-grid input { position: absolute; opacity: 0; pointer-events: none; }
+.choice-grid span {
+  display: grid;
+  place-items: center;
+  min-height: 38px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: white;
+  color: var(--ink);
+}
+.choice-grid input:checked + span { background: var(--accent); color: white; border-color: var(--accent); }
+.table-head-btn { border: 0; background: transparent; color: inherit; font-weight: 800; padding: 0; }
+.goal-row { display: grid; gap: 7px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.goal-row:first-child { padding-top: 0; }
+.goal-row strong, .goal-row span, .goal-row small { display: block; }
+.goal-row span, .goal-row small { color: var(--muted); font-size: .82rem; }
+.goal-track { height: 16px; display: flex; overflow: hidden; border-radius: 999px; background: var(--soft); }
+.goal-track span { display: block; }
+.goal-track .done { background: var(--blue); }
+.goal-track .planned { background: var(--warn); }
+@media (max-width: 720px) {
+  .recurring-fields { grid-template-columns: 1fr; }
+  .choice-grid.weekly, .choice-grid.monthly { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}

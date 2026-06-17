@@ -33,6 +33,7 @@
           </div>
         </div>
         <div class="panel-body">
+          <div class="segmented register-switch" id="registerModeSwitch"><button class="active" data-register-mode="single" type="button">Puntual</button><button data-register-mode="recurring" type="button">Periódico</button></div>
           <form id="movementForm" class="form-grid">
             <label>Tipo <select id="formType" required></select></label>
             <label class="movement-only">Fecha <input id="formDate" type="date" required /></label>
@@ -42,6 +43,13 @@
             <label class="transfer-only hidden">Origen <select id="formTransferFrom"></select></label>
             <label class="transfer-only hidden">Destino <select id="formTransferTo"></select></label>
             <label class="wide movement-only">Descripcion <input id="formDescription" placeholder="Compra, alquiler, nomina..." required /></label>
+            <section id="recurringFields" class="wide recurring-fields hidden">
+              <label>Frecuencia <select id="recurrenceType"><option value="weekly">Semanal</option><option value="monthly">Mensual</option></select></label>
+              <label>Cuenta <select id="recurrenceAccount"></select></label>
+              <label>Fecha inicio <input id="recurrenceStart" type="date" /></label>
+              <label>Fecha fin <input id="recurrenceEnd" type="date" /></label>
+              <div id="recurrencePicker" class="wide recurrence-picker"></div>
+            </section>
             <button class="btn primary wide form-submit-inline" id="submitMovement" type="submit"><i data-lucide="save"></i> Guardar registro</button>
           </form>
         </div>
@@ -88,6 +96,7 @@
 
     <section id="movimientos" class="view">
       <div class="section-toolbar">
+        <div class="segmented no-margin" id="movementModeSwitch"><button class="active" data-movement-mode="realized" type="button">Realizados</button><button data-movement-mode="future" type="button">Futuros</button></div>
         <button class="btn" id="movementBackBtn"><i data-lucide="arrow-left"></i> Volver</button>
       </div>
       <div id="movementDrillTitle" class="drill-title"></div>
@@ -95,6 +104,7 @@
     </section>
 
     <section id="inversiones" class="view">
+      <article class="panel investment-goals-panel"><div class="panel-header"><div><h2>Objetivos</h2><p>Mensual, anual y total.</p></div><button class="btn" id="editInvestmentGoalsBtn" type="button"><i data-lucide="edit-3"></i> Editar</button></div><div class="panel-body" id="investmentGoals"></div></article>
       <button class="total-panel tappable investment-total-card" id="openInvestmentOverviewBtn" type="button">
         <span>Valor actual total</span>
         <strong id="investmentCurrentTotal">0,00 EUR</strong>
@@ -139,6 +149,7 @@
             <label class="wide">Token opcional <input id="configAppToken" placeholder="Debe coincidir con APP_TOKEN" /></label>
             <label class="wide">ID de Google Sheet <input id="configSheetId" placeholder="Opcional para CSV publico" /></label>
             <label>Hoja movimientos <input id="configMovementSheet" value="Control Finanzas" /></label>
+            <label>Hoja movs futuros <input id="configFutureMovementSheet" value="Movimientos futuros" /></label>
             <label>Hoja inversiones <input id="configInvestmentSheet" value="Inversiones" /></label>
             <label>Hoja bancos <input id="configBankSheet" value="Bancos" /></label>
             <label>Hoja datos <input id="configDataSheet" value="Datos" /></label>
@@ -156,6 +167,7 @@
     </section>
   </main>
   <div class="toast-container" id="toastContainer" aria-live="polite"></div>
+  <dialog id="movementPopup"><div class="dialog-head"><h2 id="movementPopupTitle">Movimiento</h2><button class="icon-btn" id="closeMovementPopupBtn" aria-label="Cerrar"><i data-lucide="x"></i></button></div><div class="panel-body" id="movementPopupBody"></div></dialog>
 
   <nav class="bottom-nav" aria-label="Navegacion principal">
     <button data-view-button="movimientos"><i data-lucide="list-filter"></i><span>Movimientos</span></button>
@@ -262,6 +274,6 @@
     </form>
   </dialog>
 
-  <script src="app.js?v=20260616-nozoom-resumen-tablas"></script>
+  <script src="app.js?v=20260617-futuros-periodicos-objetivos"></script>
 </body>
 </html>

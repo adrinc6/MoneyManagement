@@ -5,6 +5,7 @@ const DEFAULT_CONFIG = {
   appToken: "",
   sheetId: "",
   movementSheet: "Control Finanzas",
+  futureMovementSheet: "Movimientos futuros",
   investmentSheet: "Inversiones",
   bankSheet: "Bancos",
   dataSheet: "Datos",
@@ -39,6 +40,7 @@ const TEST_INVESTMENTS = ENABLE_TEST_MODE ? [
 const state = {
   config: loadConfig(),
   transactions: [],
+  futureTransactions: [],
   investments: [],
   banks: [],
   categories: { types: STATIC_TYPES, concepts: STATIC_CONCEPTS },
@@ -47,7 +49,10 @@ const state = {
   movementDrill: { level: "years", year: null, month: null },
   summaryModes: { situation: "ingresos", investmentMoney: "invested", moneyMix: "types", bankMoney: "summary", investmentOverviewType: null },
   descriptionSuggestions: {},
-  pendingMergeInfo: null
+  pendingMergeInfo: null,
+  movementMode: "realized",
+  tableControls: {},
+  investmentGoals: loadInvestmentGoals()
 };
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -70,6 +75,10 @@ function wireUi() {
   });
   document.getElementById("refreshBtn").addEventListener("click", () => refreshData({ force: true }));
   document.getElementById("movementForm").addEventListener("submit", submitMovement);
+  document.getElementById("registerModeSwitch").addEventListener("click", setRegisterModeFromClick);
+  document.getElementById("recurrenceType").addEventListener("change", renderRecurrencePicker);
+  document.getElementById("movementModeSwitch").addEventListener("click", setMovementModeFromClick);
+  document.getElementById("editInvestmentGoalsBtn").addEventListener("click", editInvestmentGoals);
   document.getElementById("formType").addEventListener("change", syncRegistrarMode);
   document.getElementById("saveConfigBtn").addEventListener("click", saveConfigFromForm);
   document.getElementById("summaryYear").addEventListener("change", syncSummaryPeriodAndRender);
@@ -91,6 +100,7 @@ function wireUi() {
   document.getElementById("deleteMovementBtn").addEventListener("click", deleteMovementDetail);
   document.getElementById("closeInvestmentDetailBtn").addEventListener("click", () => document.getElementById("investmentDetailDialog").close());
   document.getElementById("investmentDetailForm").addEventListener("submit", saveInvestmentDetail);
+  document.getElementById("closeMovementPopupBtn")?.addEventListener("click", () => document.getElementById("movementPopup").close());
   document.getElementById("monthSituationMode").addEventListener("click", event => {
     const btn = event.target.closest("[data-situation-mode]");
     if (!btn) return;
@@ -144,6 +154,7 @@ function hydrateConfigForm() {
   document.getElementById("configAppToken").value = state.config.appToken;
   document.getElementById("configSheetId").value = state.config.sheetId;
   document.getElementById("configMovementSheet").value = state.config.movementSheet;
+  document.getElementById("configFutureMovementSheet").value = state.config.futureMovementSheet || "Movimientos futuros";
   document.getElementById("configInvestmentSheet").value = state.config.investmentSheet;
   document.getElementById("configBankSheet").value = state.config.bankSheet || "Bancos";
   document.getElementById("configDataSheet").value = state.config.dataSheet;
@@ -157,6 +168,7 @@ function saveConfigFromForm() {
     appToken: document.getElementById("configAppToken").value.trim(),
     sheetId: document.getElementById("configSheetId").value.trim(),
     movementSheet: document.getElementById("configMovementSheet").value.trim() || "Control Finanzas",
+    futureMovementSheet: document.getElementById("configFutureMovementSheet").value.trim() || "Movimientos futuros",
     investmentSheet: document.getElementById("configInvestmentSheet").value.trim() || "Inversiones",
     bankSheet: document.getElementById("configBankSheet").value.trim() || "Bancos",
     dataSheet: document.getElementById("configDataSheet").value.trim() || "Datos",
@@ -194,9 +206,11 @@ async function refreshData(options = {}) {
 
   try {
     let freshData;
+    let movedFutureMovements = [];
     if (ENABLE_TEST_MODE) {
       freshData = {
         transactions: [...TEST_TRANSACTIONS],
+        futureTransactions: [],
         investments: [...TEST_INVESTMENTS],
         banks: [
           { rowNumber: 2, cuenta: "Santander-Cuenta", dinero: 2400 },
@@ -207,6 +221,7 @@ async function refreshData(options = {}) {
     } else if (state.config.readMode === "public-csv") {
       freshData = {
         transactions: await fetchPublicCsvTransactions(),
+        futureTransactions: await fetchPublicCsvFutureTransactions(),
         investments: await fetchPublicCsvInvestments(),
         banks: await fetchPublicCsvBanks(),
         categories: await fetchPublicCsvCategories()
@@ -217,14 +232,20 @@ async function refreshData(options = {}) {
       if (!Object.prototype.hasOwnProperty.call(payload, "banks")) {
         throw new Error("Apps Script no devuelve la hoja Bancos. Pega y despliega el apps-script.gs actualizado");
       }
+      movedFutureMovements = payload.movedFutureMovements || [];
       freshData = {
         transactions: payload.transactions || [],
+        futureTransactions: payload.futureTransactions || [],
         investments: payload.investments || [],
         banks: payload.banks || [],
         categories: payload.categories
       };
     }
     applyDataSnapshot(mergePendingLocalChanges(freshData));
+    if (movedFutureMovements.length) {
+      const first = normalizeTransaction(movedFutureMovements[0]);
+      showMovementPopup("Futuros movidos a realizados", first, movedFutureMovements[0].cuenta || "", `${movedFutureMovements.length} movimiento(s) vencidos movidos a realizados.`);
+    }
     syncOptions();
     renderAll();
     writeDataCache();
@@ -251,14 +272,15 @@ async function refreshData(options = {}) {
 
 function applyDataSnapshot(data) {
   state.transactions = (data.transactions || []).map(normalizeTransaction).filter(Boolean);
+  state.futureTransactions = (data.futureTransactions || []).map(normalizeTransaction).filter(Boolean);
   state.investments = (data.investments || []).map(normalizeInvestment).filter(Boolean);
   state.banks = (data.banks || []).map(normalizeBank).filter(Boolean);
   state.categories = normalizeCategories(data.categories);
 }
 
 function dataCacheConfigKey() {
-  const { scriptUrl, appToken, sheetId, movementSheet, investmentSheet, bankSheet, dataSheet, readMode } = state.config;
-  return JSON.stringify({ scriptUrl, appToken, sheetId, movementSheet, investmentSheet, bankSheet, dataSheet, readMode });
+  const { scriptUrl, appToken, sheetId, movementSheet, futureMovementSheet, investmentSheet, bankSheet, dataSheet, readMode } = state.config;
+  return JSON.stringify({ scriptUrl, appToken, sheetId, movementSheet, futureMovementSheet, investmentSheet, bankSheet, dataSheet, readMode });
 }
 
 function readDataCache() {
@@ -278,6 +300,7 @@ function writeDataCache() {
       savedAt: Date.now(),
       data: {
         transactions: state.transactions.map(serializeTransaction),
+        futureTransactions: state.futureTransactions.map(serializeTransaction),
         investments: state.investments,
         banks: state.banks,
         categories: state.categories
@@ -379,7 +402,7 @@ function bankSignature(row) {
 }
 
 function serializeTransaction(t) {
-  return { rowNumber: t.rowNumber, fecha: formatDate(t.date), tipo: t.tipo, concepto: t.concepto, descripcion: t.descripcion, importe: t.amount };
+  return { rowNumber: t.rowNumber, fecha: formatDate(t.date), tipo: t.tipo, concepto: t.concepto, descripcion: t.descripcion, importe: t.amount, cuenta: t.cuenta || t.account || "" };
 }
 
 function formatCacheAge(ageMs) {
@@ -390,13 +413,21 @@ function formatCacheAge(ageMs) {
 
 async function fetchAppsScriptData() {
   if (!state.config.scriptUrl) throw new Error("falta la URL de Apps Script");
-  const url = `${state.config.scriptUrl}?action=all&token=${encodeURIComponent(state.config.appToken)}&movementSheet=${encodeURIComponent(state.config.movementSheet)}&investmentSheet=${encodeURIComponent(state.config.investmentSheet)}&bankSheet=${encodeURIComponent(state.config.bankSheet || "Bancos")}&dataSheet=${encodeURIComponent(state.config.dataSheet)}`;
+  const url = `${state.config.scriptUrl}?action=all&token=${encodeURIComponent(state.config.appToken)}&movementSheet=${encodeURIComponent(state.config.movementSheet)}&futureMovementSheet=${encodeURIComponent(state.config.futureMovementSheet || "Movimientos futuros")}&investmentSheet=${encodeURIComponent(state.config.investmentSheet)}&bankSheet=${encodeURIComponent(state.config.bankSheet || "Bancos")}&dataSheet=${encodeURIComponent(state.config.dataSheet)}`;
   return jsonp(url);
 }
 
 async function fetchPublicCsvTransactions() {
   if (!state.config.sheetId) throw new Error("falta el ID de Google Sheet");
   const csv = await fetchCsv(state.config.sheetId, state.config.movementSheet);
+  return parseCsv(csv).slice(1).map(row => normalizeTransaction({
+    fecha: row[0], tipo: row[4], concepto: row[5], descripcion: row[6], importe: row[7]
+  })).filter(Boolean);
+}
+
+async function fetchPublicCsvFutureTransactions() {
+  if (!state.config.sheetId) return [];
+  const csv = await fetchCsv(state.config.sheetId, state.config.futureMovementSheet || "Movimientos futuros");
   return parseCsv(csv).slice(1).map(row => normalizeTransaction({
     fecha: row[0], tipo: row[4], concepto: row[5], descripcion: row[6], importe: row[7]
   })).filter(Boolean);
@@ -458,7 +489,8 @@ function syncOptions() {
   const concepts = unique([
     ...STATIC_CONCEPTS,
     ...state.categories.concepts,
-    ...state.transactions.map(t => t.concepto)
+    ...state.transactions.map(t => t.concepto),
+    ...state.futureTransactions.map(t => t.concepto)
   ]).map(prettyType);
 
   fillSelect("formType", types, "Seleccione");
@@ -471,9 +503,11 @@ function syncOptions() {
   fillSelect("formAccount", accounts, accounts.length ? null : "Sin cuentas");
   fillSelect("formTransferFrom", accounts, accounts.length ? null : "Origen");
   fillSelect("formTransferTo", accounts, accounts.length ? null : "Destino");
+  fillSelect("recurrenceAccount", accounts, accounts.length ? null : "Sin cuentas");
 
   buildDescriptionSuggestions();
   syncRegistrarMode();
+  renderRecurrencePicker();
 
   syncSummaryPeriodOptions();
 }
@@ -493,6 +527,7 @@ function syncRegistrarMode() {
     : `<i data-lucide="save"></i> Guardar registro`;
   document.getElementById("submitMovement").innerHTML = submitLabel;
   syncRegistrarActionButton();
+  if (typeof syncRegisterMode === "function") syncRegisterMode();
   lucide.createIcons();
 }
 
@@ -518,7 +553,7 @@ function syncRegistrarActionButton() {
 
 function syncSummaryPeriodOptions() {
   const current = getSelectedSummaryMonth();
-  const months = unique([currentMonthKey(), ...state.transactions.map(t => monthKey(t.date))]).sort().reverse();
+  const months = unique([currentMonthKey(), ...state.transactions.map(t => monthKey(t.date)), ...state.futureTransactions.map(t => monthKey(t.date))]).sort().reverse();
   const years = unique(months.map(month => month.slice(0, 4))).sort((a, b) => Number(b) - Number(a));
   const selected = months.includes(current) ? current : currentMonthKey();
   fillSelect("summaryYear", years);
@@ -604,6 +639,8 @@ function suggestTypeConceptFromDescription() {
 }
 
 function renderAll() {
+  syncRegisterMode();
+  renderFutureDueNotice();
   renderSummary();
   renderMovements();
   renderInvestments();
@@ -861,10 +898,11 @@ function renderMovements() {
 }
 
 function renderMovementYears() {
-  const years = unique(state.transactions.map(t => String(t.date.getFullYear()))).sort((a, b) => Number(b) - Number(a));
+  const source = getDisplayedMovements();
+  const years = unique(source.map(t => String(t.date.getFullYear()))).sort((a, b) => Number(b) - Number(a));
   document.getElementById("movementDrillTitle").textContent = "Selecciona un año";
   document.getElementById("movementDrill").innerHTML = `<div class="year-grid">${years.map(year => {
-    const tx = state.transactions.filter(t => String(t.date.getFullYear()) === year);
+    const tx = source.filter(t => String(t.date.getFullYear()) === year);
     const yearly = summarizeTransactions(tx);
     return `<button class="year-card" data-year="${year}">
       <span>Año</span>
@@ -876,14 +914,16 @@ function renderMovementYears() {
     state.movementDrill = { level: "months", year: btn.dataset.year, month: null };
     renderMovements();
   }));
-  state.filtered = state.transactions;
+  state.filtered = source;
 }
 
 function renderMovementMonths(year) {
-  const months = unique(state.transactions.filter(t => String(t.date.getFullYear()) === year).map(t => monthKey(t.date))).sort().reverse();
+  const source = getDisplayedMovements();
+  const months = unique(source.filter(t => String(t.date.getFullYear()) === year).map(t => monthKey(t.date))).sort().reverse();
   document.getElementById("movementDrillTitle").textContent = `Año ${year}`;
   document.getElementById("movementDrill").innerHTML = `<div class="month-card-list">${months.map(month => {
-    const s = calculateSummary(month);
+    const monthRows = source.filter(t => monthKey(t.date) === month);
+    const s = state.movementMode === "future" ? summarizeTransactions(monthRows) : calculateSummary(month);
     const monthNumber = String(Number(month.slice(5, 7)));
     return `<button class="month-card" data-month="${month}">
       <div class="month-number">
@@ -902,13 +942,14 @@ function renderMovementMonths(year) {
     state.movementDrill = { level: "entries", year, month: btn.dataset.month };
     renderMovements();
   }));
-  state.filtered = state.transactions.filter(t => String(t.date.getFullYear()) === year);
+  state.filtered = source.filter(t => String(t.date.getFullYear()) === year);
 }
 function renderMovementEntries(year, month) {
-  const rows = state.transactions
+  const source = getDisplayedMovements();
+  const rows = source
     .filter(t => String(t.date.getFullYear()) === year && monthKey(t.date) === month)
     .sort((a, b) => b.date - a.date);
-  const summary = calculateSummary(month);
+  const summary = state.movementMode === "future" ? summarizeTransactions(rows) : calculateSummary(month);
   document.getElementById("movementDrillTitle").innerHTML = `${monthLabel(month)} · ${rows.length} movimientos`;
   document.getElementById("movementDrill").innerHTML = `
     <article class="panel">
@@ -928,16 +969,42 @@ function renderMovementEntries(year, month) {
 
 function renderMovementTable(rows) {
   const table = document.getElementById("movementTable");
-  if (!rows.length) {
-    table.innerHTML = `<tbody><tr><td class="empty" colspan="5">Sin datos para mostrar.</td></tr></tbody>`;
-    return;
+  const columns = [
+    ["day", "Día", t => t.date.getDate()],
+    ["type", "Tipo", t => t.tipo],
+    ["concept", "Concepto", t => t.concepto],
+    ["desc", "Desc.", t => t.descripcion],
+    ["amount", "Importe", t => t.amount]
+  ];
+  const control = state.tableControls.movement || {};
+  let visibleRows = [...rows];
+  if (control.filter) visibleRows = visibleRows.filter(t => String(columns.find(c => c[0] === control.column)?.[2](t) ?? "").toLowerCase().includes(control.filter.toLowerCase()));
+  if (control.sort) visibleRows.sort((a, b) => {
+    const getter = columns.find(c => c[0] === control.column)?.[2] || columns[0][2];
+    const av = getter(a), bv = getter(b);
+    const result = typeof av === "number" && typeof bv === "number" ? av - bv : String(av).localeCompare(String(bv));
+    return control.sort === "asc" ? result : -result;
+  });
+  if (!visibleRows.length) {
+    table.innerHTML = `<thead><tr>${columns.map(c => `<th><button class="table-head-btn" data-table-column="${c[0]}">${c[1]}</button></th>`).join("")}</tr></thead><tbody><tr><td class="empty" colspan="5">Sin datos para mostrar.</td></tr></tbody>`;
+  } else {
+    table.innerHTML = `<thead><tr>${columns.map(c => `<th><button class="table-head-btn" data-table-column="${c[0]}">${c[1]}</button></th>`).join("")}</tr></thead><tbody>${
+      visibleRows.map(t => `<tr class="clickable-row" data-movement-index="${getDisplayedMovements().indexOf(t)}">${transactionRow(t).join("")}</tr>`).join("")
+    }</tbody>`;
   }
-  table.innerHTML = `<thead><tr><th class="col-day">Día</th><th class="col-type">Tipo</th><th class="col-concept">Concepto</th><th class="col-desc">Desc.</th><th class="col-money">Importe</th></tr></thead><tbody>${
-    rows.map(t => `<tr class="clickable-row" data-movement-index="${state.transactions.indexOf(t)}">${transactionRow(t).join("")}</tr>`).join("")
-  }</tbody>`;
+  table.querySelectorAll("[data-table-column]").forEach(btn => btn.addEventListener("click", () => configureMovementTable(btn.dataset.tableColumn, rows)));
   table.querySelectorAll("[data-movement-index]").forEach(row => {
     row.addEventListener("click", () => openMovementDetail(Number(row.dataset.movementIndex)));
   });
+}
+
+function configureMovementTable(column, rows) {
+  const option = prompt('Ordenar/filtrar: escribe asc, desc o un texto para filtrar. Vacío limpia el filtro.', 'asc');
+  state.tableControls.movement = { column };
+  if (!option) state.tableControls.movement = {};
+  else if (["asc", "desc"].includes(option.toLowerCase())) state.tableControls.movement.sort = option.toLowerCase();
+  else state.tableControls.movement.filter = option;
+  renderMovementTable(rows);
 }
 
 function movementBack() {
@@ -969,12 +1036,13 @@ function renderInvestments() {
   if (document.getElementById("investmentOverviewDialog").open) {
     renderInvestmentBreakdownCharts(summary);
   }
+  renderInvestmentGoals(summary);
   renderInvestmentBreakdownTable(summary);
   renderInvestmentEditTable();
 }
 
 function renderInvestmentEditTable() {
-  const sorted = [...state.investments].sort((a, b) => INVESTMENT_TYPES.indexOf(a.tipo) - INVESTMENT_TYPES.indexOf(b.tipo) || a.nombre.localeCompare(b.nombre));
+  const sorted = [...state.investments].sort((a, b) => b.total - a.total);
   let lastType = "";
   const body = sorted.map((i) => {
     const idx = state.investments.indexOf(i);
@@ -1051,7 +1119,8 @@ function readInvestmentEditor() {
 }
 
 function openMovementDetail(index) {
-  const t = state.transactions[index];
+  const list = getDisplayedMovements();
+  const t = list[index];
   if (!t) return;
   document.getElementById("editMovementIndex").value = index;
   document.getElementById("editMovementDate").value = formatDate(t.date);
@@ -1065,7 +1134,8 @@ function openMovementDetail(index) {
 async function saveMovementDetail(event) {
   event.preventDefault();
   const index = Number(document.getElementById("editMovementIndex").value);
-  const previous = state.transactions[index];
+  const list = getDisplayedMovements();
+  const previous = list[index];
   if (!previous) return;
   const movement = normalizeTransaction({
     rowNumber: previous.rowNumber,
@@ -1077,12 +1147,12 @@ async function saveMovementDetail(event) {
   });
   if (!movement) return;
   if (state.config.readMode === "apps-script" && state.config.scriptUrl && previous.rowNumber) {
-    await postAppsScript({ action: "updateMovement", movement, sheetName: state.config.movementSheet });
+    await postAppsScript({ action: "updateMovement", movement, sheetName: state.movementMode === "future" ? (state.config.futureMovementSheet || "Movimientos futuros") : state.config.movementSheet });
     setNotice("Movimiento actualizado.", "ok");
   } else {
     setNotice("Cambio local: para guardar en Sheets necesitas Apps Script y rowNumber.", "warn");
   }
-  state.transactions[index] = movement;
+  list[index] = movement;
   writeDataCache();
   rememberPendingSnapshot("transactions");
   document.getElementById("movementDetailDialog").close();
@@ -1092,15 +1162,16 @@ async function saveMovementDetail(event) {
 
 async function deleteMovementDetail() {
   const index = Number(document.getElementById("editMovementIndex").value);
-  const movement = state.transactions[index];
+  const list = getDisplayedMovements();
+  const movement = list[index];
   if (!movement) return;
   if (state.config.readMode === "apps-script" && state.config.scriptUrl && movement.rowNumber) {
-    await postAppsScript({ action: "deleteMovement", rowNumber: movement.rowNumber, sheetName: state.config.movementSheet });
+    await postAppsScript({ action: "deleteMovement", rowNumber: movement.rowNumber, sheetName: state.movementMode === "future" ? (state.config.futureMovementSheet || "Movimientos futuros") : state.config.movementSheet });
     setNotice("Movimiento eliminado.", "ok");
   } else {
     setNotice("Eliminado solo en pantalla: para borrar en Sheets necesitas Apps Script y rowNumber.", "warn");
   }
-  state.transactions.splice(index, 1);
+  list.splice(index, 1);
   writeDataCache();
   rememberPendingSnapshot("transactions");
   document.getElementById("movementDetailDialog").close();
@@ -1147,10 +1218,26 @@ async function submitMovement(event) {
     return;
   }
   const isTransfer = normalizeType(document.getElementById("formType").value) === "transferencia";
+  const isRecurring = isRecurringMode();
   const btn = document.getElementById("submitMovement");
   btn.disabled = true;
   try {
-    if (isTransfer) {
+    if (isRecurring && !isTransfer) {
+      const movements = movementsFromRecurrenceForm();
+      if (!movements.length) throw new Error("selecciona fechas y al menos un día");
+      await postAppsScript({ action: "addMovementsBatch", movements, movementSheet: state.config.movementSheet, futureMovementSheet: state.config.futureMovementSheet || "Movimientos futuros", bankSheet: state.config.bankSheet || "Bancos", account: document.getElementById("recurrenceAccount").value });
+      const account = document.getElementById("recurrenceAccount").value;
+      const today = endOfToday();
+      const realized = movements.filter(m => m.date <= today);
+      const futureMovs = movements.filter(m => m.date > today);
+      const bankBefore = getBankAmount(account);
+      realized.forEach(m => applyBankDelta(account, m.amount));
+      state.transactions.push(...realized);
+      state.futureTransactions.push(...futureMovs);
+      writeDataCache();
+      rememberPendingSnapshot("transactions", "banks");
+      showMovementPopup("Movimientos periódicos guardados", realized[0] || futureMovs[0], account, `${realized.length} realizados y ${futureMovs.length} futuros. ${account ? bankChangeText(account, bankBefore) : ""}`);
+    } else if (isTransfer) {
       const amount = Math.abs(Number(document.getElementById("formAmount").value || 0));
       const from = document.getElementById("formTransferFrom").value;
       const to = document.getElementById("formTransferTo").value;
@@ -1165,21 +1252,23 @@ async function submitMovement(event) {
       setNotice(`Traspaso hecho. ${bankChangeText(from, fromBefore)} · ${bankChangeText(to, toBefore)}`, "ok");
     } else {
       const movement = movementFromForm();
+      const future = movement.date > endOfToday();
       await postAppsScript({
-        action: "addMovement",
+        action: future ? "addFutureMovement" : "addMovement",
         movement,
-        sheetName: state.config.movementSheet,
+        sheetName: future ? (state.config.futureMovementSheet || "Movimientos futuros") : state.config.movementSheet,
         bankSheet: state.config.bankSheet || "Bancos",
         account: document.getElementById("formAccount").value
       });
       const account = document.getElementById("formAccount").value;
       const bankBefore = getBankAmount(account);
       const totalBefore = sum(state.banks.map(b => b.dinero));
-      applyBankDelta(account, movement.amount);
-      state.transactions.push(movement);
+      if (!future) applyBankDelta(account, movement.amount);
+      (future ? state.futureTransactions : state.transactions).push(movement);
       writeDataCache();
       rememberPendingSnapshot("transactions", "banks");
       const totalAfter = sum(state.banks.map(b => b.dinero));
+      showMovementPopup(future ? "Movimiento futuro guardado" : "Movimiento guardado", movement, account);
       setNotice(formatMovementSavedNotice(movement, account, totalBefore, totalAfter, bankBefore), "ok");
     }
     syncOptions();
@@ -1194,17 +1283,141 @@ async function submitMovement(event) {
   }
 }
 
-function movementFromForm() {
+function movementsFromRecurrenceForm() {
+  const start = parseDate(document.getElementById("recurrenceStart").value);
+  const end = parseDate(document.getElementById("recurrenceEnd").value);
+  if (!start || !end || start > end) return [];
+  const selected = [...document.querySelectorAll("#recurrencePicker input:checked")].map(i => Number(i.value));
+  if (!selected.length) return [];
+  const type = document.getElementById("recurrenceType").value;
+  const base = movementFromFormBase();
+  const out = [];
+  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+    const weekDay = (d.getDay() + 6) % 7;
+    const monthDay = d.getDate();
+    if ((type === "weekly" && selected.includes(weekDay)) || (type === "monthly" && selected.includes(monthDay))) {
+      out.push(normalizeTransaction({ ...base, fecha: formatDate(d) }));
+    }
+  }
+  return out.filter(Boolean);
+}
+
+function movementFromFormBase() {
   const type = prettyType(document.getElementById("formType").value);
   const amount = Number(document.getElementById("formAmount").value || 0);
-
-  return normalizeTransaction({
-    fecha: document.getElementById("formDate").value,
+  return {
     tipo: type,
     concepto: prettyType(document.getElementById("formConcept").value),
     descripcion: document.getElementById("formDescription").value.trim(),
     importe: amount
+  };
+}
+
+function movementFromForm() {
+  return normalizeTransaction({
+    ...movementFromFormBase(),
+    fecha: document.getElementById("formDate").value
   });
+}
+
+function setRegisterModeFromClick(event) {
+  const btn = event.target.closest('[data-register-mode]');
+  if (!btn) return;
+  document.querySelectorAll('[data-register-mode]').forEach(b => b.classList.toggle('active', b === btn));
+  syncRegisterMode();
+}
+
+function isRecurringMode() {
+  return document.querySelector('[data-register-mode].active')?.dataset.registerMode === 'recurring';
+}
+
+function syncRegisterMode() {
+  const recurring = isRecurringMode();
+  document.getElementById('recurringFields')?.classList.toggle('hidden', !recurring);
+  document.querySelectorAll('#movementForm .movement-only').forEach(el => el.classList.toggle('hidden', recurring || normalizeType(document.getElementById('formType').value) === 'transferencia'));
+  ['recurrenceStart','recurrenceEnd'].forEach(id => { const el=document.getElementById(id); if (el) el.required = recurring; });
+  renderRecurrencePicker();
+}
+
+function renderRecurrencePicker() {
+  const picker = document.getElementById('recurrencePicker');
+  if (!picker) return;
+  const type = document.getElementById('recurrenceType')?.value || 'weekly';
+  const items = type === 'weekly'
+    ? ['L','M','X','J','V','S','D'].map((label, i) => ({ label, value: i }))
+    : Array.from({ length: 31 }, (_, i) => ({ label: String(i + 1), value: i + 1 }));
+  picker.innerHTML = `<p>${type === 'weekly' ? 'Días de la semana' : 'Días del mes'}</p><div class="choice-grid ${type}">${items.map(item => `<label><input type="checkbox" value="${item.value}"><span>${item.label}</span></label>`).join('')}</div>`;
+}
+
+function setMovementModeFromClick(event) {
+  const btn = event.target.closest('[data-movement-mode]');
+  if (!btn) return;
+  state.movementMode = btn.dataset.movementMode;
+  document.querySelectorAll('[data-movement-mode]').forEach(b => b.classList.toggle('active', b === btn));
+  state.movementDrill = { level: 'years', year: null, month: null };
+  renderMovements();
+}
+
+function getDisplayedMovements() {
+  return state.movementMode === 'future' ? state.futureTransactions : state.transactions;
+}
+
+function renderFutureDueNotice() {
+  const due = state.futureTransactions.filter(t => t.date <= endOfToday());
+  if (due.length) showMovementPopup('Movimientos futuros vencidos', null, '', `${due.length} movimiento(s) son de hoy o anteriores. Pulsa Actualizar para moverlos automáticamente desde Apps Script.`);
+}
+
+function movementPopupHtml(movement, account, extra = '') {
+  if (extra) return `<p>${escapeHtml(extra)}</p>`;
+  return `<div class="money-grid"><div class="money-item"><span>Fecha</span><strong>${formatDate(movement.date)}</strong></div><div class="money-item"><span>Importe</span><strong>${money(movement.amount)}</strong></div><div class="money-item"><span>Tipo</span><strong>${escapeHtml(movement.tipo)}</strong></div><div class="money-item"><span>Cuenta</span><strong>${escapeHtml(account || 'Sin cuenta')}</strong></div></div><p><strong>${escapeHtml(movement.concepto)}</strong> · ${escapeHtml(movement.descripcion)}</p>`;
+}
+
+function showMovementPopup(title, movement, account = '', extra = '') {
+  const dialog = document.getElementById('movementPopup');
+  if (!dialog) return;
+  document.getElementById('movementPopupTitle').textContent = title;
+  document.getElementById('movementPopupBody').innerHTML = movementPopupHtml(movement, account, extra);
+  if (!dialog.open) dialog.showModal();
+  lucide.createIcons();
+}
+
+function loadInvestmentGoals() {
+  try { return { monthly: 0, yearly: 0, total: 0, ...JSON.parse(localStorage.getItem('investmentGoals') || '{}') }; }
+  catch { return { monthly: 0, yearly: 0, total: 0 }; }
+}
+
+function editInvestmentGoals() {
+  const current = state.investmentGoals;
+  const monthly = Number(prompt('Objetivo mensual', current.monthly) || current.monthly || 0);
+  const yearly = Number(prompt('Objetivo anual', current.yearly) || current.yearly || 0);
+  const total = Number(prompt('Objetivo total', current.total) || current.total || 0);
+  state.investmentGoals = { monthly, yearly, total };
+  localStorage.setItem('investmentGoals', JSON.stringify(state.investmentGoals));
+  renderInvestmentGoals(calculateSummary(getSelectedSummaryMonth()));
+}
+
+function renderInvestmentGoals(summary) {
+  const el = document.getElementById('investmentGoals');
+  if (!el) return;
+  const today = endOfToday();
+  const month = currentMonthKey();
+  const year = String(today.getFullYear());
+  const realizedMonth = Math.abs(sum(state.transactions.filter(t => isInvestment(t) && monthKey(t.date) === month).map(t => t.amount)));
+  const plannedMonth = Math.abs(sum(state.futureTransactions.filter(t => isInvestment(t) && monthKey(t.date) === month).map(t => t.amount)));
+  const realizedYear = Math.abs(sum(state.transactions.filter(t => isInvestment(t) && String(t.date.getFullYear()) === year).map(t => t.amount)));
+  const plannedYear = Math.abs(sum(state.futureTransactions.filter(t => isInvestment(t) && String(t.date.getFullYear()) === year).map(t => t.amount)));
+  const realizedTotal = summary.investedTotal;
+  const plannedTotal = Math.abs(sum(state.futureTransactions.filter(isInvestment).map(t => t.amount)));
+  const cards = [
+    ['Mensual', state.investmentGoals.monthly, realizedMonth, plannedMonth],
+    ['Anual', state.investmentGoals.yearly, realizedYear, plannedYear],
+    ['Total', state.investmentGoals.total, realizedTotal, plannedTotal]
+  ];
+  el.innerHTML = cards.map(([label, goal, done, planned]) => {
+    const pctDone = goal ? Math.min(100, done / goal * 100) : 0;
+    const pctPlanned = goal ? Math.min(100 - pctDone, planned / goal * 100) : 0;
+    return `<div class="goal-row"><div><strong>${label}</strong><span>${money(done)} aportado · ${money(planned)} programado · ${money(Math.max(goal - done - planned, 0))} restante</span></div><div class="goal-track"><span class="done" style="width:${pctDone}%"></span><span class="planned" style="width:${pctPlanned}%"></span></div><small>Objetivo ${money(goal)}</small></div>`;
+  }).join('');
 }
 
 function applyBankDelta(account, amount) {
@@ -1258,7 +1471,7 @@ function normalizeTransaction(row) {
   const descripcion = String(row.descripcion || row.DESCRIPCION || row["DESCRIPCION"] || row[6] || "").trim();
   const amount = parseNumber(row.importe ?? row.IMPORTE ?? row[7]);
   if (!date || !tipo || Number.isNaN(amount)) return null;
-  return { rowNumber: Number(row.rowNumber || row.row || 0) || null, date, tipo, concepto: concepto || "Otros", descripcion, amount };
+  return { rowNumber: Number(row.rowNumber || row.row || 0) || null, date, tipo, concepto: concepto || "Otros", descripcion, amount, cuenta: String(row.cuenta || row.CUENTA || row.account || row[8] || "").trim() };
 }
 
 function normalizeInvestment(row) {

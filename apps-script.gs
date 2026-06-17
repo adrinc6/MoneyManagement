@@ -1,6 +1,7 @@
 const DEFAULT_MOVEMENT_SHEET = 'Control Finanzas';
 const DEFAULT_INVESTMENT_SHEET = 'Inversiones';
 const DEFAULT_BANK_SHEET = 'Bancos';
+const DEFAULT_FUTURE_MOVEMENT_SHEET = 'Movimientos futuros';
 const APP_TOKEN = '';
 
 function doGet(e) {
@@ -11,14 +12,18 @@ function doGet(e) {
   const investmentSheet = params.investmentSheet || DEFAULT_INVESTMENT_SHEET;
   const bankSheet = params.bankSheet || DEFAULT_BANK_SHEET;
   const dataSheet = params.dataSheet || 'Datos';
+  const futureMovementSheet = params.futureMovementSheet || DEFAULT_FUTURE_MOVEMENT_SHEET;
 
   let payload;
   try {
     requireToken_(params.token || '');
     if (action === 'all') {
+      const movedFutureMovements = moveDueFutureMovements_(futureMovementSheet, movementSheet, bankSheet);
       payload = {
         ok: true,
         transactions: readMovements_(movementSheet),
+        futureTransactions: readFutureMovements_(futureMovementSheet),
+        movedFutureMovements,
         investments: readInvestments_(investmentSheet),
         banks: readBanks_(bankSheet),
         categories: readCategories_(dataSheet)
@@ -45,6 +50,14 @@ function doPost(e) {
     if (payload.action === 'addMovement') {
       addMovement_(payload.movement, payload.sheetName || DEFAULT_MOVEMENT_SHEET);
       if (payload.account) adjustBank_(payload.bankSheet || DEFAULT_BANK_SHEET, payload.account, Number(payload.movement && (payload.movement.amount || payload.movement.importe) || 0));
+      return json_({ ok: true });
+    }
+    if (payload.action === 'addFutureMovement') {
+      addFutureMovement_(payload.movement, payload.sheetName || DEFAULT_FUTURE_MOVEMENT_SHEET, payload.account || '');
+      return json_({ ok: true });
+    }
+    if (payload.action === 'addMovementsBatch') {
+      addMovementsBatch_(payload.movements || [], payload.movementSheet || DEFAULT_MOVEMENT_SHEET, payload.futureMovementSheet || DEFAULT_FUTURE_MOVEMENT_SHEET, payload.bankSheet || DEFAULT_BANK_SHEET, payload.account || '');
       return json_({ ok: true });
     }
     if (payload.action === 'updateMovement') {
@@ -150,6 +163,81 @@ function deleteMovement_(rowNumber, sheetName) {
   const row = Number(rowNumber || 0);
   if (row < 2 || row > sheet.getLastRow()) throw new Error('Invalid rowNumber');
   sheet.deleteRow(row);
+}
+
+function addFutureMovement_(movement, sheetName, account) {
+  if (!movement) throw new Error('Missing movement');
+  const sheet = getOrCreateSheet_(sheetName, ['FECHA', 'AÑO', 'MES', 'DIA', 'TIPO', 'CONCEPTO', 'DESCRIPCION', 'IMPORTE', 'Cuenta']);
+  const date = new Date(movement.date || movement.fecha);
+  if (Number.isNaN(date.getTime())) throw new Error('Invalid date');
+  const amount = Number(movement.amount || movement.importe);
+  if (!Number.isFinite(amount)) throw new Error('Invalid amount');
+  const row = sheet.getLastRow() + 1;
+  sheet.appendRow([date, `=YEAR(A${row})`, `=MONTH(A${row})`, `=DAY(A${row})`, movement.tipo || '', movement.concepto || '', movement.descripcion || '', amount, account || movement.account || movement.cuenta || '']);
+}
+
+function addMovementsBatch_(movements, movementSheet, futureSheet, bankSheet, account) {
+  const today = new Date();
+  today.setHours(23, 59, 59, 999);
+  movements.forEach(movement => {
+    const date = new Date(movement.date || movement.fecha);
+    if (Number.isNaN(date.getTime())) return;
+    if (date <= today) {
+      addMovement_(movement, movementSheet);
+      if (account) adjustBank_(bankSheet, account, Number(movement.amount || movement.importe || 0));
+    } else {
+      addFutureMovement_(movement, futureSheet, account);
+    }
+  });
+}
+
+function readFutureMovements_(sheetName) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
+  if (!sheet) return [];
+  const values = sheet.getDataRange().getValues();
+  return values.slice(1)
+    .map((row, index) => ({ row, rowNumber: index + 2 }))
+    .filter(item => item.row[0] && item.row[4] && item.row[7] !== '')
+    .map(item => ({
+      rowNumber: item.rowNumber,
+      fecha: normalizeDate_(item.row[0]),
+      tipo: item.row[4],
+      concepto: item.row[5],
+      descripcion: item.row[6],
+      importe: parseNumber_(item.row[7]),
+      cuenta: item.row[8] || ''
+    }));
+}
+
+function moveDueFutureMovements_(futureSheetName, movementSheetName, bankSheetName) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const futureSheet = ss.getSheetByName(futureSheetName);
+  if (!futureSheet) return [];
+  const values = futureSheet.getDataRange().getValues();
+  const today = new Date();
+  today.setHours(23, 59, 59, 999);
+  const moved = [];
+  for (let r = values.length - 1; r >= 1; r--) {
+    const row = values[r];
+    const date = new Date(row[0]);
+    if (!row[0] || Number.isNaN(date.getTime()) || date > today) continue;
+    const movement = { fecha: normalizeDate_(date), tipo: row[4], concepto: row[5], descripcion: row[6], importe: parseNumber_(row[7]) };
+    addMovement_(movement, movementSheetName);
+    if (row[8]) adjustBank_(bankSheetName, row[8], movement.importe);
+    moved.push({ ...movement, cuenta: row[8] || '' });
+    futureSheet.deleteRow(r + 1);
+  }
+  return moved.reverse();
+}
+
+function getOrCreateSheet_(sheetName, headers) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(sheetName);
+  if (!sheet) {
+    sheet = ss.insertSheet(sheetName);
+    sheet.appendRow(headers);
+  }
+  return sheet;
 }
 
 function readInvestments_(sheetName) {
