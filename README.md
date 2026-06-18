@@ -1,116 +1,198 @@
 # MoneyManagement
 
-App estatica para GitHub Pages que usa Google Sheets como base de datos de finanzas personales.
+Aplicación web estática para gestionar finanzas personales con Google Sheets como fuente de datos.
+
+## Qué hace
+
+MoneyManagement permite:
+
+- Registrar movimientos puntuales y periódicos.
+- Separar movimientos realizados y futuros.
+- Ver resúmenes mensuales con gráficas y tablas.
+- Consultar bancos, dinero e inversiones.
+- Editar movimientos, cuentas e inversiones desde la propia interfaz.
+- Trabajar con tema claro u oscuro.
+- Guardar en caché los datos para abrir la app más rápido.
 
 ## Estructura
 
-- `index.html`: entrada principal de la app.
-- `styles.css`: estilos visuales y responsive.
-- `app.js`: logica de interfaz, calculos, graficos y conexion con Google Sheets.
-- `apps-script.gs`: codigo que se pega en Google Apps Script.
-- `.gitignore`: evita subir Excel u otros archivos locales sensibles.
+- `index.html`: interfaz principal.
+- `styles.css`: tema visual y responsive.
+- `app.js`: lógica de la app, cálculos, gráficas, caché y sincronización.
+- `apps-script.gs`: backend de Google Apps Script.
+- `README.md`: documentación del proyecto.
 
 ## Pantallas
 
-- `Registrar`: pantalla central de la navegacion inferior para insertar filas en `Control Finanzas`.
-- `Resumen`: calcula en la web lo que antes hacia `Resumen Finanzas`, con selector de mes, situacion mensual y dinero total sin ganancias no realizadas.
-- `Movimientos`: vista jerarquica por años, luego meses, luego movimientos del mes.
-- `Inversiones`: resumen por Bolsa, Fondos y Cartera, con invertido vs valor actual, P/L y posiciones editables.
-- `Ajustes`: conexion con Google Sheets.
+### Registrar
 
-La navegacion esta pensada para movil: movimientos y resumen quedan a la izquierda, registrar en el centro, inversiones y ajustes a la derecha.
+- Formulario para crear un movimiento.
+- Modo puntual y modo periódico.
+- Tipo, concepto, descripción, cuenta e importe.
+- Movimientos de transferencia con origen y destino.
+- Guardado con resumen emergente del movimiento.
+
+### Resumen
+
+- Selector de año y mes con dos desplegables al 50% del ancho.
+- Situación del mes con desglose por ingresos, gastos e inversión.
+- Gráficas circulares y barras.
+- Resumen de dinero, banco e invertido.
+- Total contable sin realizar ganancias.
+
+### Movimientos
+
+- Vista jerárquica por años, meses y movimientos.
+- Interruptor entre realizados y futuros.
+- Tabla con orden, filtros y detalle editable.
+- Modo edición para seleccionar y borrar varias filas a la vez.
+- En futuros se muestra también la cuenta.
+
+### Inversiones
+
+- Panel general de inversión y objetivos.
+- Desglose por Bolsa, Fondos y Cartera.
+- Edición de posiciones.
+- En edición manual solo se actualiza la cantidad.
+- Detalle por inversión con gráfica y tabla.
+
+### Ajustes
+
+- Conmutador de tema claro/oscuro.
+- Configuración de Apps Script.
+- Configuración del ID de Google Sheet.
+- Nombres de las hojas de movimientos, futuros, inversiones, bancos y datos.
+- Selector de modo de lectura.
+
+## Funcionalidades actuales
+
+- Botones inferiores repartidos en cinco secciones.
+- Popups de resumen en tarjetas.
+- Toasts automáticos para avisos breves.
+- Botón de guardar con estado de carga y confirmación.
+- Cierre manual con `X` en los diálogos.
+- Tablas y ventanas adaptadas al tema activo.
+- Cache local con copia completa de los datos.
+- Cola de cambios pendientes para inversiones y bancos.
+- Sincronización con Sheets sin descargar más de lo necesario cuando no hace falta.
+- Soporte para lectura desde Apps Script o CSV público.
+
+## Temas y colores
+
+La app usa un esquema basado en:
+
+- blancos, negros y escalas de grises;
+- verde como color principal de interfaz;
+- verde más oscuro para estados activos o pulsados;
+- rojos granate o rojos claros para importes negativos o dinero.
+
+Las gráficas usan sus propias paletas fijas de colores para mantener consistencia.
 
 ## Modelo esperado en Google Sheets
 
-Hoja `Control Finanzas`:
+### Hoja `Control Finanzas`
 
-| FECHA | ANO | MES | DIA | TIPO | CONCEPTO | DESCRIPCION | IMPORTE |
+| FECHA | AÑO | MES | DÍA | TIPO | CONCEPTO | DESCRIPCION | IMPORTE | CUENTA |
 
-La app rellena:
+La app escribe:
 
 - `FECHA`
 - `TIPO`
 - `CONCEPTO`
 - `DESCRIPCION`
 - `IMPORTE`
+- `CUENTA` cuando aplica
 
-Y el Apps Script anade formulas para `ANO`, `MES` y `DIA`.
+El Apps Script rellena las fórmulas de año, mes y día.
 
-Hoja `Datos`:
+### Hoja `Movimientos futuros`
 
-| TIPO | CONCEPTO |
+| FECHA | AÑO | MES | DÍA | TIPO | CONCEPTO | DESCRIPCION | IMPORTE | CUENTA |
 
-Las opciones de los desplegables salen de esta hoja. Si no se puede cargar, la app usa estas opciones por defecto:
+Aquí se guardan los movimientos programados que todavía no han vencido.
 
-- Tipos: `Efectivo`, `Gasto`, `Ingreso`, `Retiro`, `Inversion`
-- Conceptos: `Comida`, `Cuidado personal`, `Deporte`, `Fiesta`, `Inversion`, `Ocio`, `Otros`, `Piso`, `Supermercado`, `Universidad`, `Viajes`
-
-Hoja `Inversiones`:
+### Hoja `Inversiones`
 
 | DATA | NOMBRE | TIPO | CANTIDAD | VALOR | VALOR TOTAL |
 
-## Como se calcula el resumen
+La app permite editar sobre todo la cantidad. El precio y el total se recalculan o gestionan desde Sheets según tu flujo.
 
-La app replica la logica principal de `Resumen Finanzas`:
+### Hoja `Bancos`
 
-- Ingresos mes: `Ingreso` + `Efectivo` positivo.
-- Gastos mes: `Gasto` + `Efectivo` negativo.
-- Inversion mes: movimientos de tipo `Inversion`.
-- Balance mes: ingresos - gastos - inversion.
-- Banco estimado: banco inicial + ingresos + gastos - retiros + inversiones hasta hoy.
-- Inversion por tipo: usa la `DESCRIPCION` de los movimientos de inversion (`Bolsa`, `Fondos`, `Cartera`).
-- Valor actual: suma `VALOR TOTAL` en `Inversiones` por tipo.
-- Dinero total sin realizar ganancias: banco estimado + dinero invertido historico, no el valor actual de mercado.
+| CUENTA | DINERO |
 
-## Modo prueba
+Sirve para el desglose de saldo por cuenta y para la evolución de bancos.
 
-El modo prueba queda desactivado por defecto con `ENABLE_TEST_MODE = false` en `app.js`. Con ese valor no aparece ningun boton ni flujo de prueba en la interfaz.
+### Hoja `Datos`
 
-## Conexion recomendada
+| TIPO | CONCEPTO |
 
-No subas `ControlFinanzas.xlsx` a GitHub si contiene datos reales. Lo recomendable es:
+De aquí salen los desplegables del formulario. Si la hoja no está disponible, la app usa valores por defecto.
 
-1. Mantener los datos en Google Sheets.
-2. Subir a GitHub solo la web (`index.html`, `styles.css`, `app.js`) y el script.
-3. Publicar la web con GitHub Pages.
-4. Usar Google Apps Script como puente para leer y escribir.
+## Cálculos principales
 
-## Cache y rendimiento
+- Ingresos: movimientos de tipo `Ingreso` y `Efectivo` positivo.
+- Gastos: movimientos de tipo `Gasto` y `Efectivo` negativo.
+- Inversión: movimientos de tipo `Inversión`.
+- Balance mensual: ingresos menos gastos menos inversión.
+- Banco estimado: banco inicial más movimientos y ajustes.
+- Dinero total sin ganancias realizadas: banco estimado más inversión histórica.
+- Resumen por tipo de inversión: Bolsa, Fondos y Cartera.
 
-Para abrir la app mas rapido, los datos leidos de Google Sheets se guardan en `localStorage` del navegador durante 24 horas. Al entrar se usa esa cache si sigue vigente; el boton de actualizar fuerza una lectura nueva desde Google Sheets. Cuando se guardan movimientos, traspasos, bancos o inversiones desde la app, la cache local se actualiza tambien para que la pantalla no espere a recargarlo todo.
+## Caché y sincronización
 
-Como las escrituras a Apps Script se envian en modo `no-cors`, el navegador no siempre puede confirmar si Google Sheets ya las ha aplicado. Por eso la app guarda tambien una copia de cambios locales pendientes en `moneyPendingChanges`: al actualizar, si Google Sheets todavia no trae esos cambios, la app mantiene la version local y avisa para que vuelvas a revalidar. Si la lectura fresca ya coincide con la copia local, se limpia ese pendiente automaticamente.
+La app guarda en `localStorage`:
 
-## Configurar Apps Script
+- la última copia descargada de Sheets;
+- cambios pendientes de guardar;
+- el tema seleccionado.
+
+Cuando entras, usa la caché si está disponible. Si la caché sigue vigente, la pantalla carga rápido y luego se actualiza solo si hace falta. Al guardar movimientos, bancos o inversiones, la copia local se actualiza también para que la interfaz no dependa de recargar toda la hoja.
+
+## Apps Script
+
+El archivo `apps-script.gs` actúa como puente con Google Sheets:
+
+- lee movimientos, futuros, inversiones, bancos, objetivos y datos;
+- mueve automáticamente a realizados los futuros vencidos;
+- guarda movimientos nuevos;
+- actualiza y borra movimientos;
+- guarda bancos;
+- guarda inversiones;
+- guarda objetivos.
+
+## Modo lectura
+
+Hay dos opciones:
+
+- `Apps Script`: recomendado para leer y escribir.
+- `CSV público`: útil solo para lectura.
+
+En modo CSV público no podrás guardar cambios en la hoja.
+
+## Configuración rápida
 
 1. Abre tu Google Sheet.
 2. Ve a `Extensiones > Apps Script`.
 3. Pega el contenido de `apps-script.gs`.
-4. Opcional pero recomendable: cambia `const APP_TOKEN = '';` por una clave tuya, por ejemplo `const APP_TOKEN = 'mi-clave-larga';`.
-5. Pulsa `Implementar > Nueva implementacion`.
-6. Tipo: `Aplicacion web`.
-7. Ejecutar como: tu usuario.
-8. Acceso: `Cualquier usuario con el enlace`.
-9. Copia la URL terminada en `/exec`.
-10. Abre la app, entra en `Ajustes`, pega esa URL y el mismo token, y guarda.
+4. Opcionalmente, define tu propio `APP_TOKEN`.
+5. Despliega como `Aplicación web`.
+6. Copia la URL `/exec`.
+7. Abre la app, entra en `Ajustes`, pega la URL y guarda.
 
-Con Apps Script la app puede:
+## Publicación
 
-- Leer toda la hoja `Control Finanzas`.
-- Leer `Datos` para los desplegables.
-- Leer `Inversiones`.
-- Insertar nuevos movimientos.
-- Guardar cambios de posiciones de inversion.
+La app está pensada para GitHub Pages o cualquier hosting estático.
 
-## Publicar en GitHub Pages
+1. Sube `index.html`, `styles.css`, `app.js` y `apps-script.gs`.
+2. No subas archivos locales sensibles.
+3. Publica la web estática.
+4. Conecta la URL de Apps Script desde Ajustes.
 
-1. Sube el repositorio a GitHub.
-2. Comprueba que `ControlFinanzas.xlsx` no se sube. El `.gitignore` ya bloquea `*.xlsx`.
-3. En GitHub, ve a `Settings > Pages`.
-4. Source: `Deploy from a branch`.
-5. Branch: `main`, carpeta `/root`.
-6. Abre la URL de GitHub Pages.
+## Notas
 
-## Modo CSV publico
-
-Tambien existe un modo de lectura por CSV publico usando el ID del Google Sheet, pero no sirve para escribir. Para enviar gastos o modificar inversiones necesitas Apps Script.
+- La interfaz está optimizada para móvil.
+- Los toasts se cierran solos tras un momento.
+- Los diálogos con información detallada se cierran con la `X`.
+- Las posiciones de inversión se editan desde su propia tabla.
+- Los movimientos futuros conservan la cuenta para poder revisar y editar.
