@@ -71,7 +71,11 @@ function doPost(e) {
       return finishPost_(pendingId, { ok: true });
     }
     if (payload.action === 'deleteMovement') {
-      deleteMovement_(payload.rowNumber, payload.sheetName || DEFAULT_MOVEMENT_SHEET);
+      deleteMovement_(payload.rowNumber, payload.sheetName || DEFAULT_MOVEMENT_SHEET, payload.movement || null);
+      return finishPost_(pendingId, { ok: true });
+    }
+    if (payload.action === 'deleteMovementsBatch') {
+      deleteMovementsBatch_(payload.movements || [], payload.sheetName || DEFAULT_MOVEMENT_SHEET);
       return finishPost_(pendingId, { ok: true });
     }
     if (payload.action === 'saveInvestments') {
@@ -188,7 +192,7 @@ function updateMovement_(movement, sheetName) {
   const amount = Number(movement.amount || movement.importe);
   if (!Number.isFinite(amount)) throw new Error('Invalid amount');
 
-  sheet.getRange(rowNumber, 1, 1, 8).setValues([[
+  const values = [
     date,
     `=YEAR(A${rowNumber})`,
     `=MONTH(A${rowNumber})`,
@@ -197,15 +201,68 @@ function updateMovement_(movement, sheetName) {
     movement.concepto || '',
     movement.descripcion || '',
     amount
-  ]]);
+  ];
+  if (sheet.getLastColumn() >= 9) values.push(movement.cuenta || movement.account || '');
+  sheet.getRange(rowNumber, 1, 1, values.length).setValues([values]);
 }
 
-function deleteMovement_(rowNumber, sheetName) {
+function deleteMovement_(rowNumber, sheetName, movement) {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
   if (!sheet) throw new Error(`Sheet not found: ${sheetName}`);
-  const row = Number(rowNumber || 0);
-  if (row < 2 || row > sheet.getLastRow()) throw new Error('Invalid rowNumber');
+  let row = Number(rowNumber || 0);
+  if (movement && row >= 2 && row <= sheet.getLastRow() && !movementMatchesSheetRow_(sheet, row, movement)) {
+    row = 0;
+  }
+  if ((!row || row < 2 || row > sheet.getLastRow()) && movement) {
+    row = findMovementRow_(sheet, movement);
+  }
+  if (row < 2 || row > sheet.getLastRow()) throw new Error('Movement not found');
   sheet.deleteRow(row);
+}
+
+function deleteMovementsBatch_(items, sheetName) {
+  if (!items.length) return;
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
+  if (!sheet) throw new Error(`Sheet not found: ${sheetName}`);
+  const rows = [];
+  items.forEach(item => {
+    const movement = item && (item.movement || item);
+    let row = Number(item && item.rowNumber || 0);
+    if (movement && row >= 2 && row <= sheet.getLastRow() && !movementMatchesSheetRow_(sheet, row, movement)) {
+      row = 0;
+    }
+    if ((!row || row < 2 || row > sheet.getLastRow()) && movement) {
+      row = findMovementRow_(sheet, movement, rows);
+    }
+    if (row >= 2 && row <= sheet.getLastRow()) rows.push(row);
+  });
+  const uniqueRows = Array.from(new Set(rows)).sort((a, b) => b - a);
+  if (!uniqueRows.length) throw new Error('Movements not found');
+  uniqueRows.forEach(row => sheet.deleteRow(row));
+}
+
+function findMovementRow_(sheet, movement, excludedRows) {
+  const excluded = excludedRows || [];
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return 0;
+  for (let row = lastRow; row >= 2; row--) {
+    if (excluded.indexOf(row) !== -1) continue;
+    if (movementMatchesSheetRow_(sheet, row, movement)) return row;
+  }
+  return 0;
+}
+
+function movementMatchesSheetRow_(sheet, row, movement) {
+  const values = sheet.getRange(row, 1, 1, Math.max(sheet.getLastColumn(), 8)).getValues()[0];
+  const movementDate = normalizeDate_(movement.date || movement.fecha);
+  const rowDate = normalizeDate_(values[0]);
+  const movementAmount = parseNumber_(movement.amount || movement.importe);
+  const rowAmount = parseNumber_(values[7]);
+  return rowDate === movementDate
+    && String(values[4] || '').trim() === String(movement.tipo || '').trim()
+    && String(values[5] || '').trim() === String(movement.concepto || '').trim()
+    && String(values[6] || '').trim() === String(movement.descripcion || '').trim()
+    && Math.abs(rowAmount - movementAmount) < 0.005;
 }
 
 function addFutureMovement_(movement, sheetName, account) {
@@ -377,17 +434,17 @@ function saveInvestments_(investments, sheetName) {
   investments.forEach(item => {
     if (!item || !item.data || !item.nombre || !item.tipo) return;
     const rowNumber = Number(item.rowNumber || 0);
-    const values = [[
-      item.data,
-      item.nombre,
-      item.tipo,
-      Number(item.cantidad || 0),
-      Number(item.valor || 0),
-      Number(item.total || 0)
-    ]];
     if (rowNumber >= 2 && rowNumber <= sheet.getMaxRows()) {
-      sheet.getRange(rowNumber, 1, 1, 6).setValues(values);
+      sheet.getRange(rowNumber, 4).setValue(Number(item.cantidad || 0));
     } else {
+      const values = [[
+        item.data,
+        item.nombre,
+        item.tipo,
+        Number(item.cantidad || 0),
+        Number(item.valor || 0),
+        Number(item.total || 0)
+      ]];
       sheet.appendRow(values[0]);
     }
   });

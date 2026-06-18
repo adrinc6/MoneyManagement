@@ -14,8 +14,8 @@ const DEFAULT_CONFIG = {
   initialCash: 6122.08
 };
 
-const STATIC_TYPES = ["Gasto", "Ingreso", "Inversion", "Transferencia"];
-const STATIC_CONCEPTS = ["Comida", "Cuidado personal", "Deporte", "Fiesta", "Inversion", "Ocio", "Otros", "Piso", "Supermercado", "Universidad", "Viajes"];
+const STATIC_TYPES = ["Gasto", "Ingreso", "Inversión", "Transferencia"];
+const STATIC_CONCEPTS = ["Comida", "Cuidado personal", "Deporte", "Fiesta", "Inversión", "Ocio", "Otros", "Piso", "Supermercado", "Universidad", "Viajes"];
 const INVESTMENT_TYPES = ["Bolsa", "Fondos", "Cartera"];
 const PIE_CHART_COLORS = [
   "#2563eb", // azul
@@ -44,6 +44,7 @@ const BAR_CHART_COLORS = [
 const DATA_CACHE_KEY = "moneyDataCache";
 const PENDING_CACHE_KEY = "moneyPendingChanges";
 const THEME_KEY = "moneyTheme";
+const FULL_MONTH_NAMES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
 const DATA_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
 const TEST_TRANSACTIONS = ENABLE_TEST_MODE ? [
@@ -53,7 +54,7 @@ const TEST_TRANSACTIONS = ENABLE_TEST_MODE ? [
   ["2026-06-03", "Gasto", "Comida", "Menu", -14.5],
   ["2026-06-10", "Ingreso", "Otros", "Nomina", 2100],
   ["2026-06-11", "Gasto", "Ocio", "Libro", -19.99],
-  ["2026-06-16", "Inversion", "Inversion", "Cartera", -400]
+  ["2026-06-16", "Inversión", "Inversión", "Cartera", -400]
 ].map(row => normalizeTransaction({ fecha: row[0], tipo: row[1], concepto: row[2], descripcion: row[3], importe: row[4] })) : [];
 
 const TEST_INVESTMENTS = ENABLE_TEST_MODE ? [
@@ -74,6 +75,8 @@ const state = {
   movementDrill: { level: "years", year: null, month: null },
   summaryModes: { situation: "ingresos", investmentMoney: "invested", moneyMix: "types", bankMoney: "summary", investmentOverviewType: null, investmentPanel: "current" },
   descriptionSuggestions: {},
+  submittingMovement: false,
+  movementBulkEdit: false,
   movementMode: "realized",
   tableControls: {},
   investmentGoals: loadInvestmentGoals()
@@ -121,6 +124,8 @@ function wireUi() {
   document.getElementById("openInvestmentOverviewBtn").addEventListener("click", () => openInvestmentOverview(null));
   document.getElementById("closeInvestmentOverviewBtn").addEventListener("click", () => document.getElementById("investmentOverviewDialog").close());
   document.getElementById("movementBackBtn").addEventListener("click", movementBack);
+  document.getElementById("movementBulkEditBtn").addEventListener("click", toggleMovementBulkEdit);
+  document.getElementById("movementBulkDeleteBtn").addEventListener("click", deleteSelectedMovements);
   document.getElementById("addInvestmentRowBtn").addEventListener("click", addInvestmentRow);
   document.getElementById("saveInvestmentsBtn").addEventListener("click", saveInvestments);
   document.getElementById("formDescription").addEventListener("input", suggestTypeConceptFromDescription);
@@ -211,7 +216,7 @@ async function saveConfigFromForm() {
   localStorage.setItem("moneyConfig", JSON.stringify(state.config));
   clearDataCache();
   clearPendingCache();
-  await refreshDataInPlace();
+  await refreshData({ force: true });
   markButtonSaved(btn);
 }
 
@@ -244,6 +249,7 @@ async function refreshData(options = {}) {
   const force = Boolean(options.force);
   setRefreshLoading(true);
   const cached = readDataCache();
+  const previousFutureTransactions = state.futureTransactions.map(serializeTransaction);
 
   if (cached && !force) {
     applyDataSnapshot(cached.data);
@@ -301,6 +307,13 @@ async function refreshData(options = {}) {
         investmentGoals: payload.investmentGoals,
         categories: payload.categories
       };
+    }
+    const fallbackFutureTransactions = cached?.data?.futureTransactions?.length ? cached.data.futureTransactions : previousFutureTransactions;
+    if (movedFutureMovements.length && !freshData.futureTransactions.length && fallbackFutureTransactions.length) {
+      freshData.futureTransactions = fallbackFutureTransactions.filter(fallbackMovement => {
+        const cachedSignature = futureMovementSignature(fallbackMovement);
+        return !movedFutureMovements.some(movedMovement => futureMovementSignature(movedMovement) === cachedSignature);
+      });
     }
     applyDataSnapshot(freshData);
     clearPendingCache();
@@ -404,8 +417,8 @@ function ensureMovedFutureMovementsVisible(movedFutureMovements) {
       existingRealized.add(signature);
     }
   });
-  const movedSignatures = new Set(moved.map(transactionSignature));
-  state.futureTransactions = state.futureTransactions.filter(movement => !movedSignatures.has(transactionSignature(movement)));
+  const movedSignatures = new Set(moved.map(futureMovementSignature));
+  state.futureTransactions = state.futureTransactions.filter(movement => !movedSignatures.has(futureMovementSignature(movement)));
   state.transactions.sort((a, b) => b.date - a.date);
 }
 
@@ -530,6 +543,11 @@ function transactionSignature(row) {
   return t ? [formatDate(t.date), normalizeType(t.tipo), normalizeType(t.concepto), t.descripcion, safeNumber(t.amount).toFixed(2)].join("|") : "";
 }
 
+function futureMovementSignature(row) {
+  const t = normalizeTransaction(row);
+  return t ? [transactionSignature(t), normalizeType(t.cuenta || t.account || "")].join("|") : "";
+}
+
 function serializeTransaction(t) {
   return { rowNumber: t.rowNumber, fecha: formatDate(t.date), tipo: t.tipo, concepto: t.concepto, descripcion: t.descripcion, importe: t.amount, cuenta: t.cuenta || t.account || "" };
 }
@@ -558,7 +576,7 @@ async function fetchPublicCsvFutureTransactions() {
   if (!state.config.sheetId) return [];
   const csv = await fetchCsv(state.config.sheetId, state.config.futureMovementSheet || "Movimientos futuros");
   return parseCsv(csv).slice(1).map(row => normalizeTransaction({
-    fecha: row[0], tipo: row[4], concepto: row[5], descripcion: row[6], importe: row[7]
+    fecha: row[0], tipo: row[4], concepto: row[5], descripcion: row[6], importe: row[7], cuenta: row[8]
   })).filter(Boolean);
 }
 
@@ -628,11 +646,16 @@ function syncOptions() {
   fillSelect("editMovementConcept", concepts, "Seleccione");
   fillSelect("editInvestmentType", INVESTMENT_TYPES);
 
-  const accounts = state.banks.map(b => b.cuenta);
+  const accounts = unique([
+    ...state.banks.map(b => b.cuenta),
+    ...state.transactions.map(t => t.cuenta),
+    ...state.futureTransactions.map(t => t.cuenta)
+  ]).filter(Boolean);
   fillSelect("formAccount", accounts, accounts.length ? null : "Sin cuentas");
   fillSelect("formTransferFrom", accounts, accounts.length ? null : "Origen");
   fillSelect("formTransferTo", accounts, accounts.length ? null : "Destino");
   fillSelect("recurrenceAccount", accounts, accounts.length ? null : "Sin cuentas");
+  fillSelect("editMovementAccount", accounts, accounts.length ? null : "Sin cuentas");
 
   buildDescriptionSuggestions();
   syncRegistrarMode();
@@ -668,12 +691,18 @@ function syncRegistrarActionButton() {
 
   if (isRegistrarActive) {
     registrarButton.classList.add("save-mode");
+    registrarButton.classList.toggle("saving", state.submittingMovement);
+    registrarButton.disabled = state.submittingMovement;
     registrarButton.setAttribute("aria-label", isTransfer ? "Transferir entre cuentas" : "Guardar registro");
-    registrarButton.innerHTML = isTransfer
+    registrarButton.innerHTML = state.submittingMovement
+      ? `<i data-lucide="loader-2"></i><span>Guardando</span>`
+      : isTransfer
       ? `<i data-lucide="repeat-2"></i><span>Transferir</span>`
       : `<i data-lucide="save"></i><span>Guardar</span>`;
   } else {
     registrarButton.classList.remove("save-mode");
+    registrarButton.classList.remove("saving");
+    registrarButton.disabled = false;
     registrarButton.setAttribute("aria-label", "Registrar");
     registrarButton.innerHTML = `<i data-lucide="plus"></i><span>Registrar</span>`;
   }
@@ -782,7 +811,7 @@ function renderSummary() {
   const situationItems = [
     ["Ingresos", summary.income, "positive"],
     ["Gastos", summary.expenses, "negative"],
-    ["Inversion", summary.investedMonth, ""],
+    ["Inversión", summary.investedMonth, ""],
     ["Balance", summary.balance, summary.balance >= 0 ? "positive" : "negative"]
   ];
   document.getElementById("monthSituationStrip").innerHTML = situationItems
@@ -800,14 +829,14 @@ function renderMonthSituationDialog(summary) {
 
   const rows = getSituationBreakdown(summary.month, state.summaryModes.situation);
   const total = sum(rows.map(e => e[1]));
-  renderTable("monthSituationTable", ["", "Detalle", "Cantidad", "%"], rows.map(([label, value], idx) => [
+  renderTable("monthSituationTable", ["", "Detalle", "Cantidad", ""], rows.map(([label, value], idx) => [
     colorDot(chartColor(PIE_CHART_COLORS, idx)),
     escapeHtml(label),
     money(value),
-    total ? pct(value / total) : "0,0 %"
+    pct(value / Math.max(total, 1))
   ]));
   upsertChart("monthSituationChart", "doughnut", {
-    labels: rows.map(([label, value]) => `${label}: ${money(value)} (${total ? pct(value / total) : "0,0 %"})`),
+    labels: rows.map(([label]) => label),
     datasets: [{ data: rows.map(e => e[1]), backgroundColor: rows.map((_, idx) => chartColor(PIE_CHART_COLORS, idx)), borderWidth: 2, borderColor: chartSurfaceColor() }]
   }, compactChartOptions("", { cutout: "58%" }));
 }
@@ -856,7 +885,7 @@ function openMoneyDetail(mode) {
   document.getElementById("investedMoneyDetail").classList.toggle("hidden", isBank);
   document.getElementById("moneyDialogSummary").innerHTML = isBank ? "" : `
     <div class="money-grid">
-      <div class="money-item"><span>Invertido</span><strong>${money(summary.investedTotal)}</strong><small class="muted">Coste historico</small></div>
+      <div class="money-item"><span>Invertido</span><strong>${money(summary.investedTotal)}</strong><small class="muted">Coste histórico</small></div>
       <div class="money-item"><span>Actual</span><strong>${money(summary.valueTotal)}</strong><small class="${summary.profitLoss >= 0 ? "positive" : "negative"}">${money(summary.profitLoss)} · ${pct(summary.profitLossPct)}</small></div>
       ${parts}
     </div>
@@ -922,10 +951,10 @@ function renderMonthSituationBars(summary) {
     </div>
     <div class="balance-bar-row">
       <div class="balance-bar-heading">
-        <strong>Gastos + inversion</strong>
+        <strong>Gastos + inversión</strong>
         <span class="balance-bar-summary">
           <strong>${money(outflow)}</strong>
-          <small>Gasto ${pct(expensePct)} · Inversion ${pct(investmentPct)}</small>
+          <small>Gasto ${pct(expensePct)} · Inversión ${pct(investmentPct)}</small>
         </span>
       </div>
       <div class="balance-track stacked">
@@ -958,7 +987,7 @@ function getSituationBreakdown(month, mode) {
     return isInvestment(t);
   });
   selected.forEach(t => {
-    const key = mode === "gastos" ? t.concepto : t.descripcion || t.concepto || "Sin descripcion";
+    const key = mode === "gastos" ? t.concepto : t.descripcion || t.concepto || "Sin descripción";
     rows[key] = (rows[key] || 0) + Math.abs(t.amount);
   });
   return Object.entries(rows).sort((a, b) => b[1] - a[1]);
@@ -968,10 +997,10 @@ function renderMoneyCharts(summary) {
   const bankRows = adjustedBankChartRows().map((row, idx) => ({ label: row.label, value: row.value, color: chartColor(PIE_CHART_COLORS, idx) }));
   const bankTotal = sum(bankRows.map(row => row.value));
   upsertChart("bankDistributionChart", "doughnut", {
-    labels: bankRows.length ? bankRows.map(row => `${row.label}: ${money(row.value)} (${pct(row.value / bankTotal)})`) : ["Banco"],
+    labels: bankRows.length ? bankRows.map(row => row.label) : ["Banco"],
     datasets: [{ data: bankRows.length ? bankRows.map(row => row.value) : [Math.max(summary.bank, 0)], backgroundColor: bankRows.length ? bankRows.map(row => row.color) : [chartColor(PIE_CHART_COLORS, 0)], borderColor: chartSurfaceColor(), borderWidth: 2 }]
   }, compactChartOptions("Cuentas", { legend: false }));
-  renderColorRowsTable("bankDistributionTable", bankRows, ["", "Cuenta", "Dinero", "%"]);
+  renderColorRowsTable("bankDistributionTable", bankRows, ["", "Cuenta", "Dinero", ""]);
 
   document.querySelectorAll("[data-money-mix]").forEach(btn => btn.classList.toggle("active", btn.dataset.moneyMix === state.summaryModes.moneyMix));
   let rows;
@@ -990,14 +1019,14 @@ function renderMoneyCharts(summary) {
     title = "Dinero vs invertido";
   } else {
     rows = INVESTMENT_TYPES.map((type, idx) => ({ label: type, value: summary.investedByType[type] || 0, color: chartColor(PIE_CHART_COLORS, idx + 2) })).filter(row => row.value > 0);
-    title = "Tipos de inversion";
+    title = "Tipos de inversión";
   }
   const total = sum(rows.map(row => row.value));
   upsertChart("moneyVsInvestedChart", "doughnut", {
-    labels: rows.map(row => `${row.label}: ${money(row.value)} (${pct(row.value / Math.max(total, 1))})`),
+    labels: rows.map(row => row.label),
     datasets: [{ data: rows.map(row => row.value), backgroundColor: rows.map(row => row.color), borderColor: chartSurfaceColor(), borderWidth: 2 }]
   }, compactChartOptions(title, { legend: false }));
-  renderColorRowsTable("investmentMixTable", rows, ["", "Detalle", "Total", "%"]);
+  renderColorRowsTable("investmentMixTable", rows, ["", "Detalle", "Total", ""]);
 }
 
 function renderBankDetail(summary) {
@@ -1035,6 +1064,7 @@ function renderMovements() {
   const drill = state.movementDrill;
   document.querySelector("#movimientos .movement-toolbar").classList.toggle("hidden", drill.level === "years");
   document.getElementById("movementBackBtn").style.visibility = drill.level === "years" ? "hidden" : "visible";
+  syncMovementBulkButtons();
   if (drill.level === "years") renderMovementYears();
   if (drill.level === "months") renderMovementMonths(drill.year);
   if (drill.level === "entries") renderMovementEntries(drill.year, drill.month);
@@ -1054,6 +1084,7 @@ function renderMovementYears() {
     </button>`;
   }).join("") || emptyBlock("Sin movimientos.")}</div>`;
   document.querySelectorAll("[data-year]").forEach(btn => btn.addEventListener("click", () => {
+    state.movementBulkEdit = false;
     state.movementDrill = { level: "months", year: btn.dataset.year, month: null };
     renderMovements();
   }));
@@ -1076,12 +1107,13 @@ function renderMovementMonths(year) {
       <div class="month-metrics">
         ${metricBlock("Ingresos", s.income, "positive")}
         ${metricBlock("Gastos", s.expenses, "negative")}
-        ${metricBlock("Inversion", s.investedMonth, "")}
+        ${metricBlock("Inversión", s.investedMonth, "")}
         ${metricBlock("Balance", s.balance, s.balance >= 0 ? "positive" : "negative")}
       </div>
     </button>`;
   }).join("") || emptyBlock("Sin meses.")}</div>`;
   document.querySelectorAll("[data-month]").forEach(btn => btn.addEventListener("click", () => {
+    state.movementBulkEdit = false;
     state.movementDrill = { level: "entries", year, month: btn.dataset.month };
     renderMovements();
   }));
@@ -1100,7 +1132,7 @@ function renderMovementEntries(year, month) {
         <div class="month-metrics">
           ${metricBlock("Ingresos", summary.income, "positive")}
           ${metricBlock("Gastos", summary.expenses, "negative")}
-          ${metricBlock("Inversion", summary.investedMonth, "")}
+          ${metricBlock("Inversión", summary.investedMonth, "")}
           ${metricBlock("Balance", summary.balance, summary.balance >= 0 ? "positive" : "negative")}
         </div>
       </div>
@@ -1117,6 +1149,7 @@ function renderMovementTable(rows) {
     ["type", "Tipo", t => t.tipo],
     ["concept", "Concepto", t => t.concepto],
     ["desc", "Desc.", t => t.descripcion],
+    ...(state.movementMode === "future" ? [["account", "Cuenta", t => t.cuenta || ""]] : []),
     ["amount", "Importe", t => t.amount]
   ];
   const control = state.tableControls.movement || {};
@@ -1128,17 +1161,107 @@ function renderMovementTable(rows) {
     const result = typeof av === "number" && typeof bv === "number" ? av - bv : String(av).localeCompare(String(bv));
     return control.sort === "asc" ? result : -result;
   });
+  const renderCell = (column, t) => {
+    if (column[0] === "day") return `<td class="amount col-day">${String(t.date.getDate()).padStart(2, "0")}</td>`;
+    if (column[0] === "type") return `<td class="col-type">${tag(t.tipo)}</td>`;
+    if (column[0] === "concept") return `<td class="text-clip col-concept" title="${escapeAttr(t.concepto)}">${escapeHtml(t.concepto)}</td>`;
+    if (column[0] === "desc") return `<td class="text-clip col-desc" title="${escapeAttr(t.descripcion)}">${escapeHtml(t.descripcion)}</td>`;
+    if (column[0] === "account") return `<td class="text-clip col-account" title="${escapeAttr(t.cuenta || "")}">${escapeHtml(t.cuenta || "")}</td>`;
+    return `<td class="col-money">${amountCell(t.amount)}</td>`;
+  };
   if (!visibleRows.length) {
-    table.innerHTML = `<thead><tr>${columns.map(c => `<th><button class="table-head-btn" data-table-column="${c[0]}">${c[1]}</button></th>`).join("")}</tr></thead><tbody><tr><td class="empty" colspan="5">Sin datos para mostrar.</td></tr></tbody>`;
+    table.innerHTML = `<thead><tr>${state.movementBulkEdit ? `<th class="col-select"></th>` : ""}${columns.map(c => `<th><button class="table-head-btn" data-table-column="${c[0]}">${c[1]}</button></th>`).join("")}</tr></thead><tbody><tr><td class="empty" colspan="${columns.length + (state.movementBulkEdit ? 1 : 0)}">Sin datos para mostrar.</td></tr></tbody>`;
   } else {
-    table.innerHTML = `<thead><tr>${columns.map(c => `<th><button class="table-head-btn" data-table-column="${c[0]}">${c[1]}</button></th>`).join("")}</tr></thead><tbody>${
-      visibleRows.map(t => `<tr class="clickable-row" data-movement-index="${getDisplayedMovements().indexOf(t)}">${transactionRow(t).join("")}</tr>`).join("")
+    table.innerHTML = `<thead><tr>${state.movementBulkEdit ? `<th class="col-select"></th>` : ""}${columns.map(c => `<th><button class="table-head-btn" data-table-column="${c[0]}">${c[1]}</button></th>`).join("")}</tr></thead><tbody>${
+      visibleRows.map(t => {
+        const index = getDisplayedMovements().indexOf(t);
+        const selector = state.movementBulkEdit ? `<td class="col-select"><input class="movement-select" type="checkbox" data-movement-select="${index}" aria-label="Seleccionar movimiento"></td>` : "";
+        return `<tr class="clickable-row ${state.movementBulkEdit ? "selectable-row" : ""}" data-movement-index="${index}">${selector}${columns.map(column => renderCell(column, t)).join("")}</tr>`;
+      }).join("")
     }</tbody>`;
   }
   table.querySelectorAll("[data-table-column]").forEach(btn => btn.addEventListener("click", () => configureMovementTable(btn.dataset.tableColumn, rows)));
   table.querySelectorAll("[data-movement-index]").forEach(row => {
-    row.addEventListener("click", () => openMovementDetail(Number(row.dataset.movementIndex)));
+    row.addEventListener("click", event => {
+      if (state.movementBulkEdit) {
+        if (event.target.matches("input")) return;
+        const checkbox = row.querySelector(".movement-select");
+        if (checkbox) checkbox.checked = !checkbox.checked;
+        syncMovementBulkButtons();
+        return;
+      }
+      openMovementDetail(Number(row.dataset.movementIndex));
+    });
   });
+  table.querySelectorAll(".movement-select").forEach(input => input.addEventListener("change", syncMovementBulkButtons));
+  syncMovementBulkButtons();
+}
+
+function toggleMovementBulkEdit() {
+  state.movementBulkEdit = !state.movementBulkEdit;
+  renderMovements();
+}
+
+function syncMovementBulkButtons() {
+  const editBtn = document.getElementById("movementBulkEditBtn");
+  const deleteBtn = document.getElementById("movementBulkDeleteBtn");
+  if (!editBtn || !deleteBtn) return;
+  const isEntries = state.movementDrill.level === "entries";
+  editBtn.classList.toggle("hidden", !isEntries);
+  deleteBtn.classList.toggle("hidden", !isEntries || !state.movementBulkEdit);
+  editBtn.classList.toggle("primary", state.movementBulkEdit);
+  editBtn.innerHTML = state.movementBulkEdit ? `<i data-lucide="x"></i> Cancelar` : `<i data-lucide="square-pen"></i> Editar`;
+  const count = selectedMovementIndexes().length;
+  if (deleteBtn.classList.contains("saving")) {
+    lucide.createIcons();
+    return;
+  }
+  deleteBtn.disabled = count === 0;
+  deleteBtn.innerHTML = `<i data-lucide="trash-2"></i> ${count ? `Borrar ${count}` : "Borrar"}`;
+  lucide.createIcons();
+}
+
+function selectedMovementIndexes() {
+  return [...document.querySelectorAll("[data-movement-select]:checked")]
+    .map(input => Number(input.dataset.movementSelect))
+    .filter(Number.isInteger);
+}
+
+async function deleteSelectedMovements() {
+  const indexes = selectedMovementIndexes();
+  if (!indexes.length) return;
+  const btn = document.getElementById("movementBulkDeleteBtn");
+  markButtonSaving(btn, "Borrando");
+  try {
+    const list = getDisplayedMovements();
+    const movements = indexes.map(index => list[index]).filter(Boolean);
+    if (state.config.readMode === "apps-script" && state.config.scriptUrl) {
+      await postAppsScript({
+        action: "deleteMovementsBatch",
+        sheetName: state.movementMode === "future" ? (state.config.futureMovementSheet || "Movimientos futuros") : state.config.movementSheet,
+        movements: movements.map(movement => ({
+          rowNumber: movement.rowNumber,
+          movement: serializeTransaction(movement)
+        }))
+      });
+      setNotice(`${movements.length} movimientos eliminados.`, "ok");
+    } else {
+      setNotice(lineMessage("Eliminados solo en pantalla.", "Para borrar en Sheets necesitas Apps Script."), "warn");
+    }
+    const selected = new Set(movements);
+    const target = state.movementMode === "future" ? state.futureTransactions : state.transactions;
+    for (let i = target.length - 1; i >= 0; i--) {
+      if (selected.has(target[i])) target.splice(i, 1);
+    }
+    writeDataCache();
+    state.movementBulkEdit = false;
+    syncOptions();
+    renderAll();
+  } catch (error) {
+    restoreButton(btn);
+    setNotice(`No se pudieron borrar: ${error.message}`, "warn");
+    renderMovements();
+  }
 }
 
 function configureMovementTable(column, rows) {
@@ -1151,6 +1274,7 @@ function configureMovementTable(column, rows) {
 }
 
 function movementBack() {
+  state.movementBulkEdit = false;
   const drill = state.movementDrill;
   if (drill.level === "entries") state.movementDrill = { level: "months", year: drill.year, month: null };
   else if (drill.level === "months") state.movementDrill = { level: "years", year: null, month: null };
@@ -1208,7 +1332,7 @@ function renderInvestmentEditTable() {
     lastType = i.tipo;
     return `${group}<tr class="clickable-row" data-investment-index="${idx}">
       <td class="investment-name" title="${escapeAttr(i.nombre)}">${escapeHtml(i.nombre)}</td>
-      <td class="amount">${numberFmt(i.cantidad, 2)}</td>
+      <td class="amount">${quantityFmt(i.cantidad)}</td>
       <td class="amount">${money(i.valor, 2)}</td>
       <td class="amount">${money(i.total, 2)}</td>
     </tr>`;
@@ -1225,9 +1349,9 @@ function renderInvestmentBreakdownCharts(summary) {
   if (selectedType) return renderInvestmentPositionCharts(selectedType);
   const current = INVESTMENT_TYPES.map(type => summary.valueByType[type] || 0);
   const rows = INVESTMENT_TYPES.map((type, idx) => ({ label: type, value: current[idx], color: chartColor(PIE_CHART_COLORS, idx + 2) })).filter(row => row.value > 0);
-  renderColorRowsTable("investmentOverviewTable", rows, ["", "Detalle", "Total", "%"]);
+  renderColorRowsTable("investmentOverviewTable", rows, ["", "Detalle", "Total", ""]);
   upsertChart("investmentBreakdownDonut", "doughnut", {
-    labels: rows.map(row => `${row.label}: ${money(row.value)} (${pct(row.value / Math.max(sum(rows.map(r => r.value)), 1))})`),
+    labels: rows.map(row => row.label),
     datasets: [{ data: rows.map(row => row.value), backgroundColor: rows.map(row => row.color), borderColor: chartSurfaceColor(), borderWidth: 2 }]
   }, compactChartOptions("Valor actual", { legend: false }));
 }
@@ -1249,15 +1373,9 @@ async function saveInvestments() {
   const btn = document.getElementById("saveInvestmentsBtn");
   markButtonSaving(btn);
   try {
-    await fetch(state.config.scriptUrl, {
-      method: "POST",
-      mode: "no-cors",
-      headers: { "Content-Type": "text/plain;charset=utf-8" },
-      body: JSON.stringify({ action: "saveInvestments", token: state.config.appToken, sheetName: state.config.investmentSheet, investments: state.investments })
-    });
+    await postAppsScript({ action: "saveInvestments", sheetName: state.config.investmentSheet, investments: state.investments });
     writeDataCache();
     dropPendingSections("investments");
-    await refreshDataInPlace();
     markButtonSaved(btn);
     setNotice("Cambios de inversiones enviados.", "ok");
   } catch (error) {
@@ -1288,6 +1406,8 @@ function openMovementDetail(index) {
   document.getElementById("editMovementConcept").value = t.concepto;
   document.getElementById("editMovementDescription").value = t.descripcion;
   document.getElementById("editMovementAmount").value = t.amount;
+  document.getElementById("editMovementAccount").value = t.cuenta || "";
+  document.querySelector("#movementDetailForm .future-account-field")?.classList.toggle("hidden", state.movementMode !== "future");
   document.getElementById("movementDetailDialog").showModal();
 }
 
@@ -1308,7 +1428,8 @@ async function saveMovementDetail(event) {
     tipo: document.getElementById("editMovementType").value,
     concepto: document.getElementById("editMovementConcept").value,
     descripcion: document.getElementById("editMovementDescription").value,
-    importe: document.getElementById("editMovementAmount").value
+    importe: document.getElementById("editMovementAmount").value,
+    cuenta: state.movementMode === "future" ? document.getElementById("editMovementAccount").value.trim() : previous.cuenta
   });
   if (!movement) {
     restoreButton(btn);
@@ -1325,9 +1446,6 @@ async function saveMovementDetail(event) {
     writeDataCache();
     markButtonSaved(btn);
     document.getElementById("movementDetailDialog").close();
-    if (state.config.readMode === "apps-script" && state.config.scriptUrl && previous.rowNumber) {
-      await refreshDataInPlace();
-    }
     syncOptions();
     renderAll();
   } catch (error) {
@@ -1341,11 +1459,16 @@ async function deleteMovementDetail() {
   const list = getDisplayedMovements();
   const movement = list[index];
   if (!movement) return;
-  if (state.config.readMode === "apps-script" && state.config.scriptUrl && movement.rowNumber) {
-    await postAppsScript({ action: "deleteMovement", rowNumber: movement.rowNumber, sheetName: state.movementMode === "future" ? (state.config.futureMovementSheet || "Movimientos futuros") : state.config.movementSheet });
+  if (state.config.readMode === "apps-script" && state.config.scriptUrl) {
+    await postAppsScript({
+      action: "deleteMovement",
+      rowNumber: movement.rowNumber,
+      movement: serializeTransaction(movement),
+      sheetName: state.movementMode === "future" ? (state.config.futureMovementSheet || "Movimientos futuros") : state.config.movementSheet
+    });
     setNotice("Movimiento eliminado.", "ok");
   } else {
-    setNotice(lineMessage("Eliminado solo en pantalla.", "Para borrar en Sheets necesitas Apps Script y rowNumber."), "warn");
+    setNotice(lineMessage("Eliminado solo en pantalla.", "Para borrar en Sheets necesitas Apps Script."), "warn");
   }
   list.splice(index, 1);
   writeDataCache();
@@ -1377,9 +1500,7 @@ function saveInvestmentDetail(event) {
     data: document.getElementById("editInvestmentData").value.trim(),
     nombre: document.getElementById("editInvestmentName").value.trim(),
     tipo: document.getElementById("editInvestmentType").value,
-    cantidad: Number(document.getElementById("editInvestmentQuantity").value || 0),
-    valor: Number(document.getElementById("editInvestmentValue").value || 0),
-    total: Number(document.getElementById("editInvestmentTotal").value || 0)
+    cantidad: Number(document.getElementById("editInvestmentQuantity").value || 0)
   });
   writeDataCache();
   rememberPendingSnapshot("investments");
@@ -1397,6 +1518,8 @@ async function submitMovement(event) {
   const isTransfer = normalizeType(document.getElementById("formType").value) === "transferencia";
   const isRecurring = isRecurringMode();
   const btn = document.getElementById("submitMovement");
+  state.submittingMovement = true;
+  syncRegistrarActionButton();
   markButtonSaving(btn);
   try {
     if (isRecurring && !isTransfer) {
@@ -1407,14 +1530,16 @@ async function submitMovement(event) {
       const today = endOfToday();
       const realized = movements.filter(m => m.date <= today);
       const futureMovs = movements.filter(m => m.date > today);
-      const bankBefore = getBankAmount(account);
+      const accountBefore = getBankAmount(account);
+      const totalBefore = sum(state.banks.map(b => b.dinero));
       realized.forEach(m => applyBankDelta(account, m.amount));
+      const totalAfter = sum(state.banks.map(b => b.dinero));
       state.transactions.push(...realized);
       state.futureTransactions.push(...futureMovs);
       writeDataCache();
       showMovementPopup("Movimientos periódicos guardados", realized[0] || futureMovs[0], account, lineMessage(
         `${realized.length} ${plural(realized.length, "realizado", "realizados")} y ${futureMovs.length} futuros`,
-        account ? `Banco: ${bankChangeText(account, bankBefore)}` : ""
+        realized.length ? bankChangeLines(totalBefore, totalAfter, account, accountBefore) : ""
       ));
     } else if (isTransfer) {
       const amount = Math.abs(Number(document.getElementById("formAmount").value || 0));
@@ -1447,20 +1572,25 @@ async function submitMovement(event) {
       writeDataCache();
       dropPendingSections("banks");
       const totalAfter = sum(state.banks.map(b => b.dinero));
-      showMovementPopup(future ? "Movimiento futuro guardado" : "Movimiento guardado", movement, account);
-      setNotice(formatMovementSavedNotice(movement, account, totalBefore, totalAfter, bankBefore), "ok");
+      showMovementPopup(
+        future ? "Movimiento futuro guardado" : "Movimiento guardado",
+        movement,
+        account,
+        !future ? bankChangeLines(totalBefore, totalAfter, account, bankBefore) : ""
+      );
     }
     syncOptions();
     renderAll();
     event.target.reset();
     setDefaultDate();
     syncRegistrarMode();
-    await refreshDataInPlace();
     markButtonSaved(btn);
   } catch (error) {
     restoreButton(btn);
     setNotice(`No se pudo enviar: ${error.message}`, "warn");
   } finally {
+    state.submittingMovement = false;
+    syncRegistrarActionButton();
     if (!btn.classList.contains("saved")) restoreButton(btn);
   }
 }
@@ -1566,6 +1696,7 @@ function setMovementModeFromClick(event) {
   if (!btn) return;
   state.movementMode = btn.dataset.movementMode;
   document.querySelectorAll('[data-movement-mode]').forEach(b => b.classList.toggle('active', b === btn));
+  state.movementBulkEdit = false;
   state.movementDrill = { level: 'years', year: null, month: null };
   renderMovements();
 }
@@ -1581,8 +1712,49 @@ function renderFutureDueNotice() {
 
 function movementPopupHtml(movement, account, extra = '') {
   if (String(extra).trim().startsWith("<")) return extra;
-  if (extra) return `<p>${formatNoticeHtml(extra)}</p>`;
-  return `<div class="money-grid"><div class="money-item"><span>Fecha</span><strong>${formatDate(movement.date)}</strong></div><div class="money-item"><span>Importe</span><strong>${money(movement.amount)}</strong></div><div class="money-item"><span>Tipo</span><strong>${escapeHtml(movement.tipo)}</strong></div><div class="money-item"><span>Cuenta</span><strong>${escapeHtml(account || 'Sin cuenta')}</strong></div></div><p><strong>${escapeHtml(movement.concepto)}</strong> · ${escapeHtml(movement.descripcion)}</p>`;
+  if (!movement) return extra ? `<p>${formatNoticeHtml(extra)}</p>` : "";
+  const rows = [
+    ["Fecha", formatDate(movement.date)],
+    ["Tipo", movement.tipo],
+    ["Concepto", movement.concepto],
+    ["Descripción", movement.descripcion],
+    ["Cuenta", account || movement.cuenta || "Sin cuenta"],
+    ["Importe", money(movement.amount)]
+  ];
+  return `<div class="saved-movement-stack">
+    ${movementExtraCards(extra)}
+    ${popupInfoCard("Resumen del movimiento", rows)}
+  </div>`;
+}
+
+function movementExtraCards(extra) {
+  const lines = String(extra || "").split(/\s*\/\/\s*/).map(line => line.trim()).filter(Boolean);
+  if (!lines.length) return "";
+  const summaryRows = [];
+  const bankRows = [];
+  lines.forEach(line => {
+    const separator = line.indexOf(":");
+    if (separator > 0) {
+      bankRows.push([line.slice(0, separator), line.slice(separator + 1).trim()]);
+    } else {
+      summaryRows.push(["Resumen", line]);
+    }
+  });
+  return [
+    summaryRows.length ? popupInfoCard("Movimiento realizado", summaryRows) : "",
+    bankRows.length ? popupInfoCard("Evolución bancos", bankRows) : ""
+  ].join("");
+}
+
+function popupInfoCard(title, rows) {
+  return `<section class="saved-movement-card">
+    <h3>${escapeHtml(title)}</h3>
+    ${rows.map(([label, value]) => `
+    <div class="saved-movement-row">
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(value)}</strong>
+    </div>`).join("")}
+  </section>`;
 }
 
 function movedFutureMovementsPopupHtml(movements) {
@@ -1645,7 +1817,6 @@ async function saveInvestmentGoalsFromDialog(event) {
   if (state.config.scriptUrl && state.config.readMode === "apps-script") {
     try {
       await postAppsScript({ action: "saveInvestmentGoals", sheetName: state.config.objectiveSheet || "Objetivos", goals: state.investmentGoals });
-      await refreshDataInPlace();
       markButtonSaved(btn);
       document.getElementById("investmentGoalsDialog").close();
       setNotice('Objetivos guardados en Google Sheets.', 'ok');
@@ -1751,6 +1922,13 @@ function bankChangeText(account, before) {
   return `${account || "Cuenta"} ${money(before)} → ${money(getBankAmount(account))}`;
 }
 
+function bankChangeLines(totalBefore, totalAfter, account, accountBefore) {
+  return lineMessage(
+    `Banco: ${money(totalBefore)} a ${money(totalAfter)}`,
+    account ? `${account}: ${money(accountBefore)} a ${money(getBankAmount(account))}` : ""
+  );
+}
+
 async function saveBanks() {
   const btn = document.getElementById("saveBanksBtn");
   markButtonSaving(btn);
@@ -1769,7 +1947,6 @@ async function saveBanks() {
     await postAppsScript({ action: "saveBanks", bankSheet: state.config.bankSheet || "Bancos", banks: state.banks });
     writeDataCache();
     dropPendingSections("banks");
-    await refreshDataInPlace();
     renderBankDetail(calculateSummary(getSelectedSummaryMonth()));
     markButtonSaved(document.getElementById("saveBanksBtn") || btn);
     setNotice("Cuentas guardadas.", "ok");
@@ -1922,7 +2099,7 @@ function renderInvestmentBreakdownTable(summary) {
   const rows = INVESTMENT_TYPES.map(type => {
     const invested = summary.investedByType[type] || 0;
     const current = summary.valueByType[type] || 0;
-    return `<tr class="clickable-row" data-investment-type="${escapeAttr(type)}"><td class="text-clip">${type}</td><td class="amount">${money(invested)}</td><td class="amount">${money(current)}</td><td>${amountCell(current - invested)}</td><td class="amount">${pctGain(current, invested)}</td></tr>`;
+    return `<tr class="clickable-row" data-investment-type="${escapeAttr(type)}"><td class="text-clip">${type}</td><td class="amount">${money(invested)}</td><td class="amount">${money(current)}</td><td class="amount">${amountCell(current - invested)}</td><td class="amount">${pctGain(current, invested)}</td></tr>`;
   }).join("");
   document.getElementById("investmentBreakdownTable").innerHTML = `<thead><tr><th class="col-type">Tipo</th><th class="col-money">Inv.</th><th class="col-money">Actual</th><th class="col-money">Gan.</th><th class="col-pct">%</th></tr></thead><tbody>${rows}</tbody>`;
   document.querySelectorAll("#investmentBreakdownTable [data-investment-type]").forEach(row => row.addEventListener("click", () => openInvestmentOverview(row.dataset.investmentType)));
@@ -1932,11 +2109,11 @@ function renderInvestmentPositionCharts(type) {
   const positions = state.investments.filter(i => normalizeType(i.tipo) === normalizeType(type) && i.total > 0).sort((a, b) => b.total - a.total);
   const total = sum(positions.map(i => i.total));
   const rows = positions.map((i, idx) => ({ label: i.nombre, value: i.total, color: chartColor(PIE_CHART_COLORS, idx) }));
-  renderColorRowsTable("investmentOverviewTable", rows, ["", "Detalle", "Total", "Peso"]);
+  renderColorRowsTable("investmentOverviewTable", rows, ["", "Detalle", "Total", ""]);
   upsertChart("investmentBreakdownDonut", "doughnut", {
-    labels: rows.map(row => `${row.label}: ${money(row.value)} (${pct(row.value / Math.max(total, 1))})`),
+    labels: rows.map(row => row.label),
     datasets: [{ data: rows.map(row => row.value), backgroundColor: rows.map(row => row.color), borderColor: chartSurfaceColor(), borderWidth: 2 }]
-  }, compactChartOptions(`Peso ${type}`, { legend: false }));
+  }, compactChartOptions(`${type}`, { legend: false }));
 }
 
 function renderColorRowsTable(id, rows, headers) {
@@ -1966,7 +2143,23 @@ function renderChartLegend(id, rows) {
 }
 
 function moneyTooltip() {
-  return { callbacks: { label: context => `${context.label || context.dataset.label || ""}: ${money(context.parsed?.y ?? context.parsed)}` } };
+  return {
+    callbacks: {
+      title: items => {
+        const context = items[0];
+        if (!context) return "";
+        const label = context.label || context.dataset.label || "";
+        const value = Number(context.parsed?.y ?? context.parsed) || 0;
+        const type = context.chart?.config?.type;
+        if (["doughnut", "pie", "polarArea"].includes(type)) {
+          const total = sum((context.dataset?.data || []).map(item => Number(item?.y ?? item) || 0));
+          return `${label}: ${pct(value / Math.max(total, 1))} (${money(value)})`;
+        }
+        return `${label}: ${money(value)}`;
+      },
+      label: () => null
+    }
+  };
 }
 
 function moneyScales() {
@@ -1986,8 +2179,7 @@ function unique(values) { return [...new Set(values.filter(v => v !== undefined 
 function currentMonthKey() { return monthKey(new Date()); }
 function monthKey(date) { return date ? `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}` : ""; }
 function monthName(month) {
-  const date = new Date(2020, Number(month) - 1, 1);
-  return new Intl.DateTimeFormat("es-ES", { month: "short" }).format(date).replace(".", "");
+  return FULL_MONTH_NAMES[Number(month) - 1] || "";
 }
 function monthLabel(key) { return `${monthName(key.slice(5, 7))} ${key.slice(0, 4)}`; }
 function endOfToday() { const d = new Date(); d.setHours(23, 59, 59, 999); return d; }
@@ -1997,7 +2189,7 @@ function isMonthlyExpense(t) { return !isIncome(t) && !isInvestment(t);}
 function normalizeType(value) { return removeAccents(String(value || "")).toLowerCase().trim(); }
 function prettyType(value) {
   const n = normalizeType(value);
-  const map = { inversion: "Inversion", descripcion: "Descripcion", transferencia: "Transferencia" };
+  const map = { inversion: "Inversión", descripcion: "Descripción", transferencia: "Transferencia" };
   return map[n] || String(value || "").trim();
 }
 
@@ -2038,16 +2230,21 @@ function formatDecimalInput(value, decimals = 2) { return safeNumber(parseNumber
 function roundMoney(value) { const parsed = parseNumber(value); return Number.isFinite(parsed) ? Math.round(parsed * 100) / 100 : 0; }
 function pct(value) { return new Intl.NumberFormat("es-ES", { style: "percent", maximumFractionDigits: 1 }).format(Number(value) || 0); }
 function numberFmt(value, decimals = 2) { return new Intl.NumberFormat("es-ES", { maximumFractionDigits: decimals }).format(Number(value) || 0); }
+function quantityFmt(value) {
+  const number = Number(value) || 0;
+  const decimals = Math.abs(number) > 0 && Math.abs(number) < 0.01 ? 6 : 4;
+  return new Intl.NumberFormat("es-ES", { maximumFractionDigits: decimals }).format(number);
+}
 function safeNumber(value) { return Number.isFinite(value) ? value : 0; }
 function escapeHtml(value) { return String(value ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" }[c])); }
 function escapeAttr(value) { return escapeHtml(value).replace(/`/g, "&#096;"); }
 function removeAccents(value) { return String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, ""); }
 
-function setNotice(message, type) {
-  showToast(message, type);
+function setNotice(message, type, durationMs) {
+  showToast(message, type, durationMs);
 }
 
-function showToast(message, type = "") {
+function showToast(message, type = "", durationMs = 2000) {
   if (!message) return;
   const container = document.getElementById("toastContainer");
   if (!container) return;
@@ -2063,7 +2260,7 @@ function showToast(message, type = "") {
   toast.addEventListener("click", event => {
     if (event.target === toast) remove();
   });
-  window.setTimeout(remove, 5000);
+  window.setTimeout(remove, durationMs);
 }
 
 function clearToasts() {
@@ -2074,11 +2271,10 @@ function formatNoticeHtml(message) {
   return escapeHtml(message).replace(/\s*\/\/\s*/g, "<br>");
 }
 
-function formatMovementSavedNotice(movement, account, totalBefore, totalAfter, bankBefore) {
+function formatMovementSavedNotice(movement, account, totalBefore, totalAfter, bankBefore, includeBank = true) {
   return lineMessage(
     `Movimiento guardado`,
-    `Banco: ${money(totalBefore)} a ${money(totalAfter)}`,
-    `${account}: ${money(bankBefore)} a ${money(bankBefore + movement.amount)}`
+    includeBank ? bankChangeLines(totalBefore, totalAfter, account, bankBefore) : ""
   );
 }
 
