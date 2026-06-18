@@ -399,6 +399,12 @@ input[readonly] {
   gap: 10px;
 }
 .summary-strip { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+#monthSituationStrip {
+  gap: 7px;
+}
+#monthSituationStrip .summary-item {
+  padding: 8px 9px;
+}
 .money-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .summary-item, .money-item, .drill-card {
   background: var(--soft);
@@ -426,8 +432,76 @@ input[readonly] {
   margin-top: 4px;
   font-size: 1.15rem;
 }
+.monthly-goal-card {
+  display: grid;
+  gap: 3px;
+  padding: 8px 9px;
+}
+.monthly-goal-card > small {
+  order: 4;
+  text-align: right;
+}
+.monthly-goal-head {
+  order: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-height: 22px;
+}
+.monthly-goal-main {
+  order: 2;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.monthly-goal-main strong {
+  margin-top: 0;
+  font-size: 1rem;
+}
+.monthly-goal-main small {
+  flex: 0 0 auto;
+  text-align: right;
+}
+.monthly-goal-card small {
+  color: var(--muted);
+  font-size: .66rem;
+  line-height: 1.15;
+}
+.mini-edit-btn {
+  min-height: 21px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px 7px;
+  background: var(--field-focus);
+  color: var(--muted);
+  font-size: .64rem;
+  line-height: 1;
+}
+.mini-progress {
+  order: 3;
+  height: 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--goal-remaining);
+}
+.mini-progress span {
+  display: block;
+  height: 100%;
+  min-width: 2px;
+  max-width: 100%;
+  background: var(--accent);
+}
+.monthly-goal-card.income .mini-progress span { background: var(--good); }
+.monthly-goal-card.expense .mini-progress span { background: var(--bad); }
+.monthly-goal-card.investment .mini-progress span { background: var(--blue); }
+.monthly-goal-card.over-limit .mini-progress span {
+  background: var(--bad);
+}
 .positive { color: var(--good); }
 .negative { color: var(--bad); }
+.blue { color: var(--blue); }
 .muted { color: var(--muted); }
 
 .drill-title {
@@ -707,6 +781,10 @@ canvas { width: 100% !important; height: 100% !important; }
 .balance-track .income { background: var(--good); }
 .balance-track .expense { background: var(--bad); }
 .balance-track .investment { background: var(--blue); }
+.balance-final {
+  padding-top: 4px;
+  border-top: 1px solid var(--line);
+}
 .balance-result {
   font-weight: 800;
   text-align: right;
@@ -788,6 +866,50 @@ canvas { width: 100% !important; height: 100% !important; }
 .investment-goals-body {
   display: grid;
   gap: 0;
+}
+.investment-evolution-body {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+}
+.evolution-toolbar,
+.evolution-estimates {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+}
+.evolution-toolbar label,
+.evolution-estimates label {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 4px;
+  color: var(--muted);
+  font-size: .68rem;
+}
+.evolution-toolbar select,
+.evolution-estimates input {
+  min-height: 34px;
+  padding: 6px 7px;
+  font-size: .76rem;
+}
+.evolution-table-wrap table {
+  min-width: 0;
+  table-layout: fixed;
+  font-size: .72rem;
+}
+.evolution-table-wrap th,
+.evolution-table-wrap td {
+  padding: 6px 3px;
+  letter-spacing: 0;
+}
+.evolution-table-wrap th:first-child,
+.evolution-table-wrap td:first-child {
+  width: 12%;
+}
+.evolution-table-wrap th:not(:first-child),
+.evolution-table-wrap td:not(:first-child) {
+  width: 14.66%;
+  text-align: right;
 }
 .total-metrics {
   display: grid;
@@ -956,6 +1078,15 @@ dialog::backdrop { background: rgba(15, 23, 42, .5); }
   .tag { padding-inline: 5px; font-size: .68rem; }
   .bank-row { grid-template-columns: 1fr; }
   .total-metrics { grid-template-columns: 1fr; }
+  .evolution-toolbar,
+  .evolution-estimates { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; }
+  .evolution-toolbar label,
+  .evolution-estimates label { font-size: .62rem; }
+  .evolution-toolbar select,
+  .evolution-estimates input { min-height: 31px; padding: 5px 4px; font-size: .68rem; }
+  .evolution-table-wrap table { font-size: .64rem; }
+  .evolution-table-wrap th,
+  .evolution-table-wrap td { padding: 5px 2px; }
 }
 
 @media (max-width: 380px) {

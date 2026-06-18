@@ -1,4 +1,4 @@
-const APP_TOKEN = '';
+﻿const APP_TOKEN = '';
 const DEFAULT_MOVEMENT_SHEET = 'Control Finanzas';
 const DEFAULT_INVESTMENT_SHEET = 'Inversiones';
 const DEFAULT_BANK_SHEET = 'Bancos';
@@ -359,7 +359,7 @@ function readInvestments_(sheetName) {
 
 function readInvestmentGoals_(sheetName) {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
-  const goals = { monthly: 0, yearly: 0, total: 0 };
+  const goals = { incomeMonthly: 0, expenseMonthly: 0, investmentMonthly: 0, monthly: 0, yearly: 0, total: 0 };
   if (!sheet) return goals;
   const values = sheet.getDataRange().getDisplayValues();
   values.slice(1).forEach(row => {
@@ -367,6 +367,8 @@ function readInvestmentGoals_(sheetName) {
     const value = parseNumber_(row[1]);
     if (key && Number.isFinite(value)) goals[key] = value;
   });
+  if (!goals.investmentMonthly && goals.monthly) goals.investmentMonthly = goals.monthly;
+  if (!goals.monthly && goals.investmentMonthly) goals.monthly = goals.investmentMonthly;
   return goals;
 }
 
@@ -453,9 +455,10 @@ function saveInvestments_(investments, sheetName) {
 function saveInvestmentGoals_(goals, sheetName) {
   const sheet = getOrCreateSheet_(sheetName, ['Tiempo', 'Valor']);
   const rows = [
-    ['Mensual', Number(goals.monthly || goals.mensual || 0)],
-    ['Anual', Number(goals.yearly || goals.anual || 0)],
-    ['Total', Number(goals.total || 0)]
+    ['Gasto mensual', Number(goals.expenseMonthly || 0)],
+    ['Inversión mensual', Number(goals.investmentMonthly || goals.monthly || 0)],
+    ['Inversión anual', Number(goals.yearly || goals.anual || 0)],
+    ['Inversión total', Number(goals.total || 0)]
   ];
   const lastRow = sheet.getLastRow();
   if (lastRow > 1) sheet.getRange(2, 1, lastRow - 1, 2).clearContent();
@@ -495,9 +498,11 @@ function parseNumber_(value) {
 
 function normalizeGoalKey_(value) {
   const text = String(value || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+  if (text === 'gasto mensual' || text === 'limite de gasto mensual' || text === 'gastos mensuales' || text === 'expense monthly' || text === 'expensemonthly') return 'expenseMonthly';
+  if (text === 'inversion mensual' || text === 'objetivo de inversion mensual' || text === 'investment monthly' || text === 'investmentmonthly') return 'investmentMonthly';
+  if (text === 'inversion anual' || text === 'anual' || text === 'yearly') return 'yearly';
+  if (text === 'inversion total' || text === 'total') return 'total';
   if (text === 'mensual') return 'monthly';
-  if (text === 'anual') return 'yearly';
-  if (text === 'total') return 'total';
   return '';
 }
 

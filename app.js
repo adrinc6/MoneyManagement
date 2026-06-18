@@ -44,7 +44,14 @@ const BAR_CHART_COLORS = [
 const DATA_CACHE_KEY = "moneyDataCache";
 const PENDING_CACHE_KEY = "moneyPendingChanges";
 const THEME_KEY = "moneyTheme";
+const EVOLUTION_RANGE_KEY = "moneyEvolutionRange";
 const FULL_MONTH_NAMES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
+const SYSTEM_GOAL_LABELS = {
+  expenseMonthly: "Gasto mensual",
+  investmentMonthly: "Inversión mensual",
+  yearly: "Inversión anual",
+  total: "Inversión total"
+};
 const DATA_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
 const TEST_TRANSACTIONS = ENABLE_TEST_MODE ? [
@@ -79,7 +86,8 @@ const state = {
   movementBulkEdit: false,
   movementMode: "realized",
   tableControls: {},
-  investmentGoals: loadInvestmentGoals()
+  investmentGoals: loadInvestmentGoals(),
+  evolutionRange: loadEvolutionRange()
 };
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -108,6 +116,15 @@ function wireUi() {
   document.getElementById("movementModeSwitch").addEventListener("click", setMovementModeFromClick);
   document.getElementById("investmentPanelSwitch").addEventListener("click", setInvestmentPanelFromClick);
   document.getElementById("editInvestmentGoalsBtn").addEventListener("click", editInvestmentGoals);
+  document.getElementById("evolutionStartMonth")?.addEventListener("change", saveEvolutionRangeAndRender);
+  document.getElementById("evolutionEndMonth")?.addEventListener("change", saveEvolutionRangeAndRender);
+  document.getElementById("evolutionSnapshotDay")?.addEventListener("change", saveEvolutionRangeAndRender);
+  document.getElementById("evolutionEstimateIncome")?.addEventListener("change", saveEvolutionRangeAndRender);
+  document.getElementById("evolutionEstimateExpense")?.addEventListener("change", saveEvolutionRangeAndRender);
+  document.getElementById("evolutionEstimateInvestment")?.addEventListener("change", saveEvolutionRangeAndRender);
+  document.getElementById("evolutionEstimateIncome")?.addEventListener("input", saveEvolutionRangeAndRender);
+  document.getElementById("evolutionEstimateExpense")?.addEventListener("input", saveEvolutionRangeAndRender);
+  document.getElementById("evolutionEstimateInvestment")?.addEventListener("input", saveEvolutionRangeAndRender);
   document.getElementById("closeInvestmentGoalsBtn")?.addEventListener("click", () => document.getElementById("investmentGoalsDialog").close());
   document.getElementById("investmentGoalsForm")?.addEventListener("submit", saveInvestmentGoalsFromDialog);
   document.getElementById("themeToggle")?.addEventListener("change", setThemeFromToggle);
@@ -481,7 +498,7 @@ function readPendingCache() {
 
 function writePendingCache(pending) {
   const next = { ...pending, configKey: dataCacheConfigKey(), savedAt: Date.now() };
-  const hasPending = ["investments", "banks"].some(key => Array.isArray(next[key]));
+  const hasPending = ["investments", "banks"].some(key => Array.isArray(next[key])) || Boolean(next.investmentGoals);
   if (!hasPending) return clearPendingCache();
   localStorage.setItem(PENDING_CACHE_KEY, JSON.stringify(next));
 }
@@ -517,6 +534,16 @@ async function flushPendingChangesBeforeDownload() {
     flushed.push("cuentas");
   }
 
+  if (pending.investmentGoals) {
+    await postAppsScript({
+      action: "saveInvestmentGoals",
+      sheetName: state.config.objectiveSheet || "Objetivos",
+      goals: pending.investmentGoals
+    });
+    delete nextPending.investmentGoals;
+    flushed.push("objetivos");
+  }
+
   delete nextPending.transactions;
   writePendingCache(nextPending);
   return flushed;
@@ -534,6 +561,7 @@ function rememberPendingSnapshot(...sections) {
   sections.forEach(section => {
     if (section === "investments") pending.investments = state.investments;
     if (section === "banks") pending.banks = state.banks;
+    if (section === "investmentGoals") pending.investmentGoals = state.investmentGoals;
   });
   writePendingCache(pending);
 }
@@ -805,14 +833,14 @@ function renderAll() {
   lucide.createIcons();
 }
 
-function renderSummary() {
+function renderSummaryLegacyUnused() {
   const month = getSelectedSummaryMonth();
   const summary = calculateSummary(month);
   const situationItems = [
-    ["Ingresos", summary.income, "positive"],
-    ["Gastos", summary.expenses, "negative"],
+    monthlyGoalCard("income", "Ingresos", summary.income, state.investmentGoals.incomeMonthly),
+    monthlyGoalCard("expense", "Gastos", summary.expenses, state.investmentGoals.expenseMonthly),
     ["Inversión", summary.investedMonth, ""],
-    ["Balance", summary.balance, summary.balance >= 0 ? "positive" : "negative"]
+    summaryItem("Balance", money(summary.balance), summary.balance >= 0 ? "positive" : "negative")
   ];
   document.getElementById("monthSituationStrip").innerHTML = situationItems
     .map(([label, value, tone]) => summaryItem(label, money(value), tone))
@@ -1292,7 +1320,7 @@ function metricBlock(label, value, tone) {
   return `<div class="metric ${tone || ""}"><strong>${money(value, 0)}</strong><span>${escapeHtml(label)}</span></div>`;
 }
 
-function renderInvestments() {
+function renderInvestmentsLegacyUnused() {
   const summary = calculateSummary(getSelectedSummaryMonth());
   const showingGoals = state.summaryModes.investmentPanel === "goals";
   document.getElementById("investmentPanelLabel").textContent = showingGoals ? "Objetivos" : "Inversión";
@@ -1455,26 +1483,34 @@ async function saveMovementDetail(event) {
 }
 
 async function deleteMovementDetail() {
+  const btn = document.getElementById("deleteMovementBtn");
   const index = Number(document.getElementById("editMovementIndex").value);
   const list = getDisplayedMovements();
   const movement = list[index];
   if (!movement) return;
-  if (state.config.readMode === "apps-script" && state.config.scriptUrl) {
-    await postAppsScript({
-      action: "deleteMovement",
-      rowNumber: movement.rowNumber,
-      movement: serializeTransaction(movement),
-      sheetName: state.movementMode === "future" ? (state.config.futureMovementSheet || "Movimientos futuros") : state.config.movementSheet
-    });
-    setNotice("Movimiento eliminado.", "ok");
-  } else {
-    setNotice(lineMessage("Eliminado solo en pantalla.", "Para borrar en Sheets necesitas Apps Script."), "warn");
+  markButtonSaving(btn, "Eliminando");
+  try {
+    if (state.config.readMode === "apps-script" && state.config.scriptUrl) {
+      await postAppsScript({
+        action: "deleteMovement",
+        rowNumber: movement.rowNumber,
+        movement: serializeTransaction(movement),
+        sheetName: state.movementMode === "future" ? (state.config.futureMovementSheet || "Movimientos futuros") : state.config.movementSheet
+      });
+      setNotice("Movimiento eliminado.", "ok");
+    } else {
+      setNotice(lineMessage("Eliminado solo en pantalla.", "Para borrar en Sheets necesitas Apps Script."), "warn");
+    }
+    list.splice(index, 1);
+    writeDataCache();
+    markButtonSaved(btn, "Eliminado");
+    document.getElementById("movementDetailDialog").close();
+    syncOptions();
+    renderAll();
+  } catch (error) {
+    restoreButton(btn);
+    setNotice(`No se pudo eliminar: ${error.message}`, "warn");
   }
-  list.splice(index, 1);
-  writeDataCache();
-  document.getElementById("movementDetailDialog").close();
-  syncOptions();
-  renderAll();
 }
 
 function openInvestmentDetail(index) {
@@ -1791,32 +1827,42 @@ function showMovementPopup(title, movement, account = '', extra = '') {
 }
 
 function loadInvestmentGoals() {
-  try { return { monthly: 0, yearly: 0, total: 0, ...JSON.parse(localStorage.getItem('investmentGoals') || '{}') }; }
-  catch { return { monthly: 0, yearly: 0, total: 0 }; }
+  try { return normalizeInvestmentGoals(JSON.parse(localStorage.getItem('investmentGoals') || '{}')); }
+  catch { return normalizeInvestmentGoals({}); }
 }
 
-function editInvestmentGoals() {
+function editInvestmentGoals(focusGoal = "") {
   const current = state.investmentGoals;
-  document.getElementById("goalMonthlyInput").value = formatDecimalInput(current.monthly);
+  document.getElementById("goalExpenseMonthlyInput").value = formatDecimalInput(current.expenseMonthly);
+  document.getElementById("goalInvestmentMonthlyInput").value = formatDecimalInput(monthlyInvestmentGoal());
   document.getElementById("goalYearlyInput").value = formatDecimalInput(current.yearly);
   document.getElementById("goalTotalInput").value = formatDecimalInput(current.total);
   document.getElementById("investmentGoalsDialog").showModal();
+  const focusMap = {
+    expense: "goalExpenseMonthlyInput",
+    investment: "goalInvestmentMonthlyInput"
+  };
+  const input = document.getElementById(focusMap[focusGoal]);
+  if (input) window.setTimeout(() => input.focus(), 30);
 }
 
 async function saveInvestmentGoalsFromDialog(event) {
   event.preventDefault();
   const btn = event.submitter;
   markButtonSaving(btn);
-  const monthly = roundMoney(document.getElementById("goalMonthlyInput").value);
+  const expenseMonthly = roundMoney(document.getElementById("goalExpenseMonthlyInput").value);
+  const investmentMonthly = roundMoney(document.getElementById("goalInvestmentMonthlyInput").value);
   const yearly = roundMoney(document.getElementById("goalYearlyInput").value);
   const total = roundMoney(document.getElementById("goalTotalInput").value);
-  state.investmentGoals = { monthly, yearly, total };
+  state.investmentGoals = normalizeInvestmentGoals({ expenseMonthly, investmentMonthly, monthly: investmentMonthly, yearly, total });
   localStorage.setItem('investmentGoals', JSON.stringify(state.investmentGoals));
   writeDataCache();
-  renderInvestments();
+  rememberPendingSnapshot("investmentGoals");
+  renderAll();
   if (state.config.scriptUrl && state.config.readMode === "apps-script") {
     try {
       await postAppsScript({ action: "saveInvestmentGoals", sheetName: state.config.objectiveSheet || "Objetivos", goals: state.investmentGoals });
+      dropPendingSections("investmentGoals");
       markButtonSaved(btn);
       document.getElementById("investmentGoalsDialog").close();
       setNotice('Objetivos guardados en Google Sheets.', 'ok');
@@ -1839,26 +1885,34 @@ async function fetchPublicCsvInvestmentGoals() {
 }
 
 function normalizeInvestmentGoals(value) {
-  const goals = { monthly: 0, yearly: 0, total: 0 };
+  const goals = { incomeMonthly: 0, expenseMonthly: 0, investmentMonthly: 0, monthly: 0, yearly: 0, total: 0 };
   if (!value || typeof value !== "object") return goals;
   Object.entries(value).forEach(([key, raw]) => {
     const normalized = normalizeGoalKey(key);
     const parsed = parseNumber(raw);
     if (normalized && Number.isFinite(parsed)) goals[normalized] = parsed;
   });
-  ["monthly", "yearly", "total"].forEach(key => {
+  ["incomeMonthly", "expenseMonthly", "investmentMonthly", "monthly", "yearly", "total"].forEach(key => {
     const parsed = parseNumber(value[key]);
     if (Number.isFinite(parsed)) goals[key] = parsed;
   });
+  if (!goals.investmentMonthly && goals.monthly) goals.investmentMonthly = goals.monthly;
+  if (!goals.monthly && goals.investmentMonthly) goals.monthly = goals.investmentMonthly;
   return goals;
 }
 
 function normalizeGoalKey(value) {
   const text = normalizeType(value);
+  if (["gasto mensual", "limite de gasto mensual", "gastos mensuales", "expense monthly", "expensemonthly"].includes(text)) return "expenseMonthly";
+  if (["inversion mensual", "objetivo de inversion mensual", "investment monthly", "investmentmonthly"].includes(text)) return "investmentMonthly";
+  if (["inversion anual", "anual", "yearly"].includes(text)) return "yearly";
+  if (["inversion total", "total"].includes(text)) return "total";
   if (text === "mensual" || text === "monthly") return "monthly";
-  if (text === "anual" || text === "yearly") return "yearly";
-  if (text === "total") return "total";
   return "";
+}
+
+function monthlyInvestmentGoal() {
+  return safeNumber(state.investmentGoals.investmentMonthly || state.investmentGoals.monthly);
 }
 
 function renderInvestmentGoals(summary) {
@@ -1874,11 +1928,11 @@ function renderInvestmentGoals(summary) {
   const realizedTotal = summary.investedTotal;
   const plannedTotal = Math.abs(sum(state.futureTransactions.filter(isInvestment).map(t => t.amount)));
   const cards = [
-    ['Mensual', state.investmentGoals.monthly, realizedMonth, plannedMonth],
-    ['Anual', state.investmentGoals.yearly, realizedYear, plannedYear],
-    ['Total', state.investmentGoals.total, realizedTotal, plannedTotal]
+    ['Inversión mensual', monthlyInvestmentGoal(), realizedMonth, plannedMonth, 'investment'],
+    ['Inversión anual', state.investmentGoals.yearly, realizedYear, plannedYear],
+    ['Inversión total', state.investmentGoals.total, realizedTotal, plannedTotal]
   ];
-  el.innerHTML = cards.map(([label, goal, done, planned]) => {
+  el.innerHTML = cards.map(([label, goal, done, planned, systemGoal]) => {
     const totalProgress = done + planned;
     const remaining = Math.max(goal - totalProgress, 0);
     const overrun = Math.max(totalProgress - goal, 0);
@@ -1893,6 +1947,7 @@ function renderInvestmentGoals(summary) {
           <div class="goal-meta">
             <span>Objetivo ${money(goal)}</span>
             ${overrun ? `<span class="goal-overrun">Te pasas ${money(overrun)}</span>` : ''}
+            ${systemGoal ? `<button class="mini-edit-btn" data-edit-system-goal="${escapeAttr(systemGoal)}" type="button">Editar</button>` : ''}
           </div>
         </div>
         <div class="goal-track">
@@ -1907,6 +1962,9 @@ function renderInvestmentGoals(summary) {
         </div>
       </div>`;
   }).join('');
+  el.querySelectorAll("[data-edit-system-goal]").forEach(btn => {
+    btn.addEventListener("click", () => editInvestmentGoals(btn.dataset.editSystemGoal));
+  });
 }
 
 function applyBankDelta(account, amount) {
@@ -2168,6 +2226,308 @@ function moneyScales() {
 
 function summaryItem(title, value, tone) {
   return `<div class="summary-item"><span>${escapeHtml(title)}</span><strong class="${tone || ""}">${escapeHtml(value)}</strong></div>`;
+}
+
+function renderMonthSituationBars(summary) {
+  const outflow = summary.expenses + summary.investedMonth;
+  const base = Math.max(summary.income, outflow, 1);
+  const incomePct = Math.min(100, summary.income / base * 100);
+  const outflowPct = Math.min(100, outflow / base * 100);
+  const expenseShare = outflow ? summary.expenses / outflow : 0;
+  const investmentShare = outflow ? summary.investedMonth / outflow : 0;
+  const expenseWidth = outflowPct * expenseShare;
+  const investmentWidth = outflowPct * investmentShare;
+  document.getElementById("monthSituationBars").innerHTML = `
+    <div class="balance-bar-row">
+      <div class="balance-bar-heading">
+        <strong>Ingresos</strong>
+        <span class="balance-bar-summary">
+          <strong class="positive">${money(summary.income)}</strong>
+          ${summary.income > 0 ? `<small>Usado ${pct(outflow / summary.income)}</small>` : ""}
+        </span>
+        </div>
+      <div class="balance-track"><span class="income" style="width:${Math.max(3, incomePct)}%"></span></div>
+    </div>
+    <div class="balance-bar-row">
+      <div class="balance-bar-heading">
+        <strong>Gastos + inversión</strong>
+        <span class="balance-bar-summary">
+          <strong>${money(outflow)}</strong>
+          <small>Gasto ${pct(expenseShare)} · Inversión ${pct(investmentShare)}</small>
+        </span>
+      </div>
+      <div class="balance-track stacked">
+        <span class="expense" style="width:${Math.max(outflow ? 3 : 0, expenseWidth)}%"></span>
+        <span class="investment" style="width:${Math.max(outflow ? 3 : 0, investmentWidth)}%"></span>
+      </div>
+    </div>
+    <div class="balance-bar-row balance-final">
+      <div class="balance-bar-heading">
+        <strong>Balance</strong>
+        <span class="balance-bar-summary">
+          <strong class="${summary.balance >= 0 ? "positive" : "negative"}">${money(summary.balance)}</strong>
+          <small>${summary.balance >= 0 ? "Queda disponible" : "Te pasas del mes"}</small>
+        </span>
+      </div>
+    </div>`;
+}
+
+function monthlyGoalCard(kind, title, current, goal) {
+  const normalizedGoal = Math.max(safeNumber(goal), 0);
+  const currentValue = Math.max(safeNumber(current), 0);
+  const isExpense = kind === "expense";
+  const diff = normalizedGoal - currentValue;
+  const exceeded = isExpense && diff < 0;
+  const remainingText = normalizedGoal
+    ? exceeded
+      ? `Excedido ${money(Math.abs(diff))}`
+      : `${isExpense ? "Quedan" : "Faltan"} ${money(Math.max(diff, 0))}`
+    : "Sin objetivo";
+  const pctValue = normalizedGoal ? currentValue / normalizedGoal : 0;
+  const progress = Math.min(100, Math.max(0, pctValue * 100));
+  const goalLabel = isExpense ? "Límite" : "Objetivo";
+  const tone = kind === "income" ? "positive" : kind === "expense" ? "negative" : kind === "investment" ? "blue" : "";
+  return `
+    <div class="summary-item monthly-goal-card ${kind} ${exceeded ? "over-limit" : ""}">
+      <div class="monthly-goal-head">
+        <span>${escapeHtml(title)}</span>
+        <button class="mini-edit-btn" data-edit-system-goal="${escapeAttr(kind)}" type="button">Editar</button>
+      </div>
+      <div class="monthly-goal-main">
+        <strong class="${tone}">${money(currentValue)}</strong>
+        <small>${goalLabel}: ${money(normalizedGoal)}</small>
+      </div>
+      <small class="${exceeded ? "negative" : "muted"}">${remainingText} · ${pct(pctValue)}</small>
+      <div class="mini-progress"><span style="width:${progress}%"></span></div>
+    </div>`;
+}
+
+function renderSummary() {
+  const month = getSelectedSummaryMonth();
+  const summary = calculateSummary(month);
+  document.getElementById("monthSituationStrip").innerHTML = [
+    summaryItem("Ingresos", money(summary.income), "positive"),
+    monthlyGoalCard("expense", "Gastos", summary.expenses, state.investmentGoals.expenseMonthly),
+    monthlyGoalCard("investment", "Inversión", summary.investedMonth, monthlyInvestmentGoal()),
+    summaryItem("Balance", money(summary.balance), summary.balance >= 0 ? "positive" : "negative")
+  ].join("");
+  document.querySelectorAll("[data-edit-system-goal]").forEach(btn => {
+    btn.addEventListener("click", event => {
+      event.stopPropagation();
+      editInvestmentGoals(btn.dataset.editSystemGoal);
+    });
+  });
+  renderMonthSituationDialog(summary);
+  renderMoneySummary(summary);
+}
+
+function renderInvestments() {
+  const summary = calculateSummary(getSelectedSummaryMonth());
+  const panel = state.summaryModes.investmentPanel;
+  const showingGoals = panel === "goals";
+  const showingEvolution = panel === "evolution";
+  document.getElementById("investmentPanelLabel").textContent = showingEvolution ? "Evolución" : showingGoals ? "Objetivos" : "Inversión";
+  document.getElementById("editInvestmentGoalsBtn").classList.toggle("hidden", !showingGoals);
+  document.getElementById("openInvestmentOverviewBtn").classList.toggle("hidden", showingGoals || showingEvolution);
+  document.getElementById("investmentGoals").classList.toggle("hidden", !showingGoals);
+  document.getElementById("investmentEvolution")?.classList.toggle("hidden", !showingEvolution);
+  document.querySelectorAll("[data-investment-panel]").forEach(btn => {
+    btn.classList.toggle("active", btn.dataset.investmentPanel === panel);
+  });
+  document.getElementById("investmentCurrentTotal").textContent = money(summary.valueTotal);
+  document.getElementById("investmentTotalMetrics").innerHTML = `
+    <div><span>Invertido</span><strong>${money(summary.investedTotal)}</strong></div>
+    <div><span>Ganancia</span><strong class="${summary.profitLoss >= 0 ? "positive" : "negative"}">${money(summary.profitLoss)}</strong></div>
+    <div><span>% P/L</span><strong class="${summary.profitLoss >= 0 ? "positive" : "negative"}">${pct(summary.profitLossPct)}</strong></div>
+  `;
+  if (document.getElementById("investmentOverviewDialog").open) renderInvestmentBreakdownCharts(summary);
+  renderInvestmentGoals(summary);
+  if (showingEvolution) renderInvestmentEvolution();
+  else {
+    renderInvestmentBreakdownTable(summary);
+    renderInvestmentEditTable();
+  }
+  document.querySelectorAll("#inversiones > article.panel, #saveInvestmentsBtn").forEach(el => {
+    el.classList.toggle("hidden", showingEvolution);
+  });
+}
+
+function loadEvolutionRange() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(EVOLUTION_RANGE_KEY) || "{}");
+    return {
+      start: saved.start || "2026-01",
+      end: saved.end || "2026-12",
+      snapshotDay: Number(saved.snapshotDay ?? 31),
+      income: Number(saved.income ?? 1800),
+      expenses: Number(saved.expenses ?? 1250),
+      investment: Number(saved.investment ?? 750)
+    };
+  } catch {
+    return { start: "2026-01", end: "2026-12", snapshotDay: 31, income: 1800, expenses: 1250, investment: 750 };
+  }
+}
+
+function saveEvolutionRangeAndRender() {
+  const start = document.getElementById("evolutionStartMonth")?.value || "2026-01";
+  const end = document.getElementById("evolutionEndMonth")?.value || start;
+  const ordered = compareMonthKeys(start, end) <= 0 ? { start, end } : { start: end, end: start };
+  state.evolutionRange = {
+    ...ordered,
+    snapshotDay: Math.min(31, Math.max(1, readEvolutionNumber("evolutionSnapshotDay", state.evolutionRange.snapshotDay ?? 31))),
+    income: readEvolutionNumber("evolutionEstimateIncome", state.evolutionRange.income ?? 1800),
+    expenses: readEvolutionNumber("evolutionEstimateExpense", state.evolutionRange.expenses ?? 1250),
+    investment: readEvolutionNumber("evolutionEstimateInvestment", state.evolutionRange.investment ?? 750)
+  };
+  localStorage.setItem(EVOLUTION_RANGE_KEY, JSON.stringify(state.evolutionRange));
+  renderInvestmentEvolution();
+}
+
+function readEvolutionNumber(id, fallback) {
+  const el = document.getElementById(id);
+  if (!el || el.value === "") return Number(fallback) || 0;
+  const parsed = parseNumber(el.value);
+  return Number.isFinite(parsed) ? parsed : Number(fallback) || 0;
+}
+
+function renderInvestmentEvolution() {
+  fillEvolutionMonthSelectors();
+  const rows = buildEvolutionRows(state.evolutionRange.start, state.evolutionRange.end);
+  renderTable("evolutionTable", ["Mes", "Banco", "Inv.", "Total", "Ing.", "Gasto", "Aport."], rows.map(row => [
+    escapeHtml(numericMonthLabel(row.month)),
+    money(row.bank, 0),
+    money(row.invested, 0),
+    money(row.total, 0),
+    money(row.income, 0),
+    money(row.expenses, 0),
+    money(row.investment, 0)
+  ]));
+}
+
+function fillEvolutionMonthSelectors() {
+  const months = buildEvolutionMonthOptions();
+  fillSelect("evolutionStartMonth", months);
+  fillSelect("evolutionEndMonth", months);
+  fillSelect("evolutionSnapshotDay", Array.from({ length: 31 }, (_, idx) => String(idx + 1)));
+  document.getElementById("evolutionStartMonth").value = state.evolutionRange.start;
+  document.getElementById("evolutionEndMonth").value = state.evolutionRange.end;
+  document.getElementById("evolutionSnapshotDay").value = String(state.evolutionRange.snapshotDay || 31);
+  setEvolutionInputValue("evolutionEstimateIncome", state.evolutionRange.income ?? 1800);
+  setEvolutionInputValue("evolutionEstimateExpense", state.evolutionRange.expenses ?? 1250);
+  setEvolutionInputValue("evolutionEstimateInvestment", state.evolutionRange.investment ?? 750);
+}
+
+function setEvolutionInputValue(id, value) {
+  const input = document.getElementById(id);
+  if (!input || document.activeElement === input) return;
+  input.value = formatDecimalInput(value, 0);
+}
+
+function buildEvolutionMonthOptions() {
+  const txMonths = unique([...state.transactions, ...state.futureTransactions].map(t => monthKey(t.date)));
+  const minMonth = txMonths.sort()[0] || "2025-01";
+  const start = compareMonthKeys(minMonth, "2025-01") < 0 ? minMonth : "2025-01";
+  const end = compareMonthKeys("2026-12", addMonthsKey(currentMonthKey(), 12)) > 0 ? "2026-12" : addMonthsKey(currentMonthKey(), 12);
+  return monthsBetween(start, end).map(month => ({ value: month, label: compactMonthLabel(month) }));
+}
+
+function buildEvolutionRows(start, end) {
+  const current = currentMonthKey();
+  const months = monthsBetween(start, end);
+  const priorMonth = addMonthsKey(current, -1);
+  const snapshotDay = state.evolutionRange.snapshotDay || 31;
+  const estimates = {
+    income: safeNumber(state.evolutionRange.income || 1800),
+    expenses: safeNumber(state.evolutionRange.expenses || 1250),
+    investment: safeNumber(state.evolutionRange.investment || 750)
+  };
+  let projectedBank = bankAtMonthSnapshot(priorMonth, snapshotDay);
+  let projectedInvested = investedAtMonthSnapshot(priorMonth, snapshotDay);
+  const projection = new Map();
+  monthsBetween(current, end).forEach(month => {
+    projectedBank += estimates.income - estimates.expenses - estimates.investment;
+    projectedInvested += estimates.investment;
+    projection.set(month, { bank: projectedBank, invested: projectedInvested, ...estimates });
+  });
+  return months.map(month => {
+    const isFuturePlan = compareMonthKeys(month, current) >= 0;
+    if (isFuturePlan) {
+      const p = projection.get(month) || { bank: projectedBank, invested: projectedInvested, income: 0, expenses: 0, investment: 0 };
+      return { month, bank: p.bank, invested: p.invested, total: p.bank + p.invested, income: p.income, expenses: p.expenses, investment: p.investment };
+    }
+    const snapshot = monthSnapshotDate(month, snapshotDay);
+    const summary = summarizeTransactions(state.transactions.filter(t => monthKey(t.date) === month && t.date <= snapshot));
+    const bank = bankAtMonthSnapshot(month, snapshotDay);
+    const invested = investedAtMonthSnapshot(month, snapshotDay);
+    return { month, bank, invested, total: bank + invested, income: summary.income, expenses: summary.expenses, investment: summary.invested };
+  });
+}
+
+function bankAtMonthSnapshot(month, day) {
+  const end = monthSnapshotDate(month, day);
+  return getInitialCash()
+    + sum(state.transactions.filter(t => t.date <= end).map(t => t.amount));
+}
+
+function investedAtMonthSnapshot(month, day) {
+  const end = monthSnapshotDate(month, day);
+  return Math.abs(sum(state.transactions.filter(t => t.date <= end && isInvestment(t)).map(t => t.amount)));
+}
+
+function renderFinancialCalendarLegacyUnused() {
+  el.innerHTML = rows.map(t => `
+    <div>
+      <div><strong>${String(t.date.getDate()).padStart(2, "0")}</strong><span>${shortWeekday(t.date)}</span></div>
+      <div>
+        <strong>${escapeHtml(t.descripcion || t.concepto)}</strong>
+        <span>${escapeHtml(t.tipo)} · ${escapeHtml(t.concepto)}</span>
+      </div>
+      <div>${amountCell(t.amount)}</div>
+    </div>
+  `).join("") || emptyBlock("Sin agenda para este mes.");
+}
+
+function monthsBetween(start, end) {
+  const out = [];
+  for (let cursor = start; compareMonthKeys(cursor, end) <= 0; cursor = addMonthsKey(cursor, 1)) out.push(cursor);
+  return out;
+}
+
+function addMonthsKey(month, amount) {
+  const [year, monthNum] = month.split("-").map(Number);
+  const date = new Date(year, monthNum - 1 + amount, 1);
+  return monthKey(date);
+}
+
+function endOfMonthKey(month) {
+  const [year, monthNum] = month.split("-").map(Number);
+  return new Date(year, monthNum, 0, 23, 59, 59, 999);
+}
+
+function monthSnapshotDate(month, day) {
+  const [year, monthNum] = month.split("-").map(Number);
+  const lastDay = new Date(year, monthNum, 0).getDate();
+  return new Date(year, monthNum - 1, Math.min(Math.max(Number(day) || 31, 1), lastDay), 23, 59, 59, 999);
+}
+
+function compareMonthKeys(a, b) {
+  return String(a).localeCompare(String(b));
+}
+
+function shortMonthLabel(key) {
+  return `${monthName(key.slice(5, 7)).slice(0, 3)} ${key.slice(2, 4)}`;
+}
+
+function compactMonthLabel(key) {
+  return `${monthName(key.slice(5, 7)).slice(0, 3)} ${key.slice(0, 4)}`;
+}
+
+function numericMonthLabel(key) {
+  return `${key.slice(5, 7)}-${key.slice(2, 4)}`;
+}
+
+function shortWeekday(date) {
+  return ["dom", "lun", "mar", "mie", "jue", "vie", "sab"][date.getDay()];
 }
 
 function tag(value) { return `<span class="tag">${escapeHtml(value || "Sin tipo")}</span>`; }
