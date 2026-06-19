@@ -43,6 +43,7 @@ const BAR_CHART_COLORS = [
 ];
 const DATA_CACHE_KEY = "moneyDataCache";
 const PENDING_CACHE_KEY = "moneyPendingChanges";
+const OP_QUEUE_KEY = "moneyOpQueue";
 const THEME_KEY = "moneyTheme";
 const EVOLUTION_RANGE_KEY = "moneyEvolutionRange";
 const FULL_MONTH_NAMES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
@@ -87,7 +88,8 @@ const state = {
   movementMode: "realized",
   tableControls: {},
   investmentGoals: loadInvestmentGoals(),
-  evolutionRange: loadEvolutionRange()
+  evolutionRange: loadEvolutionRange(),
+  opQueueRunning: false
 };
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -96,6 +98,7 @@ document.addEventListener("DOMContentLoaded", () => {
   wireUi();
   hydrateConfigForm();
   setDefaultDate();
+  renderPendingOpsBadge();
   refreshData();
 });
 
@@ -130,6 +133,7 @@ function wireUi() {
   document.getElementById("themeToggle")?.addEventListener("change", setThemeFromToggle);
   document.getElementById("formType").addEventListener("change", syncRegistrarMode);
   document.getElementById("saveConfigBtn").addEventListener("click", saveConfigFromForm);
+  document.getElementById("retryPendingOpsBtn")?.addEventListener("click", () => retryPendingOps());
   document.getElementById("summaryYear").addEventListener("change", syncSummaryPeriodAndRender);
   document.getElementById("summaryMonth").addEventListener("change", syncSummaryPeriodAndRender);
   document.getElementById("openMonthSituationBtn").addEventListener("click", () => {
@@ -149,6 +153,8 @@ function wireUi() {
   document.getElementById("closeMovementDetailBtn").addEventListener("click", () => document.getElementById("movementDetailDialog").close());
   document.getElementById("movementDetailForm").addEventListener("submit", saveMovementDetail);
   document.getElementById("deleteMovementBtn").addEventListener("click", deleteMovementDetail);
+  document.getElementById("movementDeleteAccountForm")?.addEventListener("submit", confirmMovementDeleteAccount);
+  document.getElementById("closeMovementDeleteAccountBtn")?.addEventListener("click", () => document.getElementById("movementDeleteAccountDialog")?.close());
   document.getElementById("closeInvestmentDetailBtn").addEventListener("click", () => document.getElementById("investmentDetailDialog").close());
   document.getElementById("investmentDetailForm").addEventListener("submit", saveInvestmentDetail);
   document.getElementById("closeMovementPopupBtn")?.addEventListener("click", () => document.getElementById("movementPopup").close());
@@ -365,6 +371,7 @@ async function refreshData(options = {}) {
     setNotice(lineMessage(`No se pudieron cargar datos: ${error.message}`, "Revisa Ajustes."), "warn");
   } finally {
     setRefreshLoading(false);
+    processOpQueue();
   }
 }
 
@@ -564,6 +571,111 @@ function rememberPendingSnapshot(...sections) {
     if (section === "investmentGoals") pending.investmentGoals = state.investmentGoals;
   });
   writePendingCache(pending);
+}
+
+function readOpQueue() {
+  try {
+    const queue = JSON.parse(localStorage.getItem(OP_QUEUE_KEY) || "[]");
+    return Array.isArray(queue) ? queue : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeOpQueue(queue) {
+  localStorage.setItem(OP_QUEUE_KEY, JSON.stringify(queue));
+  renderPendingOpsBadge();
+}
+
+function pendingOpsCount() {
+  return readOpQueue().filter(op => op.status !== "done").length;
+}
+
+function renderPendingOpsBadge() {
+  const el = document.getElementById("pendingOpsBadge");
+  if (!el) return;
+  const queue = readOpQueue();
+  const count = queue.filter(op => op.status !== "done").length;
+  el.textContent = String(count);
+  el.classList.toggle("hidden", count === 0);
+  renderPendingOpsTable(queue);
+}
+
+function renderPendingOpsTable(queue = readOpQueue()) {
+  const table = document.getElementById("pendingOpsTable");
+  if (!table) return;
+  const rows = queue.map((op, idx) => {
+    const actionMap = {
+      addMovement: "Movimiento",
+      addFutureMovement: "Movimiento futuro",
+      addMovementsBatch: "Movs. periódicos",
+      updateMovement: "Editar movimiento",
+      deleteMovement: "Borrar movimiento",
+      deleteMovementsBatch: "Borrar múltiple",
+      saveBanks: "Guardar cuentas",
+      saveInvestments: "Guardar inversiones",
+      saveInvestmentGoals: "Guardar objetivos",
+      transferBank: "Transferencia"
+    };
+    const statusText = op.status === "sending" ? "Enviando" : op.status === "error" ? "Error" : "Pendiente";
+    const detail = op.error ? `${statusText}: ${op.error}` : statusText;
+    return `<tr>
+      <td>${idx + 1}</td>
+      <td>${escapeHtml(actionMap[op.payload?.action] || op.payload?.action || "Operación")}</td>
+      <td>${escapeHtml(detail)}</td>
+      <td><button class="mini-edit-btn" type="button" data-retry-op="${escapeAttr(op.id)}">Reintentar</button></td>
+    </tr>`;
+  }).join("");
+  table.innerHTML = `<thead><tr><th>#</th><th>Tipo</th><th>Estado</th><th></th></tr></thead><tbody>${rows || `<tr><td class="empty" colspan="4">Sin peticiones pendientes.</td></tr>`}</tbody>`;
+  table.querySelectorAll("[data-retry-op]").forEach(btn => btn.addEventListener("click", () => retryPendingOps(btn.dataset.retryOp)));
+}
+
+function queueOp(payload) {
+  const queue = readOpQueue();
+  queue.push({ id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, createdAt: Date.now(), status: "queued", payload });
+  writeOpQueue(queue);
+  processOpQueue();
+}
+
+async function processOpQueue() {
+  if (state.opQueueRunning) return;
+  if (state.config.readMode !== "apps-script" || !state.config.scriptUrl) return;
+  const queue = readOpQueue();
+  const item = queue.find(op => op.status === "queued" || op.status === "retry");
+  if (!item) return;
+  state.opQueueRunning = true;
+  item.status = "sending";
+  writeOpQueue(queue);
+  try {
+    await postAppsScript(item.payload);
+    const next = readOpQueue().filter(op => op.id !== item.id);
+    writeOpQueue(next);
+    state.opQueueRunning = false;
+    processOpQueue();
+  } catch (error) {
+    const nextQueue = readOpQueue();
+    const target = nextQueue.find(op => op.id === item.id);
+    if (target) {
+      target.status = "error";
+      target.error = String(error.message || error);
+    }
+    writeOpQueue(nextQueue);
+    state.opQueueRunning = false;
+  }
+}
+
+async function retryPendingOps(opId = null) {
+  const queue = readOpQueue();
+  if (opId) {
+    const target = queue.find(op => op.id === opId);
+    if (target) target.status = "retry";
+  } else {
+    queue.forEach(op => {
+      if (op.status === "error") op.status = "retry";
+    });
+  }
+  writeOpQueue(queue);
+  await processOpQueue();
 }
 
 function transactionSignature(row) {
@@ -872,6 +984,7 @@ function renderMonthSituationDialog(summary) {
 function renderMoneySummary(summary) {
   const accountsAdjustment = summary.computedBank - summary.bankAccountsTotal;
   const checkTone = Math.abs(accountsAdjustment) < 0.01 ? "positive" : "negative";
+  const checkText = Math.abs(accountsAdjustment) < 0.01 ? "" : `${accountsAdjustment > 0 ? "Añadir" : "Restar"} ${money(Math.abs(accountsAdjustment))} en cuentas`;
   const parts = INVESTMENT_TYPES.map(type => {
     const invested = summary.investedByType[type] || 0;
     const current = summary.valueByType[type] || 0;
@@ -882,7 +995,7 @@ function renderMoneySummary(summary) {
       <button class="money-item money-action" id="openBankMoneyBtn" type="button">
         <span>Banco</span>
         <strong>${money(summary.bank)}</strong>
-        <small class="${checkTone}">${state.banks.length ? (Math.abs(accountsAdjustment) < 0.01 ? "Check OK" : `Cuentas ${accountsAdjustment >= 0 ? "+" : ""}${money(accountsAdjustment)}`) : "Sin cuentas"}</small>
+        <small class="${checkTone}">${state.banks.length ? checkText : "Sin cuentas"}</small>
       </button>
       <button class="money-item money-action" id="openInvestedMoneyBtn" type="button">
         <span>Invertido</span>
@@ -1084,8 +1197,8 @@ function renderBankDetail(summary) {
 function bankCheckText(accountsAdjustment) {
   if (Math.abs(accountsAdjustment) < 0.01) return "Cuentas cuadradas con Banco.";
   return accountsAdjustment > 0
-    ? `Hay que sumar ${money(accountsAdjustment)} a cuentas para llegar a Banco.`
-    : `Hay que restar ${money(Math.abs(accountsAdjustment))} a cuentas para llegar a Banco.`;
+    ? `Añadir ${money(Math.abs(accountsAdjustment))} en cuentas.`
+    : `Restar ${money(Math.abs(accountsAdjustment))} en cuentas.`;
 }
 
 function renderMovements() {
@@ -1263,8 +1376,14 @@ async function deleteSelectedMovements() {
   try {
     const list = getDisplayedMovements();
     const movements = indexes.map(index => list[index]).filter(Boolean);
+    const selected = new Set(movements);
+    const target = state.movementMode === "future" ? state.futureTransactions : state.transactions;
+    for (let i = target.length - 1; i >= 0; i--) {
+      if (selected.has(target[i])) target.splice(i, 1);
+    }
+    writeDataCache();
     if (state.config.readMode === "apps-script" && state.config.scriptUrl) {
-      await postAppsScript({
+      queueOp({
         action: "deleteMovementsBatch",
         sheetName: state.movementMode === "future" ? (state.config.futureMovementSheet || "Movimientos futuros") : state.config.movementSheet,
         movements: movements.map(movement => ({
@@ -1276,12 +1395,6 @@ async function deleteSelectedMovements() {
     } else {
       setNotice(lineMessage("Eliminados solo en pantalla.", "Para borrar en Sheets necesitas Apps Script."), "warn");
     }
-    const selected = new Set(movements);
-    const target = state.movementMode === "future" ? state.futureTransactions : state.transactions;
-    for (let i = target.length - 1; i >= 0; i--) {
-      if (selected.has(target[i])) target.splice(i, 1);
-    }
-    writeDataCache();
     state.movementBulkEdit = false;
     syncOptions();
     renderAll();
@@ -1401,9 +1514,8 @@ async function saveInvestments() {
   const btn = document.getElementById("saveInvestmentsBtn");
   markButtonSaving(btn);
   try {
-    await postAppsScript({ action: "saveInvestments", sheetName: state.config.investmentSheet, investments: state.investments });
     writeDataCache();
-    dropPendingSections("investments");
+    queueOp({ action: "saveInvestments", sheetName: state.config.investmentSheet, investments: state.investments });
     markButtonSaved(btn);
     setNotice("Cambios de inversiones enviados.", "ok");
   } catch (error) {
@@ -1464,14 +1576,14 @@ async function saveMovementDetail(event) {
     return;
   }
   try {
+    list[index] = movement;
+    writeDataCache();
     if (state.config.readMode === "apps-script" && state.config.scriptUrl && previous.rowNumber) {
-      await postAppsScript({ action: "updateMovement", movement, sheetName: state.movementMode === "future" ? (state.config.futureMovementSheet || "Movimientos futuros") : state.config.movementSheet });
-      setNotice("Movimiento actualizado.", "ok");
+      queueOp({ action: "updateMovement", movement, sheetName: state.movementMode === "future" ? (state.config.futureMovementSheet || "Movimientos futuros") : state.config.movementSheet });
+      setNotice("Movimiento actualizado en local y en cola.", "ok");
     } else {
       setNotice(lineMessage("Cambio local.", "Para guardar en Sheets necesitas Apps Script y rowNumber."), "warn");
     }
-    list[index] = movement;
-    writeDataCache();
     markButtonSaved(btn);
     document.getElementById("movementDetailDialog").close();
     syncOptions();
@@ -1489,24 +1601,33 @@ async function deleteMovementDetail() {
   const movement = list[index];
   if (!movement) return;
   markButtonSaving(btn, "Eliminando");
+  const accountDelta = -Number(movement.amount || 0);
   try {
-    if (state.config.readMode === "apps-script" && state.config.scriptUrl) {
-      await postAppsScript({
-        action: "deleteMovement",
-        rowNumber: movement.rowNumber,
-        movement: serializeTransaction(movement),
-        sheetName: state.movementMode === "future" ? (state.config.futureMovementSheet || "Movimientos futuros") : state.config.movementSheet
-      });
-      setNotice("Movimiento eliminado.", "ok");
-    } else {
-      setNotice(lineMessage("Eliminado solo en pantalla.", "Para borrar en Sheets necesitas Apps Script."), "warn");
-    }
-    list.splice(index, 1);
-    writeDataCache();
-    markButtonSaved(btn, "Eliminado");
-    document.getElementById("movementDetailDialog").close();
-    syncOptions();
-    renderAll();
+    promptMovementDeleteAccount({
+      title: "Aplicar a cuenta",
+      amount: accountDelta,
+      onConfirm: async account => {
+        if (account) applyBankDelta(account, accountDelta);
+        list.splice(index, 1);
+        writeDataCache();
+        if (state.config.readMode === "apps-script" && state.config.scriptUrl) {
+          queueOp({
+            action: "deleteMovement",
+            rowNumber: movement.rowNumber,
+            movement: serializeTransaction(movement),
+            sheetName: state.movementMode === "future" ? (state.config.futureMovementSheet || "Movimientos futuros") : state.config.movementSheet
+          });
+          if (account) queueOp({ action: "saveBanks", bankSheet: state.config.bankSheet || "Bancos", banks: state.banks });
+          setNotice("Movimiento eliminado.", "ok");
+        } else {
+          setNotice(lineMessage("Eliminado solo en pantalla.", "Para borrar en Sheets necesitas Apps Script."), "warn");
+        }
+        markButtonSaved(btn, "Eliminado");
+        document.getElementById("movementDetailDialog").close();
+        syncOptions();
+        renderAll();
+      }
+    });
   } catch (error) {
     restoreButton(btn);
     setNotice(`No se pudo eliminar: ${error.message}`, "warn");
@@ -1561,7 +1682,6 @@ async function submitMovement(event) {
     if (isRecurring && !isTransfer) {
       const movements = movementsFromRecurrenceForm();
       if (!movements.length) throw new Error("selecciona fechas y al menos un día");
-      await postAppsScript({ action: "addMovementsBatch", movements, movementSheet: state.config.movementSheet, futureMovementSheet: state.config.futureMovementSheet || "Movimientos futuros", bankSheet: state.config.bankSheet || "Bancos", account: document.getElementById("recurrenceAccount").value });
       const account = document.getElementById("recurrenceAccount").value;
       const today = endOfToday();
       const realized = movements.filter(m => m.date <= today);
@@ -1573,6 +1693,7 @@ async function submitMovement(event) {
       state.transactions.push(...realized);
       state.futureTransactions.push(...futureMovs);
       writeDataCache();
+      queueOp({ action: "addMovementsBatch", movements, movementSheet: state.config.movementSheet, futureMovementSheet: state.config.futureMovementSheet || "Movimientos futuros", bankSheet: state.config.bankSheet || "Bancos", account });
       showMovementPopup("Movimientos periódicos guardados", realized[0] || futureMovs[0], account, lineMessage(
         `${realized.length} ${plural(realized.length, "realizado", "realizados")} y ${futureMovs.length} futuros`,
         realized.length ? bankChangeLines(totalBefore, totalAfter, account, accountBefore) : ""
@@ -1582,37 +1703,30 @@ async function submitMovement(event) {
       const from = document.getElementById("formTransferFrom").value;
       const to = document.getElementById("formTransferTo").value;
       if (!amount || !from || !to || from === to) throw new Error("elige origen, destino e importe valido");
-      const fromBefore = getBankAmount(from);
-      const toBefore = getBankAmount(to);
-      await postAppsScript({ action: "transferBank", bankSheet: state.config.bankSheet || "Bancos", from, to, amount });
       applyBankDelta(from, -amount);
       applyBankDelta(to, amount);
       writeDataCache();
-      dropPendingSections("banks");
-      setNotice(lineMessage("Traspaso hecho", `Origen: ${bankChangeText(from, fromBefore)}`, `Destino: ${bankChangeText(to, toBefore)}`), "ok");
+      queueOp({ action: "transferBank", bankSheet: state.config.bankSheet || "Bancos", from, to, amount });
+      setNotice("Traspaso hecho.", "ok");
     } else {
       const movement = movementFromForm();
       const future = movement.date > endOfToday();
-      await postAppsScript({
+      const account = document.getElementById("formAccount").value;
+      if (!future) applyBankDelta(account, movement.amount);
+      (future ? state.futureTransactions : state.transactions).push(movement);
+      writeDataCache();
+      queueOp({
         action: future ? "addFutureMovement" : "addMovement",
         movement,
         sheetName: future ? (state.config.futureMovementSheet || "Movimientos futuros") : state.config.movementSheet,
         bankSheet: state.config.bankSheet || "Bancos",
-        account: document.getElementById("formAccount").value
+        account
       });
-      const account = document.getElementById("formAccount").value;
-      const bankBefore = getBankAmount(account);
-      const totalBefore = sum(state.banks.map(b => b.dinero));
-      if (!future) applyBankDelta(account, movement.amount);
-      (future ? state.futureTransactions : state.transactions).push(movement);
-      writeDataCache();
-      dropPendingSections("banks");
-      const totalAfter = sum(state.banks.map(b => b.dinero));
       showMovementPopup(
         future ? "Movimiento futuro guardado" : "Movimiento guardado",
         movement,
         account,
-        !future ? bankChangeLines(totalBefore, totalAfter, account, bankBefore) : ""
+        ""
       );
     }
     syncOptions();
@@ -1861,10 +1975,9 @@ async function saveInvestmentGoalsFromDialog(event) {
   renderAll();
   if (state.config.scriptUrl && state.config.readMode === "apps-script") {
     try {
-      await postAppsScript({ action: "saveInvestmentGoals", sheetName: state.config.objectiveSheet || "Objetivos", goals: state.investmentGoals });
-      dropPendingSections("investmentGoals");
-      markButtonSaved(btn);
+      queueOp({ action: "saveInvestmentGoals", sheetName: state.config.objectiveSheet || "Objetivos", goals: state.investmentGoals });
       document.getElementById("investmentGoalsDialog").close();
+      markButtonSaved(btn);
       setNotice('Objetivos guardados en Google Sheets.', 'ok');
     } catch (error) {
       restoreButton(btn);
@@ -1947,7 +2060,6 @@ function renderInvestmentGoals(summary) {
           <div class="goal-meta">
             <span>Objetivo ${money(goal)}</span>
             ${overrun ? `<span class="goal-overrun">Te pasas ${money(overrun)}</span>` : ''}
-            ${systemGoal ? `<button class="mini-edit-btn" data-edit-system-goal="${escapeAttr(systemGoal)}" type="button">Editar</button>` : ''}
           </div>
         </div>
         <div class="goal-track">
@@ -1987,6 +2099,26 @@ function bankChangeLines(totalBefore, totalAfter, account, accountBefore) {
   );
 }
 
+function promptMovementDeleteAccount({ title, amount, onConfirm }) {
+  const dialog = document.getElementById("movementDeleteAccountDialog");
+  if (!dialog) return;
+  document.getElementById("movementDeleteAccountTitle").textContent = title || "Aplicar a cuenta";
+  document.getElementById("movementDeleteAccountAmount").textContent = `${amount >= 0 ? "Añadir" : "Restar"} ${money(Math.abs(amount))} en cuentas`;
+  const select = document.getElementById("movementDeleteAccountSelect");
+  select.innerHTML = state.banks.map(bank => `<option value="${escapeAttr(bank.cuenta)}">${escapeHtml(bank.cuenta)}</option>`).join("");
+  dialog.__onConfirm = onConfirm;
+  dialog.showModal();
+}
+
+async function confirmMovementDeleteAccount(event) {
+  event.preventDefault();
+  const dialog = document.getElementById("movementDeleteAccountDialog");
+  const account = document.getElementById("movementDeleteAccountSelect").value;
+  const onConfirm = dialog.__onConfirm;
+  dialog.close();
+  if (typeof onConfirm === "function") await onConfirm(account);
+}
+
 async function saveBanks() {
   const btn = document.getElementById("saveBanksBtn");
   markButtonSaving(btn);
@@ -1999,13 +2131,14 @@ async function saveBanks() {
     rememberPendingSnapshot("banks");
     renderSummary();
     markButtonSaved(document.getElementById("saveBanksBtn") || btn);
+    renderPendingOpsBadge();
     return;
   }
   try {
-    await postAppsScript({ action: "saveBanks", bankSheet: state.config.bankSheet || "Bancos", banks: state.banks });
     writeDataCache();
-    dropPendingSections("banks");
-    renderBankDetail(calculateSummary(getSelectedSummaryMonth()));
+    queueOp({ action: "saveBanks", bankSheet: state.config.bankSheet || "Bancos", banks: state.banks });
+    document.getElementById("moneyDialog")?.close();
+    renderAll();
     markButtonSaved(document.getElementById("saveBanksBtn") || btn);
     setNotice("Cuentas guardadas.", "ok");
   } catch (error) {

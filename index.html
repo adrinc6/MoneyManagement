@@ -176,6 +176,9 @@
           </div>
         </div>
         <div class="panel-body">
+          <div class="table-wrap pending-ops-wrap">
+            <table id="pendingOpsTable"></table>
+          </div>
           <div class="settings-row">
             <div>
               <strong>Tema</strong>
@@ -210,13 +213,27 @@
   </main>
   <div class="toast-container" id="toastContainer" aria-live="polite"></div>
   <dialog id="movementPopup"><div class="dialog-head"><h2 id="movementPopupTitle">Movimiento</h2><button class="icon-btn" id="closeMovementPopupBtn" aria-label="Cerrar"><i data-lucide="x"></i></button></div><div class="panel-body" id="movementPopupBody"></div></dialog>
+  <dialog id="movementDeleteAccountDialog">
+    <div class="dialog-head">
+      <h2 id="movementDeleteAccountTitle">Aplicar a cuenta</h2>
+      <button class="icon-btn" id="closeMovementDeleteAccountBtn" type="button" aria-label="Cerrar"><i data-lucide="x"></i></button>
+    </div>
+    <form id="movementDeleteAccountForm" class="panel-body form-grid">
+      <p id="movementDeleteAccountAmount" class="wide"></p>
+      <label class="wide">Cuenta a aplicar <select id="movementDeleteAccountSelect"></select></label>
+      <button class="btn primary wide" type="submit"><i data-lucide="check"></i> Aplicar</button>
+    </form>
+  </dialog>
 
   <nav class="bottom-nav" aria-label="Navegación principal">
     <button data-view-button="movimientos"><i data-lucide="list-filter"></i><span>Movs</span></button>
     <button data-view-button="resumen"><i data-lucide="layout-dashboard"></i><span>Resumen</span></button>
     <button class="fab active" data-view-button="registrar"><i data-lucide="plus"></i><span>Registrar</span></button>
     <button data-view-button="inversiones"><i data-lucide="line-chart"></i><span>Inversión</span></button>
-    <button data-view-button="ajustes"><i data-lucide="settings"></i><span>Ajustes</span></button>
+    <button data-view-button="ajustes">
+      <span class="nav-badge hidden" id="pendingOpsBadge">0</span>
+      <i data-lucide="settings"></i><span>Ajustes</span>
+    </button>
   </nav>
 
   <dialog id="monthSituationDialog">
