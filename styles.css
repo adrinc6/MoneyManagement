@@ -153,9 +153,7 @@ p { color: var(--muted); }
 #registrar.view.active {
   overflow: hidden;
   padding-bottom: 0;
-}
-#registrar.recurring-register-active .registrar-layout {
-  grid-template-rows: minmax(0, 30fr) minmax(0, 70fr);
+  align-content: stretch;
 }
 .registrar-layout {
   flex: 1 1 auto;
@@ -163,6 +161,7 @@ p { color: var(--muted); }
   min-height: 0;
   display: grid;
   grid-template-rows: minmax(0, 34fr) minmax(0, 66fr);
+  align-content: stretch;
   gap: clamp(6px, .9vh, 10px);
 }
 .registrar-summary-grid {
@@ -1293,9 +1292,6 @@ dialog::backdrop { background: rgba(15, 23, 42, .5); }
 
 @media (max-width: 720px) {
 
-  #registrar.recurring-register-active .registrar-layout {
-    grid-template-rows: minmax(0, 28fr) minmax(0, 72fr);
-  }
   .registrar-form-panel .recurring-form-active {
     gap: clamp(4px, .52vh, 7px);
   }
