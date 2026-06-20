@@ -87,7 +87,7 @@ button:active { transform: translateY(1px); }
 
 .app {
   width: min(980px, calc(100% - 20px));
-  height: calc(100dvh - 76px - env(safe-area-inset-bottom));
+  height: calc(100dvh - 86px - env(safe-area-inset-bottom));
   margin: 10px auto 0;
   padding: 18px 16px 14px;
   display: flex;
@@ -159,14 +159,14 @@ p { color: var(--muted); }
   height: 100%;
   min-height: 0;
   display: grid;
-  grid-template-rows: 34fr 66fr;
+  grid-template-rows: minmax(0, 30fr) minmax(0, 70fr);
   gap: clamp(6px, .9vh, 10px);
 }
 .registrar-summary-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   grid-template-rows: repeat(3, minmax(0, 1fr));
-  gap: clamp(6px, .8vh, 9px);
+  gap: clamp(4px, .65vh, 8px);
   min-height: 0;
   width: 100%;
   justify-self: stretch;
@@ -175,24 +175,24 @@ p { color: var(--muted); }
   background: color-mix(in srgb, var(--soft) 58%, transparent);
   border: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
   border-radius: 12px;
-  padding: clamp(6px, .85vh, 10px);
+  padding: clamp(4px, .7vh, 9px);
   display: grid;
   place-items: center;
   align-content: center;
-  gap: clamp(2px, .35vh, 6px);
+  gap: clamp(1px, .28vh, 5px);
   min-height: 0;
   text-align: center;
   box-shadow: none;
 }
 .mini-stat-card span {
   color: var(--muted);
-  font-size: clamp(.64rem, .95vh, .78rem);
+  font-size: clamp(.6rem, .9vh, .76rem);
   line-height: 1.08;
   letter-spacing: 0;
   text-transform: none;
 }
 .mini-stat-card strong {
-  font-size: clamp(.95rem, 1.65vh, 1.35rem);
+  font-size: clamp(.84rem, 1.55vh, 1.28rem);
   line-height: .98;
   font-weight: 700;
 }
@@ -207,31 +207,34 @@ p { color: var(--muted); }
 .registrar-summary-panel .panel-body,
 .registrar-form-panel .panel-body {
   height: 100%;
-  overflow: hidden;
+  overflow: auto;
+  min-height: 0;
 }
 .registrar-form-panel {
   min-height: 0;
   overflow: hidden;
 }
 .registrar-form-panel .panel-header {
-  padding: clamp(10px, 1.4vh, 16px) clamp(12px, 1.8vw, 16px) 0;
+  padding: clamp(6px, 1vh, 12px) clamp(10px, 1.6vw, 16px) 0;
 }
 .registrar-form-panel .panel-header p {
   display: none;
 }
 .registrar-form-panel .panel-body {
-  padding: clamp(10px, 1.4vh, 16px);
+  padding: clamp(8px, 1.05vh, 14px);
 }
 .registrar-form-panel .form-grid {
   height: 100%;
-  gap: clamp(8px, 1vh, 12px);
+  gap: clamp(5px, .8vh, 10px);
+  align-content: stretch;
 }
 .registrar-form-panel label {
-  font-size: clamp(.76rem, 1vh, .84rem);
+  font-size: clamp(.68rem, .92vh, .82rem);
 }
 .registrar-form-panel input,
 .registrar-form-panel select {
-  min-height: clamp(38px, 4.2vh, 48px);
+  min-height: clamp(32px, 3.8vh, 44px);
+  padding-block: clamp(6px, .8vh, 10px);
 }
 .registrar-form-panel .recurring-fields {
   align-self: start;
@@ -1115,7 +1118,7 @@ dialog::backdrop { background: rgba(15, 23, 42, .5); }
 .bottom-nav {
   position: fixed;
   left: 50%;
-  bottom: max(3px, env(safe-area-inset-bottom));
+  bottom: calc(max(10px, env(safe-area-inset-bottom)) + 8px);
   transform: translateX(-50%);
   width: min(520px, calc(100vw - 20px));
   height: 60px;
@@ -1171,9 +1174,9 @@ dialog::backdrop { background: rgba(15, 23, 42, .5); }
   content: "";
   position: fixed;
   left: 50%;
-  bottom: calc(-1 * max(3px, env(safe-area-inset-bottom)));
+  bottom: calc(-1 * (max(10px, env(safe-area-inset-bottom)) + 8px));
   width: 100vw;
-  height: calc(63px + env(safe-area-inset-bottom));
+  height: calc(78px + env(safe-area-inset-bottom));
   transform: translateX(-50%);
   z-index: -1;
   background: var(--page-bg);
@@ -1183,7 +1186,7 @@ dialog::backdrop { background: rgba(15, 23, 42, .5); }
   transform: none;
   background: var(--accent);
   color: var(--on-accent);
-  border-radius: 16px;
+  border-radius: 16px 16px 0 0;
   box-shadow: 0 12px 28px rgba(15, 118, 110, .35);
   transition: transform .18s ease, background .18s ease, box-shadow .18s ease;
 }
@@ -1257,7 +1260,7 @@ dialog::backdrop { background: rgba(15, 23, 42, .5); }
 @media (max-width: 720px) {
   .app {
     width: 100%;
-    height: calc(100dvh - 66px - env(safe-area-inset-bottom));
+    height: calc(100dvh - 76px - env(safe-area-inset-bottom));
     margin-top: 0;
     padding: 16px 12px 12px;
     border-top: 0;
