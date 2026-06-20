@@ -1328,7 +1328,7 @@ function renderMovementEntries(year, month) {
           ${metricBlock("Balance", summary.balance, summary.balance >= 0 ? "positive" : "negative")}
         </div>
       </div>
-      <div class="table-wrap"><table id="movementTable"></table></div>
+      <div class="table-wrap movement-table-wrap"><table id="movementTable"></table></div>
     </article>`;
   renderMovementTable(rows);
   state.filtered = rows;
@@ -1402,14 +1402,20 @@ function syncMovementBulkButtons() {
   editBtn.classList.toggle("hidden", !isEntries);
   deleteBtn.classList.toggle("hidden", !isEntries || !state.movementBulkEdit);
   editBtn.classList.toggle("primary", state.movementBulkEdit);
-  editBtn.innerHTML = state.movementBulkEdit ? `<i data-lucide="x"></i> Cancelar` : `<i data-lucide="square-pen"></i> Editar`;
+  editBtn.classList.toggle("icon-only", state.movementBulkEdit);
+  editBtn.setAttribute("aria-label", state.movementBulkEdit ? "Cancelar edición" : "Editar movimientos");
+  editBtn.title = state.movementBulkEdit ? "Cancelar" : "Editar";
+  editBtn.innerHTML = state.movementBulkEdit ? `<i data-lucide="check"></i>` : `<i data-lucide="square-pen"></i> Editar`;
   const count = selectedMovementIndexes().length;
   if (deleteBtn.classList.contains("saving")) {
     lucide.createIcons();
     return;
   }
   deleteBtn.disabled = count === 0;
-  deleteBtn.innerHTML = `<i data-lucide="trash-2"></i> ${count ? `Borrar ${count}` : "Borrar"}`;
+  deleteBtn.classList.add("icon-only");
+  deleteBtn.setAttribute("aria-label", count ? `Borrar ${count} movimientos seleccionados` : "Borrar movimientos seleccionados");
+  deleteBtn.title = count ? `Borrar ${count}` : "Borrar";
+  deleteBtn.innerHTML = `<i data-lucide="trash-2"></i>`;
   lucide.createIcons();
 }
 
