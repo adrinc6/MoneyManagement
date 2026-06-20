@@ -853,6 +853,19 @@ th {
 #movementDrill .movement-table-wrap {
   overflow-x: hidden;
 }
+#movementTable th,
+#movementTable td {
+  min-width: 0;
+}
+#movementTable .amount {
+  font-size: .95em;
+}
+#movementTable:where(*) {
+  max-width: 100%;
+}
+#movementDrill .movement-table-wrap {
+  overflow-x: hidden;
+}
 #movementTable .col-select {
   width: 20px;
   min-width: 20px;
