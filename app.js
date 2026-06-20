@@ -81,7 +81,7 @@ const state = {
   charts: {},
   filtered: [],
   movementDrill: { level: "entries", year: String(new Date().getFullYear()), month: currentMonthKey() },
-  summaryModes: { situation: "ingresos", investmentMoney: "invested", moneyMix: "types", bankMoney: "summary", investmentOverviewType: null, investmentPanel: "current" },
+  summaryModes: { situation: "ingresos", investmentMoney: "invested", moneyMix: "types", bankMoney: "summary", investmentOverviewType: null, investmentOverviewMode: "invested", investmentPanel: "current" },
   descriptionSuggestions: {},
   submittingMovement: false,
   movementBulkEdit: false,
@@ -169,6 +169,12 @@ function wireUi() {
     if (!btn) return;
     state.summaryModes.moneyMix = btn.dataset.moneyMix;
     renderMoneyCharts(calculateSummary(getSelectedSummaryMonth()));
+  });
+  document.getElementById("investmentOverviewMode")?.addEventListener("click", event => {
+    const btn = event.target.closest("[data-investment-overview-mode]");
+    if (!btn) return;
+    state.summaryModes.investmentOverviewMode = btn.dataset.investmentOverviewMode;
+    renderInvestmentBreakdownCharts(calculateSummary(getSelectedSummaryMonth()));
   });
   document.getElementById("bankMoneyMode")?.addEventListener("click", event => {
     const btn = event.target.closest("[data-bank-mode]");
@@ -1556,19 +1562,24 @@ function setInvestmentPanelFromClick(event) {
 }
 
 function renderInvestmentEditTable() {
-  const sorted = [...state.investments].sort((a, b) => b.total - a.total);
-  let lastType = "";
-  const body = sorted.map((i) => {
-    const idx = state.investments.indexOf(i);
-    const group = i.tipo !== lastType ? `<tr><th colspan="4">${escapeHtml(i.tipo || "Sin tipo")}</th></tr>` : "";
-    lastType = i.tipo;
-    return `${group}<tr class="clickable-row" data-investment-index="${idx}">
-      <td class="investment-name" title="${escapeAttr(i.nombre)}">${escapeHtml(i.nombre)}</td>
-      <td class="amount">${quantityFmt(i.cantidad)}</td>
-      <td class="amount">${money(i.valor, 2)}</td>
-      <td class="amount">${money(i.total, 2)}</td>
-    </tr>`;
-  }).join("");
+  const rows = INVESTMENT_TYPES.flatMap(type => {
+    const positions = state.investments
+      .filter(i => normalizeType(i.tipo) === normalizeType(type))
+      .sort((a, b) => b.total - a.total);
+    if (!positions.length) return [];
+    const group = `<tr><th colspan="4">${escapeHtml(type)}</th></tr>`;
+    const body = positions.map(i => {
+      const idx = state.investments.indexOf(i);
+      return `<tr class="clickable-row" data-investment-index="${idx}">
+        <td class="investment-name" title="${escapeAttr(i.nombre)}">${escapeHtml(i.nombre)}</td>
+        <td class="amount">${quantityFmt(i.cantidad)}</td>
+        <td class="amount">${money(i.valor, 2)}</td>
+        <td class="amount">${money(i.total, 2)}</td>
+      </tr>`;
+    }).join("");
+    return [group + body];
+  });
+  const body = rows.join("");
   document.getElementById("investmentEditTable").innerHTML = `<thead><tr><th class="col-detail">Detalle</th><th class="col-qty">Cant.</th><th class="col-money">Valor</th><th class="col-money">Total</th></tr></thead><tbody>${body || `<tr><td class="empty" colspan="4">Sin posiciones.</td></tr>`}</tbody>`;
   document.querySelectorAll("#investmentEditTable [data-investment-index]").forEach(row => {
     row.addEventListener("click", () => openInvestmentDetail(Number(row.dataset.investmentIndex)));
@@ -1577,15 +1588,24 @@ function renderInvestmentEditTable() {
 
 function renderInvestmentBreakdownCharts(summary) {
   const selectedType = state.summaryModes.investmentOverviewType;
+  const selectedMode = state.summaryModes.investmentOverviewMode;
+  document.querySelectorAll("[data-investment-overview-mode]").forEach(btn => {
+    btn.classList.toggle("active", btn.dataset.investmentOverviewMode === selectedMode);
+  });
+  document.getElementById("investmentOverviewMode")?.classList.toggle("hidden", Boolean(selectedType));
   document.getElementById("investmentOverviewTitle").textContent = selectedType ? selectedType : "Inversiones";
   if (selectedType) return renderInvestmentPositionCharts(selectedType);
-  const current = INVESTMENT_TYPES.map(type => summary.valueByType[type] || 0);
-  const rows = INVESTMENT_TYPES.map((type, idx) => ({ label: type, value: current[idx], color: chartColor(PIE_CHART_COLORS, idx + 2) })).filter(row => row.value > 0);
-  renderColorRowsTable("investmentOverviewTable", rows, ["", "Detalle", "Total", ""]);
+  if (selectedMode === "gains") {
+    return renderInvestmentGainBreakdown(summary);
+  }
+  const rows = INVESTMENT_TYPES
+    .map((type, idx) => ({ label: type, value: summary.investedByType[type] || 0, color: chartColor(PIE_CHART_COLORS, idx + 2) }))
+    .filter(row => row.value > 0);
+  renderColorRowsTable("investmentOverviewTable", rows, ["", "Detalle", "Invertido", ""]);
   upsertChart("investmentBreakdownDonut", "doughnut", {
     labels: rows.map(row => row.label),
     datasets: [{ data: rows.map(row => row.value), backgroundColor: rows.map(row => row.color), borderColor: chartSurfaceColor(), borderWidth: 2 }]
-  }, compactChartOptions("Valor actual", { legend: false }));
+  }, compactChartOptions("Invertido", { legend: false }));
 }
 
 function addInvestmentRow() {
@@ -2396,13 +2416,58 @@ function renderInvestmentBreakdownTable(summary) {
 
 function renderInvestmentPositionCharts(type) {
   const positions = state.investments.filter(i => normalizeType(i.tipo) === normalizeType(type) && i.total > 0).sort((a, b) => b.total - a.total);
-  const total = sum(positions.map(i => i.total));
   const rows = positions.map((i, idx) => ({ label: i.nombre, value: i.total, color: chartColor(PIE_CHART_COLORS, idx) }));
   renderColorRowsTable("investmentOverviewTable", rows, ["", "Detalle", "Total", ""]);
   upsertChart("investmentBreakdownDonut", "doughnut", {
     labels: rows.map(row => row.label),
     datasets: [{ data: rows.map(row => row.value), backgroundColor: rows.map(row => row.color), borderColor: chartSurfaceColor(), borderWidth: 2 }]
   }, compactChartOptions(`${type}`, { legend: false }));
+}
+
+function renderInvestmentGainBreakdown(summary) {
+  const investedRows = [];
+  const gainRows = [];
+  INVESTMENT_TYPES.forEach((type, idx) => {
+    const invested = summary.investedByType[type] || 0;
+    const current = summary.valueByType[type] || 0;
+    const gain = Math.max(current - invested, 0);
+    const baseColor = chartColor(PIE_CHART_COLORS, idx + 2);
+    const gainColor = chartColor(BAR_CHART_COLORS, idx);
+    if (invested > 0) investedRows.push({ label: type, value: invested, color: baseColor });
+    if (gain > 0) gainRows.push({ label: `${type} ganancia`, value: gain, color: gainColor });
+  });
+  const rows = [...investedRows, ...gainRows];
+  const total = sum(rows.map(item => item.value));
+  const globalRows = [
+    { label: "Invertido global", value: summary.investedTotal, color: "#111111" },
+    { label: "Ganancias globales", value: Math.max(summary.profitLoss, 0), color: "#556b2f" }
+  ].filter(row => row.value > 0);
+  renderTable("investmentOverviewTable", ["", "Detalle", "Total", ""], rows.map(row => [
+    colorDot(row.color),
+    escapeHtml(row.label),
+    money(row.value),
+    pct(row.value / Math.max(total, 1))
+  ]));
+  upsertChart("investmentBreakdownDonut", "doughnut", {
+    labels: rows.map(row => row.label),
+    datasets: [{
+      data: rows.map(row => row.value),
+      labels: rows.map(row => row.label),
+      backgroundColor: rows.map(row => row.color),
+      borderColor: chartSurfaceColor(),
+      borderWidth: 2,
+      offset: rows.map((_, idx) => idx >= investedRows.length ? 18 : 0),
+      weight: 2.4
+    }, {
+      data: globalRows.map(row => row.value),
+      labels: globalRows.map(row => row.label),
+      backgroundColor: globalRows.map(row => row.color),
+      borderColor: chartSurfaceColor(),
+      borderWidth: 2,
+      offset: 0,
+      weight: 1.4
+    }]
+  }, compactChartOptions("Invertido + ganancias", { legend: false, cutout: "12%" }));
 }
 
 function renderColorRowsTable(id, rows, headers) {
@@ -2437,7 +2502,8 @@ function moneyTooltip() {
       title: items => {
         const context = items[0];
         if (!context) return "";
-        const label = context.label || context.dataset.label || "";
+        const datasetLabels = context.dataset?.labels || context.dataset?.customLabels || [];
+        const label = datasetLabels[context.dataIndex] || context.label || context.dataset.label || "";
         const value = Number(context.parsed?.y ?? context.parsed) || 0;
         const type = context.chart?.config?.type;
         if (["doughnut", "pie", "polarArea"].includes(type)) {
