@@ -938,11 +938,62 @@ function suggestTypeConceptFromDescription() {
 
 function renderAll() {
   syncRegisterMode();
+  renderRegistrarSummaryCompact();
   renderFutureDueNotice();
   renderSummary();
   renderMovements();
   renderInvestments();
   lucide.createIcons();
+}
+
+function renderRegistrarSummary() {
+  const el = document.getElementById("registrarSummary");
+  if (!el) return;
+  const summary = calculateSummary(getSelectedSummaryMonth());
+  const selectedMonth = getSelectedSummaryMonth();
+  const investedCurrentMonth = Math.abs(sum(state.transactions.filter(t => isInvestment(t) && monthKey(t.date) === selectedMonth).map(t => t.amount)));
+  const bankVsInvested = summary.investedTotal ? `${pct(summary.profitLossPct)} · ${money(summary.profitLoss)}` : "Sin inversiones";
+  const cards = [
+    { label: "Banco", value: money(summary.bank), sub: `${state.banks.length} cuentas` },
+    { label: "Invertido", value: money(summary.investedTotal), sub: "Valor actual" },
+    { label: "Ingresos mes", value: money(summary.income), sub: selectedMonth },
+    { label: "Invertido + gan.", value: `${money(summary.valueTotal)}`, sub: bankVsInvested },
+    { label: "Gastos mes", value: money(summary.expenses), sub: selectedMonth },
+    { label: "Inv. mes", value: money(investedCurrentMonth), sub: "Realizado este mes" }
+  ];
+  el.innerHTML = cards.map(card => `
+    <article class="mini-stat-card">
+      <span>${escapeHtml(card.label)}</span>
+      <strong>${escapeHtml(card.value)}</strong>
+      <small>${escapeHtml(card.sub)}</small>
+    </article>
+  `).join("");
+}
+
+function renderRegistrarSummaryCompact() {
+  const el = document.getElementById("registrarSummary");
+  if (!el) return;
+  const summary = calculateSummary(getSelectedSummaryMonth());
+  const selectedMonth = getSelectedSummaryMonth();
+  const investedCurrentMonth = Math.abs(sum(state.transactions.filter(t => isInvestment(t) && monthKey(t.date) === selectedMonth).map(t => t.amount)));
+  const investedWithProfit = summary.investedTotal + summary.profitLoss;
+  const investedWithProfitLabel = summary.investedTotal
+    ? `Inv. + gan. (${pct(summary.profitLossPct)})`
+    : "Inv. + gan.";
+  const cards = [
+    { label: "Dinero banco", value: money(summary.bank) },
+    { label: "Dinero invertido", value: money(summary.investedTotal) },
+    { label: "Ingresos mes actual", value: money(summary.income) },
+    { label: investedWithProfitLabel, value: money(investedWithProfit) },
+    { label: "Gastos mes actual", value: money(summary.expenses) },
+    { label: "Invertido mes actual", value: money(investedCurrentMonth) }
+  ];
+  el.innerHTML = cards.map(card => `
+    <article class="mini-stat-card">
+      <strong>${escapeHtml(card.value)}</strong>
+      <span>${escapeHtml(card.label)}</span>
+    </article>
+  `).join("");
 }
 
 function renderSummaryLegacyUnused() {
@@ -1311,9 +1362,9 @@ function renderMovementTable(rows) {
     return `<td class="col-money">${amountCell(t.amount)}</td>`;
   };
   if (!visibleRows.length) {
-    table.innerHTML = `<thead><tr>${state.movementBulkEdit ? `<th class="col-select"></th>` : ""}${columns.map(c => `<th><button class="table-head-btn" data-table-column="${c[0]}">${c[1]}</button></th>`).join("")}</tr></thead><tbody><tr><td class="empty" colspan="${columns.length + (state.movementBulkEdit ? 1 : 0)}">Sin datos para mostrar.</td></tr></tbody>`;
+    table.innerHTML = `<thead><tr>${state.movementBulkEdit ? `<th class="col-select"></th>` : ""}${columns.map(c => `<th class="col-${c[0]}"><button class="table-head-btn" data-table-column="${c[0]}">${c[1]}</button></th>`).join("")}</tr></thead><tbody><tr><td class="empty" colspan="${columns.length + (state.movementBulkEdit ? 1 : 0)}">Sin datos para mostrar.</td></tr></tbody>`;
   } else {
-    table.innerHTML = `<thead><tr>${state.movementBulkEdit ? `<th class="col-select"></th>` : ""}${columns.map(c => `<th><button class="table-head-btn" data-table-column="${c[0]}">${c[1]}</button></th>`).join("")}</tr></thead><tbody>${
+    table.innerHTML = `<thead><tr>${state.movementBulkEdit ? `<th class="col-select"></th>` : ""}${columns.map(c => `<th class="col-${c[0]}"><button class="table-head-btn" data-table-column="${c[0]}">${c[1]}</button></th>`).join("")}</tr></thead><tbody>${
       visibleRows.map(t => {
         const index = getDisplayedMovements().indexOf(t);
         const selector = state.movementBulkEdit ? `<td class="col-select"><input class="movement-select" type="checkbox" data-movement-select="${index}" aria-label="Seleccionar movimiento"></td>` : "";
@@ -1376,28 +1427,44 @@ async function deleteSelectedMovements() {
   try {
     const list = getDisplayedMovements();
     const movements = indexes.map(index => list[index]).filter(Boolean);
-    const selected = new Set(movements);
-    const target = state.movementMode === "future" ? state.futureTransactions : state.transactions;
-    for (let i = target.length - 1; i >= 0; i--) {
-      if (selected.has(target[i])) target.splice(i, 1);
-    }
-    writeDataCache();
-    if (state.config.readMode === "apps-script" && state.config.scriptUrl) {
-      queueOp({
-        action: "deleteMovementsBatch",
-        sheetName: state.movementMode === "future" ? (state.config.futureMovementSheet || "Movimientos futuros") : state.config.movementSheet,
-        movements: movements.map(movement => ({
-          rowNumber: movement.rowNumber,
-          movement: serializeTransaction(movement)
-        }))
+    const finalizeDelete = (account = "") => {
+      const totalAmount = sum(movements.map(movement => Number(movement.amount || 0)));
+      const accountDelta = -totalAmount;
+      if (account) applyBankDelta(account, accountDelta);
+      const selected = new Set(movements);
+      const target = state.movementMode === "future" ? state.futureTransactions : state.transactions;
+      for (let i = target.length - 1; i >= 0; i--) {
+        if (selected.has(target[i])) target.splice(i, 1);
+      }
+      writeDataCache();
+      if (state.config.readMode === "apps-script" && state.config.scriptUrl) {
+        queueOp({
+          action: "deleteMovementsBatch",
+          sheetName: state.movementMode === "future" ? (state.config.futureMovementSheet || "Movimientos futuros") : state.config.movementSheet,
+          movements: movements.map(movement => ({
+            rowNumber: movement.rowNumber,
+            movement: serializeTransaction(movement)
+          }))
+        });
+        if (account) queueOp({ action: "saveBanks", bankSheet: state.config.bankSheet || "Bancos", banks: state.banks });
+        setNotice(`${movements.length} movimientos eliminados.`, "ok");
+      } else {
+        setNotice(lineMessage("Eliminados solo en pantalla.", "Para borrar en Sheets necesitas Apps Script."), "warn");
+      }
+      state.movementBulkEdit = false;
+      syncOptions();
+      renderAll();
+    };
+    if (state.banks.length) {
+      const totalAmount = sum(movements.map(movement => Number(movement.amount || 0)));
+      promptMovementDeleteAccount({
+        title: "Aplicar a cuenta",
+        amount: -totalAmount,
+        onConfirm: async account => finalizeDelete(account)
       });
-      setNotice(`${movements.length} movimientos eliminados.`, "ok");
-    } else {
-      setNotice(lineMessage("Eliminados solo en pantalla.", "Para borrar en Sheets necesitas Apps Script."), "warn");
+      return;
     }
-    state.movementBulkEdit = false;
-    syncOptions();
-    renderAll();
+    finalizeDelete();
   } catch (error) {
     restoreButton(btn);
     setNotice(`No se pudieron borrar: ${error.message}`, "warn");
@@ -1703,15 +1770,19 @@ async function submitMovement(event) {
       const from = document.getElementById("formTransferFrom").value;
       const to = document.getElementById("formTransferTo").value;
       if (!amount || !from || !to || from === to) throw new Error("elige origen, destino e importe valido");
+      const fromBefore = getBankAmount(from);
+      const toBefore = getBankAmount(to);
       applyBankDelta(from, -amount);
       applyBankDelta(to, amount);
       writeDataCache();
       queueOp({ action: "transferBank", bankSheet: state.config.bankSheet || "Bancos", from, to, amount });
-      setNotice("Traspaso hecho.", "ok");
+      setNotice(lineMessage("Traspaso hecho", `Origen: ${bankChangeText(from, fromBefore)}`, `Destino: ${bankChangeText(to, toBefore)}`), "ok");
     } else {
       const movement = movementFromForm();
       const future = movement.date > endOfToday();
       const account = document.getElementById("formAccount").value;
+      const bankBefore = getBankAmount(account);
+      const totalBefore = sum(state.banks.map(b => b.dinero));
       if (!future) applyBankDelta(account, movement.amount);
       (future ? state.futureTransactions : state.transactions).push(movement);
       writeDataCache();
@@ -1726,7 +1797,7 @@ async function submitMovement(event) {
         future ? "Movimiento futuro guardado" : "Movimiento guardado",
         movement,
         account,
-        ""
+        !future ? bankChangeLines(totalBefore, sum(state.banks.map(b => b.dinero)), account, bankBefore) : ""
       );
     }
     syncOptions();

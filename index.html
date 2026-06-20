@@ -25,7 +25,19 @@
     </header>
 
     <section id="registrar" class="view active">
-      <article class="panel">
+      <div class="registrar-layout">
+      <article class="panel registrar-summary-panel">
+        <div class="panel-header">
+          <div>
+            <h2>SituaciÃ³n rÃ¡pida</h2>
+            <p>Resumen compacto antes de registrar.</p>
+          </div>
+        </div>
+        <div class="panel-body">
+          <div id="registrarSummary" class="registrar-summary-grid"></div>
+        </div>
+      </article>
+      <article class="panel registrar-form-panel">
         <div class="panel-header">
           <div>
             <h2>Nuevo movimiento</h2>
@@ -54,6 +66,7 @@
           </form>
         </div>
       </article>
+      </div>
     </section>
 
     <section id="resumen" class="view">
