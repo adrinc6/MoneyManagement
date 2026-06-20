@@ -1648,9 +1648,24 @@ html, body {
   background: var(--field);
 }
 .recurrence-picker p { margin: 0 0 8px; color: var(--muted); font-size: .83rem; }
-.choice-grid { display: grid; gap: 6px; }
+.choice-grid {
+  --choice-gap: 6px;
+  display: grid;
+  gap: var(--choice-gap);
+}
 .choice-grid.weekly { grid-template-columns: repeat(7, minmax(0, 1fr)); }
-.choice-grid.monthly { grid-template-columns: repeat(7, minmax(0, 1fr)); }
+.choice-grid.monthly {
+  grid-auto-flow: column;
+  grid-auto-columns: calc((100% - (6 * var(--choice-gap))) / 7);
+  grid-template-columns: none;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 2px;
+  scroll-padding-inline: 0;
+  scroll-snap-type: x mandatory;
+  -webkit-overflow-scrolling: touch;
+}
+.choice-grid.monthly label { scroll-snap-align: start; }
 .choice-grid label {
   position: relative;
   display: block;
@@ -1744,8 +1759,8 @@ html, body {
 .goal-metrics .remaining strong { color: var(--goal-remaining-text); }
 @media (max-width: 720px) {
   .recurring-fields { grid-template-columns: 1fr; }
-  .choice-grid.weekly, .choice-grid.monthly { grid-template-columns: repeat(7, minmax(0, 1fr)); }
-  .choice-grid { gap: 4px; }
+  .choice-grid.weekly { grid-template-columns: repeat(7, minmax(0, 1fr)); }
+  .choice-grid { --choice-gap: 4px; }
   .choice-grid span {
     min-height: 30px;
     border-radius: 6px;
