@@ -1868,6 +1868,9 @@ function syncRegisterMode() {
   const recurring = isRecurringMode();
   const isTransfer = normalizeType(document.getElementById('formType').value) === 'transferencia';
   const showRecurring = recurring && !isTransfer;
+  document.getElementById('registrar')?.classList.toggle('recurring-register-active', showRecurring);
+  document.getElementById('movementForm')?.classList.toggle('recurring-form-active', showRecurring);
+  document.getElementById('movementForm')?.classList.toggle('single-form-active', !showRecurring);
   document.getElementById('recurringFields')?.classList.toggle('hidden', !showRecurring);
   document.querySelector('#movementForm .recurring-account')?.classList.toggle('hidden', !showRecurring);
   document.querySelectorAll('#movementForm .movement-only').forEach(el => {

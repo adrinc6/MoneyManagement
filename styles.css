@@ -154,6 +154,9 @@ p { color: var(--muted); }
   overflow: hidden;
   padding-bottom: 0;
 }
+#registrar.recurring-register-active .registrar-layout {
+  grid-template-rows: minmax(0, 30fr) minmax(0, 70fr);
+}
 .registrar-layout {
   flex: 1 1 auto;
   height: 100%;
@@ -228,7 +231,13 @@ p { color: var(--muted); }
 .registrar-form-panel .form-grid {
   min-height: 100%;
   gap: clamp(8px, 1vh, 12px);
-  align-content: start;
+  align-content: stretch;
+}
+.registrar-form-panel .single-form-active {
+  grid-auto-rows: minmax(0, 1fr);
+}
+.registrar-form-panel .recurring-form-active {
+  gap: clamp(5px, .62vh, 9px);
 }
 .registrar-form-panel label {
   font-size: clamp(.76rem, 1vh, .86rem);
@@ -239,7 +248,30 @@ p { color: var(--muted); }
   padding-block: clamp(9px, 1vh, 12px);
 }
 .registrar-form-panel .recurring-fields {
-  align-self: start;
+  align-self: stretch;
+}
+.registrar-form-panel .recurring-form-active input,
+.registrar-form-panel .recurring-form-active select {
+  min-height: clamp(34px, 3.8vh, 44px);
+  padding-block: clamp(6px, .7vh, 9px);
+}
+.registrar-form-panel .recurring-form-active label {
+  font-size: clamp(.68rem, .88vh, .8rem);
+}
+.registrar-form-panel .recurring-form-active .recurring-fields {
+  gap: clamp(5px, .62vh, 8px);
+  padding: clamp(7px, .8vh, 10px);
+}
+.registrar-form-panel .recurring-form-active .choice-grid {
+  gap: 4px;
+}
+.registrar-form-panel .recurring-form-active .choice-grid span {
+  min-height: clamp(26px, 2.9vh, 32px);
+  font-size: clamp(.65rem, .82vh, .75rem);
+}
+.registrar-form-panel .recurring-form-active .recurrence-picker p {
+  margin-bottom: 5px;
+  font-size: clamp(.66rem, .82vh, .76rem);
 }
 @media (max-width: 720px) and (max-height: 820px) {
   .registrar-form-panel .panel-header h2 {
@@ -1260,6 +1292,16 @@ dialog::backdrop { background: rgba(15, 23, 42, .5); }
 }
 
 @media (max-width: 720px) {
+
+  #registrar.recurring-register-active .registrar-layout {
+    grid-template-rows: minmax(0, 28fr) minmax(0, 72fr);
+  }
+  .registrar-form-panel .recurring-form-active {
+    gap: clamp(4px, .52vh, 7px);
+  }
+  .registrar-form-panel .recurring-form-active .recurring-fields {
+    gap: clamp(4px, .52vh, 7px);
+  }
   .app {
     width: 100%;
     height: calc(100dvh - 76px - env(safe-area-inset-bottom));
