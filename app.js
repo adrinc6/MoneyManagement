@@ -1336,6 +1336,7 @@ function renderMovementEntries(year, month) {
 
 function renderMovementTable(rows) {
   const table = document.getElementById("movementTable");
+  table.classList.toggle("movement-bulk-edit", state.movementBulkEdit);
   const columns = [
     ["day", "Día", t => t.date.getDate()],
     ["type", "Tipo", t => t.tipo],
