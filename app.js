@@ -2578,8 +2578,9 @@ function renderInvestments() {
     renderInvestmentBreakdownTable(summary);
     renderInvestmentEditTable();
   }
+  const hideLowerSections = showingGoals || showingEvolution;
   document.querySelectorAll("#inversiones > article.panel, #saveInvestmentsBtn").forEach(el => {
-    el.classList.toggle("hidden", showingEvolution);
+    el.classList.toggle("hidden", hideLowerSections);
   });
 }
 
