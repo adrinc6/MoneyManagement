@@ -80,7 +80,7 @@ const state = {
   categories: { types: STATIC_TYPES, concepts: STATIC_CONCEPTS },
   charts: {},
   filtered: [],
-  movementDrill: { level: "years", year: null, month: null },
+  movementDrill: { level: "entries", year: String(new Date().getFullYear()), month: currentMonthKey() },
   summaryModes: { situation: "ingresos", investmentMoney: "invested", moneyMix: "types", bankMoney: "summary", investmentOverviewType: null, investmentPanel: "current" },
   descriptionSuggestions: {},
   submittingMovement: false,
@@ -185,6 +185,10 @@ function wireUi() {
 function showView(id) {
   document.querySelectorAll(".view").forEach(v => v.classList.toggle("active", v.id === id));
   document.querySelectorAll("[data-view-button]").forEach(b => b.classList.toggle("active", b.dataset.viewButton === id));
+  if (id === "movimientos") {
+    const now = new Date();
+    state.movementDrill = { level: "entries", year: String(now.getFullYear()), month: currentMonthKey() };
+  }
   syncRegistrarActionButton();
   document.getElementById("viewTitle").textContent = {
     registrar: "Registrar",
@@ -353,7 +357,7 @@ async function refreshData(options = {}) {
     renderAll();
     writeDataCache();
     setNotice(lineMessage(
-      `${state.transactions.length} movimientos y ${state.banks.length} cuentas cargadas.`,
+      `Datos descargados y actualizados.`,
       flushedPending.length ? `Pendientes enviados antes: ${flushedPending.join(", ")}` : ""
     ), "ok");
   } catch (error) {
@@ -1269,10 +1273,17 @@ function renderMovementYears() {
   document.getElementById("movementDrill").innerHTML = `<div class="year-grid">${years.map(year => {
     const tx = source.filter(t => String(t.date.getFullYear()) === year);
     const yearly = summarizeTransactions(tx);
-    return `<button class="year-card" data-year="${year}">
-      <span>Año</span>
-      <strong>${year}</strong>
-      <small>${tx.length} movimientos</small>
+    return `<button class="month-card year-card" data-year="${year}">
+      <div class="month-number">
+        <span>Año</span>
+        <strong>${year}</strong>
+      </div>
+      <div class="month-metrics">
+        ${metricBlock(movementLabels().income, yearly.income, "positive")}
+        ${metricBlock(movementLabels().expenses, yearly.expenses, "negative")}
+        ${metricBlock(movementLabels().investment, yearly.invested, "")}
+        ${metricBlock("Balance", yearly.balance, yearly.balance >= 0 ? "positive" : "negative")}
+      </div>
     </button>`;
   }).join("") || emptyBlock("Sin movimientos.")}</div>`;
   document.querySelectorAll("[data-year]").forEach(btn => btn.addEventListener("click", () => {
@@ -1297,9 +1308,9 @@ function renderMovementMonths(year) {
         <strong>${monthNumber}</strong>
       </div>
       <div class="month-metrics">
-        ${metricBlock("Ingresos", s.income, "positive")}
-        ${metricBlock("Gastos", s.expenses, "negative")}
-        ${metricBlock("Inversión", s.investedMonth, "")}
+        ${metricBlock(movementLabels().income, s.income, "positive")}
+        ${metricBlock(movementLabels().expenses, s.expenses, "negative")}
+        ${metricBlock(movementLabels().investment, s.investedMonth, "")}
         ${metricBlock("Balance", s.balance, s.balance >= 0 ? "positive" : "negative")}
       </div>
     </button>`;
@@ -1322,9 +1333,9 @@ function renderMovementEntries(year, month) {
     <article class="panel">
       <div class="panel-body">
         <div class="month-metrics">
-          ${metricBlock("Ingresos", summary.income, "positive")}
-          ${metricBlock("Gastos", summary.expenses, "negative")}
-          ${metricBlock("Inversión", summary.investedMonth, "")}
+          ${metricBlock(movementLabels().income, summary.income, "positive")}
+          ${metricBlock(movementLabels().expenses, summary.expenses, "negative")}
+          ${metricBlock(movementLabels().investment, summary.investedMonth, "")}
           ${metricBlock("Balance", summary.balance, summary.balance >= 0 ? "positive" : "negative")}
         </div>
       </div>
@@ -1494,6 +1505,12 @@ function summarizeTransactions(transactions) {
   const expenses = Math.abs(sum(transactions.filter(t => isMonthlyExpense(t)).map(t => t.amount)));
   const invested = Math.abs(sum(transactions.filter(t => isInvestment(t)).map(t => t.amount)));
   return { income, expenses, invested, balance: income - expenses - invested };
+}
+
+function movementLabels() {
+  return state.movementMode === "future"
+    ? { income: "Ingresos\nplaneados", expenses: "Gastos\nplaneados", investment: "Inversión\nplaneada" }
+    : { income: "Ingresos", expenses: "Gastos", investment: "Inversión" };
 }
 
 function metricBlock(label, value, tone) {

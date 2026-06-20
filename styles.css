@@ -660,8 +660,10 @@ input[readonly] {
   padding: 8px;
   display: grid;
   grid-template-columns: 54px minmax(0, 1fr);
-  gap: 8px;
+  column-gap: 12px;
+  row-gap: 8px;
   align-items: stretch;
+  overflow: hidden;
 }
 .month-number {
   border-radius: 8px;
@@ -680,11 +682,28 @@ input[readonly] {
   font-size: 1.65rem;
   line-height: 1;
 }
+.year-card .month-number {
+  min-width: 60px;
+  width: 60px;
+}
+.year-card .month-number strong {
+  font-size: 1.1rem;
+}
+.year-card .month-metrics {
+  gap: 0;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  width: 100%;
+}
+.year-card .metric {
+  padding-left: 8px;
+  padding-right: 8px;
+}
 .month-metrics {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 4px;
   align-items: center;
+  min-width: 0;
 }
 .metric {
   background: transparent;
@@ -692,6 +711,7 @@ input[readonly] {
   padding: 4px 2px;
   min-width: 0;
   text-align: center;
+  overflow: hidden;
 }
 .metric strong {
   display: block;
@@ -704,6 +724,9 @@ input[readonly] {
   margin-top: 3px;
   color: var(--muted);
   font-size: .68rem;
+  white-space: pre-line;
+  line-height: 1.1;
+  overflow-wrap: anywhere;
 }
 
 .table-wrap {
