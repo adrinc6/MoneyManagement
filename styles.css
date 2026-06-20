@@ -153,16 +153,15 @@ p { color: var(--muted); }
 #registrar.view.active {
   overflow: hidden;
   padding-bottom: 0;
-}
-#registrar.recurring-register-active .registrar-layout {
-  grid-template-rows: minmax(0, 30fr) minmax(0, 70fr);
+  align-content: stretch;
 }
 .registrar-layout {
   flex: 1 1 auto;
   height: 100%;
   min-height: 0;
   display: grid;
-  grid-template-rows: minmax(0, 34fr) minmax(0, 66fr);
+  grid-template-rows: minmax(0, 25fr) minmax(0, 75fr);
+  align-content: stretch;
   gap: clamp(6px, .9vh, 10px);
 }
 .registrar-summary-grid {
@@ -170,6 +169,7 @@ p { color: var(--muted); }
   grid-template-columns: repeat(2, minmax(0, 1fr));
   grid-template-rows: repeat(3, minmax(0, 1fr));
   gap: clamp(4px, .65vh, 8px);
+  height: 100%;
   min-height: 0;
   width: 100%;
   justify-self: stretch;
@@ -182,20 +182,20 @@ p { color: var(--muted); }
   display: grid;
   place-items: center;
   align-content: center;
-  gap: clamp(1px, .28vh, 5px);
+  gap: clamp(2px, .35vh, 6px);
   min-height: 0;
   text-align: center;
   box-shadow: none;
 }
 .mini-stat-card span {
   color: var(--muted);
-  font-size: clamp(.6rem, .9vh, .76rem);
+  font-size: clamp(.66rem, 1vh, .82rem);
   line-height: 1.08;
   letter-spacing: 0;
   text-transform: none;
 }
 .mini-stat-card strong {
-  font-size: clamp(.84rem, 1.55vh, 1.28rem);
+  font-size: clamp(1rem, 1.85vh, 1.42rem);
   line-height: .98;
   font-weight: 700;
 }
@@ -206,6 +206,9 @@ p { color: var(--muted); }
 }
 .registrar-summary-panel .panel-header {
   display: none;
+}
+.registrar-summary-panel .panel-body {
+  padding: clamp(8px, 1vh, 12px);
 }
 .registrar-summary-panel .panel-body,
 .registrar-form-panel .panel-body {
@@ -230,7 +233,7 @@ p { color: var(--muted); }
 }
 .registrar-form-panel .form-grid {
   min-height: 100%;
-  gap: clamp(8px, 1vh, 12px);
+  gap: clamp(6px, .75vh, 9px);
   align-content: stretch;
 }
 .registrar-form-panel .single-form-active {
@@ -244,8 +247,8 @@ p { color: var(--muted); }
 }
 .registrar-form-panel input,
 .registrar-form-panel select {
-  min-height: clamp(42px, 4.4vh, 52px);
-  padding-block: clamp(9px, 1vh, 12px);
+  min-height: clamp(54px, 5.5vh, 64px);
+  padding-block: clamp(12px, 1.2vh, 15px);
 }
 .registrar-form-panel .recurring-fields {
   align-self: stretch;
@@ -1293,9 +1296,6 @@ dialog::backdrop { background: rgba(15, 23, 42, .5); }
 
 @media (max-width: 720px) {
 
-  #registrar.recurring-register-active .registrar-layout {
-    grid-template-rows: minmax(0, 28fr) minmax(0, 72fr);
-  }
   .registrar-form-panel .recurring-form-active {
     gap: clamp(4px, .52vh, 7px);
   }
@@ -1648,9 +1648,24 @@ html, body {
   background: var(--field);
 }
 .recurrence-picker p { margin: 0 0 8px; color: var(--muted); font-size: .83rem; }
-.choice-grid { display: grid; gap: 6px; }
+.choice-grid {
+  --choice-gap: 6px;
+  display: grid;
+  gap: var(--choice-gap);
+}
 .choice-grid.weekly { grid-template-columns: repeat(7, minmax(0, 1fr)); }
-.choice-grid.monthly { grid-template-columns: repeat(7, minmax(0, 1fr)); }
+.choice-grid.monthly {
+  grid-auto-flow: column;
+  grid-auto-columns: calc((100% - (6 * var(--choice-gap))) / 7);
+  grid-template-columns: none;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 2px;
+  scroll-padding-inline: 0;
+  scroll-snap-type: x mandatory;
+  -webkit-overflow-scrolling: touch;
+}
+.choice-grid.monthly label { scroll-snap-align: start; }
 .choice-grid label {
   position: relative;
   display: block;
@@ -1744,8 +1759,8 @@ html, body {
 .goal-metrics .remaining strong { color: var(--goal-remaining-text); }
 @media (max-width: 720px) {
   .recurring-fields { grid-template-columns: 1fr; }
-  .choice-grid.weekly, .choice-grid.monthly { grid-template-columns: repeat(7, minmax(0, 1fr)); }
-  .choice-grid { gap: 4px; }
+  .choice-grid.weekly { grid-template-columns: repeat(7, minmax(0, 1fr)); }
+  .choice-grid { --choice-gap: 4px; }
   .choice-grid span {
     min-height: 30px;
     border-radius: 6px;
