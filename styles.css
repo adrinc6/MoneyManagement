@@ -87,7 +87,7 @@ button:active { transform: translateY(1px); }
 
 .app {
   width: min(980px, calc(100% - 20px));
-  height: calc(100dvh - 80px - env(safe-area-inset-bottom));
+  height: calc(100dvh - 96px - env(safe-area-inset-bottom));
   margin: 10px auto 0;
   padding: 18px 16px 14px;
   display: flex;
@@ -334,8 +334,13 @@ p { color: var(--muted); }
 .movement-edit-actions {
   display: flex;
   justify-content: flex-end;
-  gap: 8px;
+  gap: 6px;
   min-width: 0;
+}
+.movement-edit-actions .icon-only {
+  width: 38px;
+  min-width: 38px;
+  padding-inline: 0;
 }
 .section-toolbar label { min-width: 150px; }
 .period-toolbar {
@@ -762,6 +767,7 @@ table {
 }
 #movementTable {
   table-layout: auto;
+  min-width: 0;
 }
 th, td {
   min-width: 0;
@@ -831,63 +837,71 @@ th {
   min-width: 0;
 }
 #movementTable .tag {
-  width: 100%;
+  width: auto;
+  max-width: 100%;
 }
-#movementTable .col-select {
-  width: 28px;
-  min-width: 28px;
-  padding-left: 2px;
-  padding-right: 2px;
-}
-#movementTable .movement-select {
-  width: 16px;
-  min-height: 16px;
-}
-#movementTable .col-day,
-#movementTable .col-type {
-  width: 1%;
+#movementTable th,
+#movementTable td {
   min-width: 0;
 }
+#movementTable .amount {
+  font-size: .95em;
+}
+#movementTable:where(*) {
+  max-width: 100%;
+}
+#movementDrill .movement-table-wrap {
+  overflow-x: hidden;
+}
+#movementTable .col-select {
+  width: 20px;
+  min-width: 20px;
+  padding-left: 1px;
+  padding-right: 1px;
+  text-align: center;
+}
+#movementTable .movement-select {
+  width: 14px;
+  min-height: 14px;
+}
+#movementTable .col-day {
+  width: 3ch;
+  min-width: 3ch;
+  text-align: center;
+}
+#movementTable .col-type {
+  width: 1%;
+  min-width: 5ch;
+}
 #movementTable .col-concept {
-  width: 12ch;
-  min-width: 11ch;
+  width: 24%;
+  min-width: 8ch;
 }
 #movementTable .col-desc {
   width: auto;
-  min-width: 12ch;
-}
-#movementTable .col-money {
-  width: 9ch;
-  min-width: 9ch;
-}
-#movementTable .col-account {
-  width: 10ch;
-  min-width: 9ch;
-}
-#movementTable .selectable-row .col-day,
-#movementTable th.col-day,
-#movementTable .selectable-row .col-type,
-#movementTable th.col-type {
-  width: 1%;
   min-width: 0;
 }
-#movementTable .selectable-row .col-concept,
-#movementTable th.col-concept {
-  width: 12ch;
-  min-width: 10ch;
-}
-#movementTable .selectable-row .col-desc,
-#movementTable th.col-desc {
-  width: auto;
-  min-width: 5ch;
-}
-#movementTable .selectable-row .col-money {
-  width: 8ch;
-  min-width: 8ch;
-}
-#movementTable .selectable-row .col-account {
-  width: 8.5ch;
+#movementTable .col-money {
+  width: 1%;
   min-width: 7ch;
+  text-align: right;
+}
+#movementTable .col-account {
+  width: 1%;
+  min-width: 6ch;
+}
+#movementTable.movement-bulk-edit .col-concept {
+  width: 22%;
+  min-width: 7ch;
+}
+#movementTable.movement-bulk-edit .col-desc {
+  min-width: 0;
+}
+#movementTable.movement-bulk-edit .col-money {
+  min-width: 7ch;
+}
+#movementTable.movement-bulk-edit .col-account {
+  min-width: 6ch;
 }
 .selectable-row td {
   cursor: pointer;
@@ -1155,11 +1169,11 @@ dialog::backdrop { background: rgba(15, 23, 42, .5); }
 .bottom-nav {
   position: fixed;
   left: 50%;
-  bottom: 0;
+  bottom: max(16px, env(safe-area-inset-bottom));
   transform: translateX(-50%);
   width: min(520px, 100vw);
-  height: calc(68px + env(safe-area-inset-bottom));
-  min-height: calc(68px + env(safe-area-inset-bottom));
+  height: 68px;
+  min-height: 68px;
   z-index: 50;
   isolation: isolate;
   background: var(--nav-bg);
@@ -1188,7 +1202,7 @@ dialog::backdrop { background: rgba(15, 23, 42, .5); }
   place-items: center;
   gap: 2px;
   font-size: .72rem;
-  padding: 0 0 env(safe-area-inset-bottom);
+  padding: 0;
 }
 .bottom-nav button:first-child {
   border-top-left-radius: 24px;
@@ -1211,9 +1225,9 @@ dialog::backdrop { background: rgba(15, 23, 42, .5); }
   content: "";
   position: fixed;
   left: 50%;
-  bottom: 0;
+  bottom: calc(-1 * max(16px, env(safe-area-inset-bottom)));
   width: 100vw;
-  height: calc(68px + env(safe-area-inset-bottom));
+  height: calc(84px + env(safe-area-inset-bottom));
   transform: translateX(-50%);
   z-index: -1;
   background: var(--page-bg);
@@ -1304,7 +1318,7 @@ dialog::backdrop { background: rgba(15, 23, 42, .5); }
   }
   .app {
     width: 100%;
-    height: calc(100dvh - 76px - env(safe-area-inset-bottom));
+    height: calc(100dvh - 92px - env(safe-area-inset-bottom));
     margin-top: 0;
     padding: 16px 12px 12px;
     border-top: 0;
