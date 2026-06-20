@@ -1333,9 +1333,9 @@ function renderMovementEntries(year, month) {
     <article class="panel">
       <div class="panel-body">
         <div class="month-metrics">
-          ${metricBlock(movementLabels().income, summary.income, "positive")}
-          ${metricBlock(movementLabels().expenses, summary.expenses, "negative")}
-          ${metricBlock(movementLabels().investment, summary.investedMonth, "")}
+          ${metricBlock("Ingresos", summary.income, "positive")}
+          ${metricBlock("Gastos", summary.expenses, "negative")}
+          ${metricBlock("Inversión", summary.investedMonth, "")}
           ${metricBlock("Balance", summary.balance, summary.balance >= 0 ? "positive" : "negative")}
         </div>
       </div>

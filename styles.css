@@ -728,16 +728,16 @@ input[readonly] {
   line-height: 1;
 }
 .year-card .month-number {
-  min-width: 60px;
   width: 60px;
+  min-width: 60px;
 }
 .year-card .month-number strong {
   font-size: 1.1rem;
 }
 .year-card .month-metrics {
   gap: 0;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
   width: 100%;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 .year-card .metric {
   padding-left: 8px;
