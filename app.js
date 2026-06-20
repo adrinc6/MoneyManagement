@@ -1339,7 +1339,7 @@ function renderMovementEntries(year, month) {
           ${metricBlock("Balance", summary.balance, summary.balance >= 0 ? "positive" : "negative")}
         </div>
       </div>
-      <div class="table-wrap"><table id="movementTable"></table></div>
+      <div class="table-wrap movement-table-wrap"><table id="movementTable"></table></div>
     </article>`;
   renderMovementTable(rows);
   state.filtered = rows;
@@ -1347,6 +1347,7 @@ function renderMovementEntries(year, month) {
 
 function renderMovementTable(rows) {
   const table = document.getElementById("movementTable");
+  table.classList.toggle("movement-bulk-edit", state.movementBulkEdit);
   const columns = [
     ["day", "Día", t => t.date.getDate()],
     ["type", "Tipo", t => t.tipo],
@@ -1413,14 +1414,20 @@ function syncMovementBulkButtons() {
   editBtn.classList.toggle("hidden", !isEntries);
   deleteBtn.classList.toggle("hidden", !isEntries || !state.movementBulkEdit);
   editBtn.classList.toggle("primary", state.movementBulkEdit);
-  editBtn.innerHTML = state.movementBulkEdit ? `<i data-lucide="x"></i> Cancelar` : `<i data-lucide="square-pen"></i> Editar`;
+  editBtn.classList.toggle("icon-only", state.movementBulkEdit);
+  editBtn.setAttribute("aria-label", state.movementBulkEdit ? "Cancelar edición" : "Editar movimientos");
+  editBtn.title = state.movementBulkEdit ? "Cancelar" : "Editar";
+  editBtn.innerHTML = state.movementBulkEdit ? `<i data-lucide="check"></i>` : `<i data-lucide="square-pen"></i> Editar`;
   const count = selectedMovementIndexes().length;
   if (deleteBtn.classList.contains("saving")) {
     lucide.createIcons();
     return;
   }
   deleteBtn.disabled = count === 0;
-  deleteBtn.innerHTML = `<i data-lucide="trash-2"></i> ${count ? `Borrar ${count}` : "Borrar"}`;
+  deleteBtn.classList.add("icon-only");
+  deleteBtn.setAttribute("aria-label", count ? `Borrar ${count} movimientos seleccionados` : "Borrar movimientos seleccionados");
+  deleteBtn.title = count ? `Borrar ${count}` : "Borrar";
+  deleteBtn.innerHTML = `<i data-lucide="trash-2"></i>`;
   lucide.createIcons();
 }
 
@@ -1885,6 +1892,9 @@ function syncRegisterMode() {
   const recurring = isRecurringMode();
   const isTransfer = normalizeType(document.getElementById('formType').value) === 'transferencia';
   const showRecurring = recurring && !isTransfer;
+  document.getElementById('registrar')?.classList.toggle('recurring-register-active', showRecurring);
+  document.getElementById('movementForm')?.classList.toggle('recurring-form-active', showRecurring);
+  document.getElementById('movementForm')?.classList.toggle('single-form-active', !showRecurring);
   document.getElementById('recurringFields')?.classList.toggle('hidden', !showRecurring);
   document.querySelector('#movementForm .recurring-account')?.classList.toggle('hidden', !showRecurring);
   document.querySelectorAll('#movementForm .movement-only').forEach(el => {
