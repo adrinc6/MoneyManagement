@@ -717,16 +717,16 @@ async function fetchAppsScriptData() {
 async function fetchPublicCsvTransactions() {
   if (!state.config.sheetId) throw new Error("falta el ID de Google Sheet");
   const csv = await fetchCsv(state.config.sheetId, state.config.movementSheet);
-  return parseCsv(csv).slice(1).map(row => normalizeTransaction({
-    fecha: row[0], tipo: row[4], concepto: row[5], descripcion: row[6], importe: row[7]
+  return parseCsv(csv).slice(1).map((row, i) => normalizeTransaction({
+    rowNumber: i + 2, fecha: row[0], tipo: row[4], concepto: row[5], descripcion: row[6], importe: row[7]
   })).filter(Boolean);
 }
 
 async function fetchPublicCsvFutureTransactions() {
   if (!state.config.sheetId) return [];
   const csv = await fetchCsv(state.config.sheetId, state.config.futureMovementSheet || "Movimientos futuros");
-  return parseCsv(csv).slice(1).map(row => normalizeTransaction({
-    fecha: row[0], tipo: row[4], concepto: row[5], descripcion: row[6], importe: row[7], cuenta: row[8]
+  return parseCsv(csv).slice(1).map((row, i) => normalizeTransaction({
+    rowNumber: i + 2, fecha: row[0], tipo: row[4], concepto: row[5], descripcion: row[6], importe: row[7], cuenta: row[8]
   })).filter(Boolean);
 }
 
@@ -1689,11 +1689,16 @@ async function saveMovementDetail(event) {
   try {
     list[index] = movement;
     writeDataCache();
-    if (state.config.readMode === "apps-script" && state.config.scriptUrl && previous.rowNumber) {
-      queueOp({ action: "updateMovement", movement, sheetName: state.movementMode === "future" ? (state.config.futureMovementSheet || "Movimientos futuros") : state.config.movementSheet });
+    if (state.config.readMode === "apps-script" && state.config.scriptUrl) {
+      queueOp({
+        action: "updateMovement",
+        movement: serializeTransaction(movement),
+        previousMovement: serializeTransaction(previous),
+        sheetName: state.movementMode === "future" ? (state.config.futureMovementSheet || "Movimientos futuros") : state.config.movementSheet
+      });
       setNotice("Movimiento actualizado en local y en cola.", "ok");
     } else {
-      setNotice(lineMessage("Cambio local.", "Para guardar en Sheets necesitas Apps Script y rowNumber."), "warn");
+      setNotice(lineMessage("Cambio local.", "Para guardar en Sheets necesitas Apps Script."), "warn");
     }
     markButtonSaved(btn);
     document.getElementById("movementDetailDialog").close();

@@ -1,4 +1,4 @@
-﻿const APP_TOKEN = '';
+const APP_TOKEN = '';
 const DEFAULT_MOVEMENT_SHEET = 'Control Finanzas';
 const DEFAULT_INVESTMENT_SHEET = 'Inversiones';
 const DEFAULT_BANK_SHEET = 'Bancos';
@@ -67,7 +67,7 @@ function doPost(e) {
       return finishPost_(pendingId, { ok: true });
     }
     if (payload.action === 'updateMovement') {
-      updateMovement_(payload.movement, payload.sheetName || DEFAULT_MOVEMENT_SHEET);
+      updateMovement_(payload.movement, payload.sheetName || DEFAULT_MOVEMENT_SHEET, payload.previousMovement || null);
       return finishPost_(pendingId, { ok: true });
     }
     if (payload.action === 'deleteMovement') {
@@ -180,12 +180,15 @@ function readMovements_(sheetName) {
     }));
 }
 
-function updateMovement_(movement, sheetName) {
+function updateMovement_(movement, sheetName, previousMovement) {
   if (!movement) throw new Error('Missing movement');
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
   if (!sheet) throw new Error(`Sheet not found: ${sheetName}`);
-  const rowNumber = Number(movement.rowNumber || 0);
-  if (rowNumber < 2 || rowNumber > sheet.getLastRow()) throw new Error('Invalid rowNumber');
+  let rowNumber = Number(movement.rowNumber || 0);
+  if (rowNumber < 2 || rowNumber > sheet.getLastRow()) rowNumber = 0;
+  if (rowNumber && previousMovement && !movementMatchesSheetRow_(sheet, rowNumber, previousMovement)) rowNumber = 0;
+  if (!rowNumber && previousMovement) rowNumber = findMovementRow_(sheet, previousMovement);
+  if (rowNumber < 2 || rowNumber > sheet.getLastRow()) throw new Error('Movement not found');
 
   const date = new Date(movement.date || movement.fecha);
   if (Number.isNaN(date.getTime())) throw new Error('Invalid date');
