@@ -154,7 +154,7 @@ function wireUi() {
   document.getElementById("movementDetailForm").addEventListener("submit", saveMovementDetail);
   document.getElementById("deleteMovementBtn").addEventListener("click", deleteMovementDetail);
   document.getElementById("movementDeleteAccountForm")?.addEventListener("submit", confirmMovementDeleteAccount);
-  document.getElementById("closeMovementDeleteAccountBtn")?.addEventListener("click", () => document.getElementById("movementDeleteAccountDialog")?.close());
+  document.getElementById("closeMovementDeleteAccountBtn")?.addEventListener("click", closeMovementAccountPrompt);
   document.getElementById("closeInvestmentDetailBtn").addEventListener("click", () => document.getElementById("investmentDetailDialog").close());
   document.getElementById("investmentDetailForm").addEventListener("submit", saveInvestmentDetail);
   document.getElementById("closeMovementPopupBtn")?.addEventListener("click", () => document.getElementById("movementPopup").close());
@@ -1484,7 +1484,8 @@ async function deleteSelectedMovements() {
       promptMovementDeleteAccount({
         title: "Aplicar a cuenta",
         amount: -totalAmount,
-        onConfirm: async account => finalizeDelete(account)
+        onConfirm: account => finalizeDelete(account),
+        onCancel: () => restoreButton(btn)
       });
       return;
     }
@@ -1686,7 +1687,9 @@ async function saveMovementDetail(event) {
     restoreButton(btn);
     return;
   }
-  try {
+  const saveWithAccount = account => {
+    const accountDelta = roundMoney(movement.amount - previous.amount);
+    if (account && accountDelta) applyBankDelta(account, accountDelta);
     list[index] = movement;
     writeDataCache();
     if (state.config.readMode === "apps-script" && state.config.scriptUrl) {
@@ -1696,6 +1699,7 @@ async function saveMovementDetail(event) {
         previousMovement: serializeTransaction(previous),
         sheetName: state.movementMode === "future" ? (state.config.futureMovementSheet || "Movimientos futuros") : state.config.movementSheet
       });
+      if (account && accountDelta) queueOp({ action: "saveBanks", bankSheet: state.config.bankSheet || "Bancos", banks: state.banks });
       setNotice("Movimiento actualizado en local y en cola.", "ok");
     } else {
       setNotice(lineMessage("Cambio local.", "Para guardar en Sheets necesitas Apps Script."), "warn");
@@ -1704,6 +1708,19 @@ async function saveMovementDetail(event) {
     document.getElementById("movementDetailDialog").close();
     syncOptions();
     renderAll();
+  };
+  try {
+    const accountDelta = roundMoney(movement.amount - previous.amount);
+    if (state.movementMode !== "future" && state.banks.length && accountDelta) {
+      promptMovementDeleteAccount({
+        title: "Aplicar cambio de dinero",
+        amount: accountDelta,
+        onConfirm: account => saveWithAccount(account),
+        onCancel: () => restoreButton(btn)
+      });
+      return;
+    }
+    saveWithAccount("");
   } catch (error) {
     restoreButton(btn);
     setNotice(`No se pudo guardar: ${error.message}`, "warn");
@@ -1718,31 +1735,37 @@ async function deleteMovementDetail() {
   if (!movement) return;
   markButtonSaving(btn, "Eliminando");
   const accountDelta = -Number(movement.amount || 0);
+  const finalizeDelete = account => {
+    if (account) applyBankDelta(account, accountDelta);
+    list.splice(index, 1);
+    writeDataCache();
+    if (state.config.readMode === "apps-script" && state.config.scriptUrl) {
+      queueOp({
+        action: "deleteMovement",
+        rowNumber: movement.rowNumber,
+        movement: serializeTransaction(movement),
+        sheetName: state.movementMode === "future" ? (state.config.futureMovementSheet || "Movimientos futuros") : state.config.movementSheet
+      });
+      if (account) queueOp({ action: "saveBanks", bankSheet: state.config.bankSheet || "Bancos", banks: state.banks });
+      setNotice("Movimiento eliminado.", "ok");
+    } else {
+      setNotice(lineMessage("Eliminado solo en pantalla.", "Para borrar en Sheets necesitas Apps Script."), "warn");
+    }
+    markButtonSaved(btn, "Eliminado");
+    document.getElementById("movementDetailDialog").close();
+    syncOptions();
+    renderAll();
+  };
   try {
+    if (!state.banks.length) {
+      finalizeDelete("");
+      return;
+    }
     promptMovementDeleteAccount({
       title: "Aplicar a cuenta",
       amount: accountDelta,
-      onConfirm: async account => {
-        if (account) applyBankDelta(account, accountDelta);
-        list.splice(index, 1);
-        writeDataCache();
-        if (state.config.readMode === "apps-script" && state.config.scriptUrl) {
-          queueOp({
-            action: "deleteMovement",
-            rowNumber: movement.rowNumber,
-            movement: serializeTransaction(movement),
-            sheetName: state.movementMode === "future" ? (state.config.futureMovementSheet || "Movimientos futuros") : state.config.movementSheet
-          });
-          if (account) queueOp({ action: "saveBanks", bankSheet: state.config.bankSheet || "Bancos", banks: state.banks });
-          setNotice("Movimiento eliminado.", "ok");
-        } else {
-          setNotice(lineMessage("Eliminado solo en pantalla.", "Para borrar en Sheets necesitas Apps Script."), "warn");
-        }
-        markButtonSaved(btn, "Eliminado");
-        document.getElementById("movementDetailDialog").close();
-        syncOptions();
-        renderAll();
-      }
+      onConfirm: account => finalizeDelete(account),
+      onCancel: () => restoreButton(btn)
     });
   } catch (error) {
     restoreButton(btn);
@@ -2222,7 +2245,7 @@ function bankChangeLines(totalBefore, totalAfter, account, accountBefore) {
   );
 }
 
-function promptMovementDeleteAccount({ title, amount, onConfirm }) {
+function promptMovementDeleteAccount({ title, amount, onConfirm, onCancel }) {
   const dialog = document.getElementById("movementDeleteAccountDialog");
   if (!dialog) return;
   document.getElementById("movementDeleteAccountTitle").textContent = title || "Aplicar a cuenta";
@@ -2230,7 +2253,18 @@ function promptMovementDeleteAccount({ title, amount, onConfirm }) {
   const select = document.getElementById("movementDeleteAccountSelect");
   select.innerHTML = state.banks.map(bank => `<option value="${escapeAttr(bank.cuenta)}">${escapeHtml(bank.cuenta)}</option>`).join("");
   dialog.__onConfirm = onConfirm;
+  dialog.__onCancel = onCancel;
   dialog.showModal();
+}
+
+function closeMovementAccountPrompt() {
+  const dialog = document.getElementById("movementDeleteAccountDialog");
+  if (!dialog) return;
+  const onCancel = dialog.__onCancel;
+  dialog.__onConfirm = null;
+  dialog.__onCancel = null;
+  dialog.close();
+  if (typeof onCancel === "function") onCancel();
 }
 
 async function confirmMovementDeleteAccount(event) {
@@ -2238,6 +2272,8 @@ async function confirmMovementDeleteAccount(event) {
   const dialog = document.getElementById("movementDeleteAccountDialog");
   const account = document.getElementById("movementDeleteAccountSelect").value;
   const onConfirm = dialog.__onConfirm;
+  dialog.__onConfirm = null;
+  dialog.__onCancel = null;
   dialog.close();
   if (typeof onConfirm === "function") await onConfirm(account);
 }
