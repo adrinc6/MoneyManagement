@@ -1111,7 +1111,7 @@ function syncRegistrarMode() {
   const recurring = isRecurringMode();
   const amountInput = document.getElementById("formAmount");
   if (amountInput) {
-    amountInput.min = isTransfer ? "0.01" : "0.01";
+    amountInput.min = isTransfer ? "0.01" : "";
     amountInput.placeholder = isTransfer ? "0.00" : "0.00";
     if (isTransfer) enforceTransferPositiveAmount();
   }
