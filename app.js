@@ -3,14 +3,12 @@ const ENABLE_TEST_MODE = false;
 const DEFAULT_CONFIG = {
   scriptUrl: "",
   appToken: "",
-  sheetId: "",
   movementSheet: "Control Finanzas",
   futureMovementSheet: "Movimientos futuros",
   investmentSheet: "Inversiones",
   bankSheet: "Bancos",
   objectiveSheet: "Objetivos",
   dataSheet: "Datos",
-  readMode: "apps-script",
   initialCash: 6122.08
 };
 
@@ -114,6 +112,8 @@ function wireUi() {
     });
   });
   document.getElementById("refreshBtn").addEventListener("click", () => refreshData({ force: true }));
+  document.getElementById("investmentUpdatePricesBtn")?.addEventListener("click", updateInvestmentPricesFromHeader);
+  document.getElementById("investmentSendNotificationsBtn")?.addEventListener("click", sendInvestmentNotificationsFromHeader);
   document.getElementById("movementForm").addEventListener("submit", submitMovement);
   document.getElementById("registerModeSwitch").addEventListener("click", setRegisterModeFromClick);
   document.getElementById("recurrenceType").addEventListener("change", renderRecurrencePicker);
@@ -133,6 +133,8 @@ function wireUi() {
   document.getElementById("investmentGoalsForm")?.addEventListener("submit", saveInvestmentGoalsFromDialog);
   document.getElementById("themeToggle")?.addEventListener("change", setThemeFromToggle);
   document.getElementById("formType").addEventListener("change", syncRegistrarMode);
+  document.getElementById("formAmount")?.addEventListener("input", enforceTransferPositiveAmount);
+  document.getElementById("formAmount")?.addEventListener("change", enforceTransferPositiveAmount);
   document.getElementById("saveConfigBtn").addEventListener("click", saveConfigFromForm);
   document.getElementById("retryPendingOpsBtn")?.addEventListener("click", () => retryPendingOps());
   document.getElementById("summaryYear").addEventListener("change", syncSummaryPeriodAndRender);
@@ -158,6 +160,7 @@ function wireUi() {
   document.getElementById("closeMovementDeleteAccountBtn")?.addEventListener("click", closeMovementAccountPrompt);
   document.getElementById("closeInvestmentDetailBtn").addEventListener("click", () => document.getElementById("investmentDetailDialog").close());
   document.getElementById("investmentDetailForm").addEventListener("submit", saveInvestmentDetail);
+  document.getElementById("editInvestmentQuantity")?.addEventListener("input", syncInvestmentDetailComputedTotal);
   document.getElementById("closeMovementPopupBtn")?.addEventListener("click", () => document.getElementById("movementPopup").close());
   document.getElementById("monthSituationMode").addEventListener("click", event => {
     const btn = event.target.closest("[data-situation-mode]");
@@ -197,6 +200,7 @@ function showView(id) {
     state.movementDrill = { level: "entries", year: String(now.getFullYear()), month: currentMonthKey() };
   }
   syncRegistrarActionButton();
+  syncInvestmentHeaderActions(id);
   document.getElementById("viewTitle").textContent = {
     registrar: "Registrar",
     resumen: "Resumen",
@@ -207,12 +211,51 @@ function showView(id) {
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
+function syncInvestmentHeaderActions(activeViewId = "") {
+  const show = activeViewId === "inversiones";
+  document.getElementById("investmentUpdatePricesBtn")?.classList.toggle("hidden", !show);
+  document.getElementById("investmentSendNotificationsBtn")?.classList.toggle("hidden", !show);
+}
+
+async function updateInvestmentPricesFromHeader() {
+  const btn = document.getElementById("investmentUpdatePricesBtn");
+  markButtonSaving(btn, "Precios");
+  const ok = await refreshData({ force: true, updateInvestments: true });
+  if (ok) {
+    markButtonSaved(btn, "Listo");
+    setNotice("Precios actualizados con Yahoo y datos descargados.", "ok");
+  } else {
+    restoreButton(btn);
+  }
+}
+
+async function sendInvestmentNotificationsFromHeader() {
+  const btn = document.getElementById("investmentSendNotificationsBtn");
+  markButtonSaving(btn, "Enviando");
+  const ok = await refreshData({ force: true, sendNotifications: true });
+  if (ok) {
+    markButtonSaved(btn, "Enviado");
+    setNotice("Precios actualizados, datos descargados y notificaciones enviadas.", "ok");
+  } else {
+    restoreButton(btn);
+  }
+}
+
 function loadConfig() {
   try {
-    const saved = { ...DEFAULT_CONFIG, ...JSON.parse(localStorage.getItem("moneyConfig") || "{}") };
-    if (!["apps-script", "public-csv"].includes(saved.readMode)) saved.readMode = "apps-script";
-    saved.initialCash = DEFAULT_CONFIG.initialCash;
-    return saved;
+    const raw = JSON.parse(localStorage.getItem("moneyConfig") || "{}");
+    return {
+      ...DEFAULT_CONFIG,
+      scriptUrl: raw.scriptUrl || DEFAULT_CONFIG.scriptUrl,
+      appToken: raw.appToken || DEFAULT_CONFIG.appToken,
+      movementSheet: raw.movementSheet || DEFAULT_CONFIG.movementSheet,
+      futureMovementSheet: raw.futureMovementSheet || DEFAULT_CONFIG.futureMovementSheet,
+      investmentSheet: raw.investmentSheet || DEFAULT_CONFIG.investmentSheet,
+      bankSheet: raw.bankSheet || DEFAULT_CONFIG.bankSheet,
+      objectiveSheet: raw.objectiveSheet || DEFAULT_CONFIG.objectiveSheet,
+      dataSheet: raw.dataSheet || DEFAULT_CONFIG.dataSheet,
+      initialCash: DEFAULT_CONFIG.initialCash
+    };
   } catch {
     return { ...DEFAULT_CONFIG };
   }
@@ -221,13 +264,11 @@ function loadConfig() {
 function hydrateConfigForm() {
   document.getElementById("configScriptUrl").value = state.config.scriptUrl;
   document.getElementById("configAppToken").value = state.config.appToken;
-  document.getElementById("configSheetId").value = state.config.sheetId;
   document.getElementById("configMovementSheet").value = state.config.movementSheet;
   document.getElementById("configFutureMovementSheet").value = state.config.futureMovementSheet || "Movimientos futuros";
   document.getElementById("configInvestmentSheet").value = state.config.investmentSheet;
   document.getElementById("configBankSheet").value = state.config.bankSheet || "Bancos";
   document.getElementById("configDataSheet").value = state.config.dataSheet;
-  document.getElementById("configReadMode").value = state.config.readMode;
   document.getElementById("configInitialCash").value = state.config.initialCash;
 }
 
@@ -237,14 +278,12 @@ async function saveConfigFromForm() {
   state.config = {
     scriptUrl: document.getElementById("configScriptUrl").value.trim(),
     appToken: document.getElementById("configAppToken").value.trim(),
-    sheetId: document.getElementById("configSheetId").value.trim(),
     movementSheet: document.getElementById("configMovementSheet").value.trim() || "Control Finanzas",
     futureMovementSheet: document.getElementById("configFutureMovementSheet").value.trim() || "Movimientos futuros",
     investmentSheet: document.getElementById("configInvestmentSheet").value.trim() || "Inversiones",
     bankSheet: document.getElementById("configBankSheet").value.trim() || "Bancos",
     objectiveSheet: state.config.objectiveSheet || "Objetivos",
     dataSheet: document.getElementById("configDataSheet").value.trim() || "Datos",
-    readMode: document.getElementById("configReadMode").value,
     initialCash: DEFAULT_CONFIG.initialCash
   };
   localStorage.setItem("moneyConfig", JSON.stringify(state.config));
@@ -281,6 +320,8 @@ function setDefaultDate() {
 
 async function refreshData(options = {}) {
   const force = Boolean(options.force);
+  const updateInvestments = Boolean(options.updateInvestments);
+  const sendNotifications = Boolean(options.sendNotifications);
   setRefreshLoading(true);
   const cached = readDataCache();
   const previousFutureTransactions = state.futureTransactions.map(serializeTransaction);
@@ -317,17 +358,8 @@ async function refreshData(options = {}) {
         ],
         categories: { types: STATIC_TYPES, concepts: STATIC_CONCEPTS }
       };
-    } else if (state.config.readMode === "public-csv") {
-      freshData = {
-        transactions: await fetchPublicCsvTransactions(),
-        futureTransactions: await fetchPublicCsvFutureTransactions(),
-        investments: await fetchPublicCsvInvestments(),
-        banks: await fetchPublicCsvBanks(),
-        investmentGoals: await fetchPublicCsvInvestmentGoals(),
-        categories: await fetchPublicCsvCategories()
-      };
     } else {
-      const payload = await fetchAppsScriptData();
+      const payload = await fetchAppsScriptData({ updateInvestments, sendNotifications });
       if (!payload.ok) throw new Error(payload.error || "Apps Script devolvio error");
       if (!Object.prototype.hasOwnProperty.call(payload, "banks")) {
         throw new Error("Apps Script no devuelve la hoja Bancos. Pega y despliega el apps-script.gs actualizado");
@@ -363,15 +395,21 @@ async function refreshData(options = {}) {
     syncOptions();
     renderAll();
     writeDataCache();
+    const successBase = sendNotifications
+      ? "Precios actualizados, datos descargados y notificaciones enviadas."
+      : updateInvestments
+        ? "Precios actualizados con Yahoo y datos descargados."
+        : "Datos descargados y actualizados.";
     setNotice(lineMessage(
-      `Datos descargados y actualizados.`,
+      successBase,
       flushedPending.length ? `Pendientes enviados antes: ${flushedPending.join(", ")}` : ""
     ), "ok");
+    return true;
   } catch (error) {
     console.error(error);
     if (cached) {
       setNotice(lineMessage("No se pudo actualizar; sigo usando cache.", error.message), "warn");
-      return;
+      return false;
     }
     state.transactions = [];
     state.investments = [];
@@ -380,6 +418,7 @@ async function refreshData(options = {}) {
     syncOptions();
     renderAll();
     setNotice(lineMessage(`No se pudieron cargar datos: ${error.message}`, "Revisa Ajustes."), "warn");
+    return false;
   } finally {
     setRefreshLoading(false);
     processOpQueue();
@@ -460,15 +499,15 @@ function ensureMovedFutureMovementsVisible(movedFutureMovements) {
 function applyDataSnapshot(data) {
   state.transactions = (data.transactions || []).map(normalizeTransaction).filter(Boolean);
   state.futureTransactions = (data.futureTransactions || []).map(normalizeTransaction).filter(Boolean);
-  state.investments = (data.investments || []).map(normalizeInvestment).filter(Boolean);
+  state.investments = (data.investments || []).map(normalizeInvestment).filter(Boolean).map(recalculateInvestmentTotal);
   state.banks = (data.banks || []).map(normalizeBank).filter(Boolean);
   state.investmentGoals = normalizeInvestmentGoals(data.investmentGoals ?? state.investmentGoals);
   state.categories = normalizeCategories(data.categories);
 }
 
 function dataCacheConfigKey() {
-  const { scriptUrl, appToken, sheetId, movementSheet, futureMovementSheet, investmentSheet, bankSheet, objectiveSheet, dataSheet, readMode } = state.config;
-  return JSON.stringify({ scriptUrl, appToken, sheetId, movementSheet, futureMovementSheet, investmentSheet, bankSheet, objectiveSheet, dataSheet, readMode });
+  const { scriptUrl, appToken, movementSheet, futureMovementSheet, investmentSheet, bankSheet, objectiveSheet, dataSheet } = state.config;
+  return JSON.stringify({ scriptUrl, appToken, movementSheet, futureMovementSheet, investmentSheet, bankSheet, objectiveSheet, dataSheet });
 }
 
 function readDataCache() {
@@ -527,7 +566,7 @@ function clearPendingCache() {
 
 async function flushPendingChangesBeforeDownload() {
   const pending = readPendingCache();
-  if (!pending || state.config.readMode !== "apps-script" || !state.config.scriptUrl) return [];
+  if (!pending || !state.config.scriptUrl) return [];
 
   const flushed = [];
   const nextPending = { ...pending };
@@ -656,7 +695,8 @@ function renderPendingOpsTable(queue = readOpQueue()) {
       saveBanks: "Guardar cuentas",
       saveInvestments: "Guardar inversiones",
       saveInvestmentGoals: "Guardar objetivos",
-      transferBank: "Transferencia"
+      transferBank: "Transferencia",
+      addTransfersBatch: "Transferencias periódicas"
     };
     const statusText = op.status === "sending" ? "Enviando" : op.status === "error" ? "Error" : "Pendiente";
     const detail = op.error ? `${statusText}: ${op.error}` : statusText;
@@ -685,7 +725,8 @@ function renderSentOpsTable() {
     saveBanks: "Guardar cuentas",
     saveInvestments: "Guardar inversiones",
     saveInvestmentGoals: "Guardar objetivos",
-    transferBank: "Transferencia"
+    transferBank: "Transferencia",
+    addTransfersBatch: "Transferencias periódicas"
   };
   const rows = readSentHistory()
     .filter(item => item.day === todayKey())
@@ -706,7 +747,7 @@ function queueOp(payload) {
 
 async function processOpQueue() {
   if (state.opQueueRunning) return;
-  if (state.config.readMode !== "apps-script" || !state.config.scriptUrl) return;
+  if (!state.config.scriptUrl) return;
   const queue = readOpQueue();
   const item = queue.find(op => op.status === "queued" || op.status === "retry");
   if (!item) return;
@@ -760,7 +801,17 @@ function futureMovementSignature(row) {
 }
 
 function serializeTransaction(t) {
-  return { rowNumber: t.rowNumber, fecha: formatDate(t.date), tipo: t.tipo, concepto: t.concepto, descripcion: t.descripcion, importe: t.amount, cuenta: t.cuenta || t.account || "" };
+  return {
+    rowNumber: t.rowNumber,
+    fecha: formatDate(t.date),
+    tipo: t.tipo,
+    concepto: t.concepto,
+    descripcion: t.descripcion,
+    importe: t.amount,
+    cuenta: t.cuenta || t.account || "",
+    transferFrom: t.transferFrom || "",
+    transferTo: t.transferTo || ""
+  };
 }
 
 function formatCacheAge(ageMs) {
@@ -769,56 +820,12 @@ function formatCacheAge(ageMs) {
   return `${Math.round(minutes / 60)} h`;
 }
 
-async function fetchAppsScriptData() {
+async function fetchAppsScriptData(options = {}) {
   if (!state.config.scriptUrl) throw new Error("falta la URL de Apps Script");
-  const url = `${state.config.scriptUrl}?action=all&token=${encodeURIComponent(state.config.appToken)}&movementSheet=${encodeURIComponent(state.config.movementSheet)}&futureMovementSheet=${encodeURIComponent(state.config.futureMovementSheet || "Movimientos futuros")}&investmentSheet=${encodeURIComponent(state.config.investmentSheet)}&bankSheet=${encodeURIComponent(state.config.bankSheet || "Bancos")}&objectiveSheet=${encodeURIComponent(state.config.objectiveSheet || "Objetivos")}&dataSheet=${encodeURIComponent(state.config.dataSheet)}`;
+  const action = options.sendNotifications ? "sendDailyNotifications" : "all";
+  const updateInvestments = options.updateInvestments ? "&updateInvestments=1" : "";
+  const url = `${state.config.scriptUrl}?action=${encodeURIComponent(action)}&token=${encodeURIComponent(state.config.appToken)}&movementSheet=${encodeURIComponent(state.config.movementSheet)}&futureMovementSheet=${encodeURIComponent(state.config.futureMovementSheet || "Movimientos futuros")}&investmentSheet=${encodeURIComponent(state.config.investmentSheet)}&bankSheet=${encodeURIComponent(state.config.bankSheet || "Bancos")}&objectiveSheet=${encodeURIComponent(state.config.objectiveSheet || "Objetivos")}&dataSheet=${encodeURIComponent(state.config.dataSheet)}${updateInvestments}`;
   return jsonp(url);
-}
-
-async function fetchPublicCsvTransactions() {
-  if (!state.config.sheetId) throw new Error("falta el ID de Google Sheet");
-  const csv = await fetchCsv(state.config.sheetId, state.config.movementSheet);
-  return parseCsv(csv).slice(1).map((row, i) => normalizeTransaction({
-    rowNumber: i + 2, fecha: row[0], tipo: row[4], concepto: row[5], descripcion: row[6], importe: row[7]
-  })).filter(Boolean);
-}
-
-async function fetchPublicCsvFutureTransactions() {
-  if (!state.config.sheetId) return [];
-  const csv = await fetchCsv(state.config.sheetId, state.config.futureMovementSheet || "Movimientos futuros");
-  return parseCsv(csv).slice(1).map((row, i) => normalizeTransaction({
-    rowNumber: i + 2, fecha: row[0], tipo: row[4], concepto: row[5], descripcion: row[6], importe: row[7], cuenta: row[8]
-  })).filter(Boolean);
-}
-
-async function fetchPublicCsvInvestments() {
-  if (!state.config.sheetId) return [];
-  const csv = await fetchCsv(state.config.sheetId, state.config.investmentSheet);
-  return parseCsv(csv).slice(1).map((row, i) => normalizeInvestment({
-    rowNumber: i + 2, data: row[0], nombre: row[1], tipo: row[2], cantidad: row[3], valor: row[4], total: row[5]
-  })).filter(Boolean);
-}
-
-async function fetchPublicCsvBanks() {
-  if (!state.config.sheetId) return [];
-  const csv = await fetchCsv(state.config.sheetId, state.config.bankSheet || "Bancos");
-  return parseCsv(csv).slice(1).map((row, i) => normalizeBank({
-    rowNumber: i + 2, cuenta: row[0], dinero: row[1]
-  })).filter(Boolean);
-}
-
-async function fetchPublicCsvCategories() {
-  if (!state.config.sheetId) return { types: STATIC_TYPES, concepts: STATIC_CONCEPTS };
-  const csv = await fetchCsv(state.config.sheetId, state.config.dataSheet);
-  const rows = parseCsv(csv).slice(1);
-  return normalizeCategories({ types: rows.map(r => r[0]), concepts: rows.map(r => r[1]) });
-}
-
-async function fetchCsv(sheetId, sheetName) {
-  const url = `https://docs.google.com/spreadsheets/d/${encodeURIComponent(sheetId)}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(sheetName)}`;
-  const response = await fetch(url);
-  if (!response.ok) throw new Error(`CSV no disponible para ${sheetName}`);
-  return response.text();
 }
 
 function jsonp(url) {
@@ -877,16 +884,25 @@ function syncOptions() {
 
 function syncRegistrarMode() {
   const isTransfer = normalizeType(document.getElementById("formType").value) === "transferencia";
+  const recurring = isRecurringMode();
+  const amountInput = document.getElementById("formAmount");
+  if (amountInput) {
+    amountInput.min = isTransfer ? "0.01" : "0.01";
+    amountInput.placeholder = isTransfer ? "0.00" : "0.00";
+    if (isTransfer) enforceTransferPositiveAmount();
+  }
   document.querySelectorAll(".movement-only").forEach(el => el.classList.toggle("hidden", isTransfer));
   document.querySelectorAll(".transfer-only").forEach(el => el.classList.toggle("hidden", !isTransfer));
-  ["formDate", "formConcept", "formDescription"].forEach(id => {
+  const formDate = document.getElementById("formDate");
+  if (formDate) formDate.required = !isTransfer && !recurring;
+  ["formConcept", "formDescription"].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.required = !isTransfer;
   });
   document.getElementById("formTransferFrom").required = isTransfer;
   document.getElementById("formTransferTo").required = isTransfer;
   const submitLabel = isTransfer
-    ? `<i data-lucide="repeat-2"></i> Transferir entre cuentas`
+    ? (recurring ? `<i data-lucide="repeat-2"></i> Guardar transferencias` : `<i data-lucide="repeat-2"></i> Transferir entre cuentas`)
     : `<i data-lucide="save"></i> Guardar registro`;
   document.getElementById("submitMovement").innerHTML = submitLabel;
   syncRegistrarActionButton();
@@ -1185,16 +1201,25 @@ function calculateSummary(month) {
   const bank = computedBank;
   const investedByType = {};
   const valueByType = {};
+  const dailyByType = {};
+  const dailyPreviousByType = {};
   INVESTMENT_TYPES.forEach(type => {
+    const positions = state.investments.filter(i => normalizeType(i.tipo) === normalizeType(type));
     investedByType[type] = Math.abs(sum(untilToday.filter(t => isInvestment(t) && normalizeType(t.descripcion) === normalizeType(type)).map(t => t.amount)));
-    valueByType[type] = sum(state.investments.filter(i => normalizeType(i.tipo) === normalizeType(type)).map(i => i.total));
+    valueByType[type] = sum(positions.map(i => currentInvestmentTotal(i)));
+    dailyPreviousByType[type] = sum(positions.map(i => previousInvestmentTotal(i)));
+    dailyByType[type] = valueByType[type] - dailyPreviousByType[type];
   });
   const investedTotal = sum(Object.values(investedByType));
   const valueTotal = sum(Object.values(valueByType));
+  const dailyPreviousTotal = sum(Object.values(dailyPreviousByType));
+  const dailyVariationTotal = valueTotal - dailyPreviousTotal;
   return {
     month, income, expenses, investedMonth, balance, bank,
     computedBank, bankAccountsTotal,
     investedByType, valueByType, investedTotal, valueTotal,
+    dailyByType, dailyPreviousByType, dailyPreviousTotal, dailyVariationTotal,
+    dailyVariationPct: dailyPreviousTotal ? dailyVariationTotal / dailyPreviousTotal : 0,
     totalMoneyBook: bank + investedTotal,
     totalMoneyRealized: bank + valueTotal,
     profitLoss: valueTotal - investedTotal,
@@ -1311,7 +1336,7 @@ function renderBankDetail(summary) {
     </div>`;
   accountsPanel.innerHTML = `
     <div class="bank-list compact-bank-list">${renderBankRows()}</div>
-    ${state.banks.length && state.config.readMode === "apps-script" ? `<button class="btn primary full" id="saveBanksBtn" type="button"><i data-lucide="save"></i> Guardar cuentas</button>` : ""}`;
+    ${state.banks.length ? `<button class="btn primary full" id="saveBanksBtn" type="button"><i data-lucide="save"></i> Guardar cuentas</button>` : ""}`;
   document.getElementById("saveBanksBtn")?.addEventListener("click", saveBanks);
   lucide.createIcons();
 }
@@ -1522,7 +1547,7 @@ async function deleteSelectedMovements() {
         if (selected.has(target[i])) target.splice(i, 1);
       }
       writeDataCache();
-      if (state.config.readMode === "apps-script" && state.config.scriptUrl) {
+      if (state.config.scriptUrl) {
         queueOp({
           action: "deleteMovementsBatch",
           sheetName: state.movementMode === "future" ? (state.config.futureMovementSheet || "Movimientos futuros") : state.config.movementSheet,
@@ -1627,22 +1652,23 @@ function renderInvestmentEditTable() {
   const rows = INVESTMENT_TYPES.flatMap(type => {
     const positions = state.investments
       .filter(i => normalizeType(i.tipo) === normalizeType(type))
-      .sort((a, b) => b.total - a.total);
+      .sort((a, b) => currentInvestmentTotal(b) - currentInvestmentTotal(a));
     if (!positions.length) return [];
-    const group = `<tr><th colspan="4">${escapeHtml(type)}</th></tr>`;
+    const group = `<tr><th colspan="5">${escapeHtml(type)}</th></tr>`;
     const body = positions.map(i => {
       const idx = state.investments.indexOf(i);
       return `<tr class="clickable-row" data-investment-index="${idx}">
-        <td class="investment-name" title="${escapeAttr(i.nombre)}">${escapeHtml(i.nombre)}</td>
-        <td class="amount">${quantityFmt(i.cantidad)}</td>
-        <td class="amount">${money(i.valor, 2)}</td>
-        <td class="amount">${money(i.total, 2)}</td>
+        <td class="investment-name col-detail" title="${escapeAttr(i.nombre)}">${escapeHtml(i.nombre)}</td>
+        <td class="amount col-qty">${quantityFmt(i.cantidad)}</td>
+        <td class="amount col-money">${money(i.valor, 2)}</td>
+        <td class="amount col-money">${money(currentInvestmentTotal(i), 2)}</td>
+        <td class="amount col-pct">${pctCell(dailyInvestmentPct(i))}</td>
       </tr>`;
     }).join("");
     return [group + body];
   });
   const body = rows.join("");
-  document.getElementById("investmentEditTable").innerHTML = `<thead><tr><th class="col-detail">Detalle</th><th class="col-qty">Cant.</th><th class="col-money">Valor</th><th class="col-money">Total</th></tr></thead><tbody>${body || `<tr><td class="empty" colspan="4">Sin posiciones.</td></tr>`}</tbody>`;
+  document.getElementById("investmentEditTable").innerHTML = `<colgroup><col class="col-detail"><col class="col-qty"><col class="col-money"><col class="col-money"><col class="col-pct"></colgroup><thead><tr><th class="col-detail">Detalle</th><th class="col-qty">Cant.</th><th class="col-money">Valor</th><th class="col-money">Total</th><th class="col-pct">% día</th></tr></thead><tbody>${body || `<tr><td class="empty" colspan="5">Sin posiciones.</td></tr>`}</tbody>`;
   document.querySelectorAll("#investmentEditTable [data-investment-index]").forEach(row => {
     row.addEventListener("click", () => openInvestmentDetail(Number(row.dataset.investmentIndex)));
   });
@@ -1671,13 +1697,13 @@ function renderInvestmentBreakdownCharts(summary) {
 }
 
 function addInvestmentRow() {
-  state.investments.push({ rowNumber: null, data: "", nombre: "", tipo: "Cartera", cantidad: 0, valor: 0, total: 0 });
+  state.investments.push({ rowNumber: null, divisa: "EUR", data: "", nombre: "", tipo: "Cartera", cantidad: 0, valor: 0, total: 0, valorAnterior: 0, variacion: 0 });
   openInvestmentDetail(state.investments.length - 1);
 }
 
 async function saveInvestments() {
   readInvestmentEditor();
-  if (!state.config.scriptUrl || state.config.readMode !== "apps-script") {
+  if (!state.config.scriptUrl) {
     writeDataCache();
     rememberPendingSnapshot("investments");
     setNotice(lineMessage("Para modificar inversiones necesitas Apps Script.", "Cambio guardado solo en cache local."), "warn");
@@ -1753,7 +1779,7 @@ async function saveMovementDetail(event) {
     if (account && accountDelta) applyBankDelta(account, accountDelta);
     list[index] = movement;
     writeDataCache();
-    if (state.config.readMode === "apps-script" && state.config.scriptUrl) {
+    if (state.config.scriptUrl) {
       queueOp({
         action: "updateMovement",
         movement: serializeTransaction(movement),
@@ -1800,7 +1826,7 @@ async function deleteMovementDetail() {
     if (account) applyBankDelta(account, accountDelta);
     list.splice(index, 1);
     writeDataCache();
-    if (state.config.readMode === "apps-script" && state.config.scriptUrl) {
+    if (state.config.scriptUrl) {
       queueOp({
         action: "deleteMovement",
         rowNumber: movement.rowNumber,
@@ -1838,13 +1864,21 @@ function openInvestmentDetail(index) {
   const item = state.investments[index];
   if (!item) return;
   document.getElementById("editInvestmentIndex").value = index;
+  document.getElementById("editInvestmentCurrency").value = item.divisa || "EUR";
   document.getElementById("editInvestmentData").value = item.data;
   document.getElementById("editInvestmentName").value = item.nombre;
   document.getElementById("editInvestmentType").value = item.tipo || INVESTMENT_TYPES[0];
   document.getElementById("editInvestmentQuantity").value = safeNumber(item.cantidad);
   document.getElementById("editInvestmentValue").value = safeNumber(item.valor);
-  document.getElementById("editInvestmentTotal").value = safeNumber(item.total);
+  document.getElementById("editInvestmentTotal").value = safeNumber(currentInvestmentTotal(item));
   document.getElementById("investmentDetailDialog").showModal();
+}
+
+function syncInvestmentDetailComputedTotal() {
+  const quantity = Number(document.getElementById("editInvestmentQuantity")?.value || 0);
+  const value = Number(document.getElementById("editInvestmentValue")?.value || 0);
+  const totalInput = document.getElementById("editInvestmentTotal");
+  if (totalInput) totalInput.value = safeNumber(quantity * value);
 }
 
 function saveInvestmentDetail(event) {
@@ -1859,12 +1893,14 @@ function saveInvestmentDetail(event) {
   }
   const previousItem = { ...item };
   Object.assign(item, {
+    divisa: document.getElementById("editInvestmentCurrency").value.trim().toUpperCase() || "EUR",
     data: document.getElementById("editInvestmentData").value.trim(),
     nombre: document.getElementById("editInvestmentName").value.trim(),
     tipo: document.getElementById("editInvestmentType").value,
     cantidad: Number(document.getElementById("editInvestmentQuantity").value || 0)
   });
-  const isAppsScript = state.config.scriptUrl && state.config.readMode === "apps-script";
+  recalculateInvestmentTotal(item);
+  const isAppsScript = state.config.scriptUrl;
   writeDataCache();
   if (isAppsScript) {
     queueOp({
@@ -1885,7 +1921,7 @@ function saveInvestmentDetail(event) {
 
 async function submitMovement(event) {
   event.preventDefault();
-  if (!state.config.scriptUrl || state.config.readMode !== "apps-script") {
+  if (!state.config.scriptUrl) {
     setNotice("Configura Apps Script antes de enviar movimientos.", "warn");
     return;
   }
@@ -1896,7 +1932,38 @@ async function submitMovement(event) {
   syncRegistrarActionButton();
   markButtonSaving(btn);
   try {
-    if (isRecurring && !isTransfer) {
+    if (isRecurring && isTransfer) {
+      const transfers = transferMovementsFromRecurrenceForm();
+      if (!transfers.length) throw new Error("selecciona fechas y al menos un día");
+      const from = document.getElementById("formTransferFrom").value;
+      const to = document.getElementById("formTransferTo").value;
+      const amount = Math.abs(Number(document.getElementById("formAmount").value || 0));
+      if (!amount || !from || !to || from === to) throw new Error("elige origen, destino e importe valido");
+      const today = endOfToday();
+      const realized = transfers.filter(m => m.date <= today);
+      const futureMovs = transfers.filter(m => m.date > today);
+      const fromBefore = getBankAmount(from);
+      const toBefore = getBankAmount(to);
+      realized.forEach(() => {
+        applyBankDelta(from, -amount);
+        applyBankDelta(to, amount);
+      });
+      state.futureTransactions.push(...futureMovs);
+      writeDataCache();
+      queueOp({
+        action: "addTransfersBatch",
+        transfers: transfers.map(serializeTransaction),
+        futureMovementSheet: state.config.futureMovementSheet || "Movimientos futuros",
+        bankSheet: state.config.bankSheet || "Bancos",
+        from,
+        to,
+        amount
+      });
+      showMovementPopup("Transferencias periódicas guardadas", futureMovs[0] || realized[0], `${from} → ${to}`, lineMessage(
+        `${realized.length} ${plural(realized.length, "activada", "activadas")} y ${futureMovs.length} futuras`,
+        realized.length ? lineMessage(`Origen: ${bankChangeText(from, fromBefore)}`, `Destino: ${bankChangeText(to, toBefore)}`) : ""
+      ));
+    } else if (isRecurring && !isTransfer) {
       const movements = movementsFromRecurrenceForm();
       if (!movements.length) throw new Error("selecciona fechas y al menos un día");
       const account = document.getElementById("recurrenceAccount").value;
@@ -1985,6 +2052,41 @@ function movementsFromRecurrenceForm() {
   return out.filter(Boolean);
 }
 
+function transferMovementFromFormBase() {
+  const from = document.getElementById("formTransferFrom").value;
+  const to = document.getElementById("formTransferTo").value;
+  const amount = Math.abs(Number(document.getElementById("formAmount").value || 0));
+  const account = `${from} → ${to}`;
+  return {
+    tipo: "Transferencia",
+    concepto: "Transferencia",
+    descripcion: account,
+    importe: amount,
+    cuenta: account,
+    transferFrom: from,
+    transferTo: to
+  };
+}
+
+function transferMovementsFromRecurrenceForm() {
+  const start = parseDate(document.getElementById("recurrenceStart").value);
+  const end = parseDate(document.getElementById("recurrenceEnd").value);
+  if (!start || !end || start > end) return [];
+  const selected = [...document.querySelectorAll("#recurrencePicker input:checked")].map(i => Number(i.value));
+  if (!selected.length) return [];
+  const type = document.getElementById("recurrenceType").value;
+  const base = transferMovementFromFormBase();
+  const out = [];
+  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+    const weekDay = (d.getDay() + 6) % 7;
+    const monthDay = d.getDate();
+    if ((type === "weekly" && selected.includes(weekDay)) || (type === "monthly" && selected.includes(monthDay))) {
+      out.push(normalizeTransaction({ ...base, fecha: formatDate(d) }));
+    }
+  }
+  return out.filter(Boolean);
+}
+
 function movementFromFormBase() {
   const type = prettyType(document.getElementById("formType").value);
   const amount = Number(document.getElementById("formAmount").value || 0);
@@ -2007,22 +2109,30 @@ function setRegisterModeFromClick(event) {
   const btn = event.target.closest('[data-register-mode]');
   if (!btn) return;
   document.querySelectorAll('[data-register-mode]').forEach(b => b.classList.toggle('active', b === btn));
-  syncRegisterMode();
+  syncRegistrarMode();
 }
 
 function isRecurringMode() {
   return document.querySelector('[data-register-mode].active')?.dataset.registerMode === 'recurring';
 }
 
+function enforceTransferPositiveAmount() {
+  const type = normalizeType(document.getElementById("formType")?.value || "");
+  const amountInput = document.getElementById("formAmount");
+  if (type !== "transferencia" || !amountInput || amountInput.value === "") return;
+  const value = Number(amountInput.value);
+  if (Number.isFinite(value) && value < 0) amountInput.value = String(Math.abs(value));
+}
+
 function syncRegisterMode() {
   const recurring = isRecurringMode();
   const isTransfer = normalizeType(document.getElementById('formType').value) === 'transferencia';
-  const showRecurring = recurring && !isTransfer;
+  const showRecurring = recurring;
   document.getElementById('registrar')?.classList.toggle('recurring-register-active', showRecurring);
   document.getElementById('movementForm')?.classList.toggle('recurring-form-active', showRecurring);
   document.getElementById('movementForm')?.classList.toggle('single-form-active', !showRecurring);
   document.getElementById('recurringFields')?.classList.toggle('hidden', !showRecurring);
-  document.querySelector('#movementForm .recurring-account')?.classList.toggle('hidden', !showRecurring);
+  document.querySelector('#movementForm .recurring-account')?.classList.toggle('hidden', !showRecurring || isTransfer);
   document.querySelectorAll('#movementForm .movement-only').forEach(el => {
     const fieldId = el.querySelector('input, select')?.id;
     const hiddenInRecurring = ['formDate', 'formAccount'].includes(fieldId);
@@ -2031,7 +2141,7 @@ function syncRegisterMode() {
   const formDate = document.getElementById('formDate');
   if (formDate) formDate.required = !showRecurring && !isTransfer;
   const recurrenceAccount = document.getElementById('recurrenceAccount');
-  if (recurrenceAccount) recurrenceAccount.required = showRecurring;
+  if (recurrenceAccount) recurrenceAccount.required = showRecurring && !isTransfer;
   ['recurrenceStart','recurrenceEnd'].forEach(id => { const el=document.getElementById(id); if (el) el.required = showRecurring; });
   if (showRecurring) setDefaultRecurrenceDates();
   renderRecurrencePicker();
@@ -2197,7 +2307,7 @@ async function saveInvestmentGoalsFromDialog(event) {
   writeDataCache();
   rememberPendingSnapshot("investmentGoals");
   renderAll();
-  if (state.config.scriptUrl && state.config.readMode === "apps-script") {
+  if (state.config.scriptUrl) {
     try {
       queueOp({ action: "saveInvestmentGoals", sheetName: state.config.objectiveSheet || "Objetivos", goals: state.investmentGoals });
       document.getElementById("investmentGoalsDialog").close();
@@ -2212,13 +2322,6 @@ async function saveInvestmentGoalsFromDialog(event) {
     document.getElementById("investmentGoalsDialog").close();
     setNotice('Objetivos guardados en este navegador.', 'ok');
   }
-}
-
-async function fetchPublicCsvInvestmentGoals() {
-  if (!state.config.sheetId) return state.investmentGoals;
-  const csv = await fetchCsv(state.config.sheetId, state.config.objectiveSheet || "Objetivos");
-  const rows = parseCsv(csv).slice(1);
-  return normalizeInvestmentGoals(Object.fromEntries(rows.map(row => [row[0], row[1]])));
 }
 
 function normalizeInvestmentGoals(value) {
@@ -2363,7 +2466,7 @@ async function saveBanks() {
     const idx = Number(input.dataset.bankIndex);
     if (state.banks[idx]) state.banks[idx].dinero = roundMoney(input.value);
   });
-  if (!state.config.scriptUrl || state.config.readMode !== "apps-script") {
+  if (!state.config.scriptUrl) {
     writeDataCache();
     rememberPendingSnapshot("banks");
     renderSummary();
@@ -2401,16 +2504,58 @@ function normalizeTransaction(row) {
   const descripcion = String(row.descripcion || row.DESCRIPCION || row["DESCRIPCION"] || row[6] || "").trim();
   const amount = parseNumber(row.importe ?? row.IMPORTE ?? row[7]);
   if (!date || !tipo || Number.isNaN(amount)) return null;
-  return { rowNumber: Number(row.rowNumber || row.row || 0) || null, date, tipo, concepto: concepto || "Otros", descripcion, amount, cuenta: String(row.cuenta || row.CUENTA || row.account || row[8] || "").trim() };
+  const cuenta = String(row.cuenta || row.CUENTA || row.account || row[8] || "").trim();
+  const transferParts = parseTransferAccountText(cuenta || descripcion);
+  return {
+    rowNumber: Number(row.rowNumber || row.row || 0) || null,
+    date,
+    tipo,
+    concepto: concepto || (normalizeType(tipo) === "transferencia" ? "Transferencia" : "Otros"),
+    descripcion,
+    amount,
+    cuenta,
+    transferFrom: row.transferFrom || row.from || transferParts.from || "",
+    transferTo: row.transferTo || row.to || transferParts.to || ""
+  };
+}
+
+function parseTransferAccountText(value) {
+  const text = String(value || "").trim();
+  const separator = text.includes("→") ? "→" : text.includes("->") ? "->" : "";
+  if (!separator) return { from: "", to: "" };
+  const [from, to] = text.split(separator).map(part => part.trim());
+  return { from: from || "", to: to || "" };
+}
+
+function isInvestmentPositionType(value) {
+  const normalized = normalizeType(value);
+  return INVESTMENT_TYPES.some(type => normalizeType(type) === normalized);
 }
 
 function normalizeInvestment(row) {
-  const total = parseNumber(row.total ?? row["VALOR TOTAL"] ?? row[5]);
-  const data = String(row.data || row.DATA || row[0] || "").trim();
-  const nombre = String(row.nombre || row.NOMBRE || row[1] || data).trim();
-  const tipo = prettyType(String(row.tipo || row.TIPO || row[2] || "").trim());
-  if (!data || !nombre || !tipo || Number.isNaN(total) || total < 0) return null;
-  return { rowNumber: Number(row.rowNumber || row.row || 0) || null, data, nombre, tipo, cantidad: parseNumber(row.cantidad ?? row.CANTIDAD ?? row[3]), valor: parseNumber(row.valor ?? row.VALOR ?? row[4]), total };
+  const divisa = String(row.divisa || row.DIVISA || row[0] || "EUR").trim().toUpperCase() || "EUR";
+  const data = String(row.data || row.DATA || row[1] || "").trim();
+  const nombre = String(row.nombre || row.NOMBRE || row[2] || data).trim();
+  const tipo = prettyType(String(row.tipo || row.TIPO || row[3] || "").trim());
+  const cantidad = parseNumber(row.cantidad ?? row.CANTIDAD ?? row[4]);
+  const valor = parseNumber(row.valor ?? row.VALOR ?? row[5]);
+  let total = parseNumber(row.total ?? row["VALOR TOTAL (€)"] ?? row["VALOR TOTAL"] ?? row[6]);
+  const valorAnterior = parseNumber(row.valorAnterior ?? row["VALOR ANTERIOR"] ?? row[7]);
+  const variacion = parseNumber(row.variacion ?? row["% VARIACIÓN"] ?? row["% VARIACION"] ?? row[8]);
+  if (Number.isNaN(total) && Number.isFinite(cantidad) && Number.isFinite(valor)) total = cantidad * valor;
+  if (!data || !nombre || !isInvestmentPositionType(tipo) || Number.isNaN(total) || total < 0) return null;
+  return {
+    rowNumber: Number(row.rowNumber || row.row || 0) || null,
+    divisa,
+    data,
+    nombre,
+    tipo,
+    cantidad,
+    valor,
+    total,
+    valorAnterior,
+    variacion
+  };
 }
 
 function normalizeBank(row) {
@@ -2425,23 +2570,6 @@ function normalizeCategories(categories) {
     types: unique([...(categories && categories.types || []), ...STATIC_TYPES]).map(prettyType),
     concepts: unique([...(categories && categories.concepts || []), ...STATIC_CONCEPTS]).map(prettyType)
   };
-}
-
-function parseCsv(text) {
-  const rows = [];
-  let row = [], cell = "", quote = false;
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i], next = text[i + 1];
-    if (ch === '"' && quote && next === '"') { cell += '"'; i++; }
-    else if (ch === '"') quote = !quote;
-    else if (ch === "," && !quote) { row.push(cell); cell = ""; }
-    else if ((ch === "\n" || ch === "\r") && !quote) {
-      if (cell || row.length) { row.push(cell); rows.push(row); row = []; cell = ""; }
-      if (ch === "\r" && next === "\n") i++;
-    } else cell += ch;
-  }
-  if (cell || row.length) { row.push(cell); rows.push(row); }
-  return rows;
 }
 
 function renderTable(id, headers, rows) {
@@ -2527,15 +2655,17 @@ function renderInvestmentBreakdownTable(summary) {
   const rows = INVESTMENT_TYPES.map(type => {
     const invested = summary.investedByType[type] || 0;
     const current = summary.valueByType[type] || 0;
-    return `<tr class="clickable-row" data-investment-type="${escapeAttr(type)}"><td class="text-clip">${type}</td><td class="amount">${money(invested)}</td><td class="amount">${money(current)}</td><td class="amount">${amountCell(current - invested)}</td><td class="amount">${pctGain(current, invested)}</td></tr>`;
+    const dailyPrevious = summary.dailyPreviousByType[type] || 0;
+    const dailyPct = dailyPrevious ? (current - dailyPrevious) / dailyPrevious : 0;
+    return `<tr class="clickable-row" data-investment-type="${escapeAttr(type)}"><td class="text-clip col-type">${type}</td><td class="amount col-money">${money(invested)}</td><td class="amount col-money">${money(current)}</td><td class="amount col-money">${amountCell(current - invested)}</td><td class="amount col-pct">${pctCell(gainPct(current, invested))}</td><td class="amount col-pct">${pctCell(dailyPct)}</td></tr>`;
   }).join("");
-  document.getElementById("investmentBreakdownTable").innerHTML = `<thead><tr><th class="col-type">Tipo</th><th class="col-money">Inv.</th><th class="col-money">Actual</th><th class="col-money">Gan.</th><th class="col-pct">%</th></tr></thead><tbody>${rows}</tbody>`;
+  document.getElementById("investmentBreakdownTable").innerHTML = `<colgroup><col class="col-type"><col class="col-money"><col class="col-money"><col class="col-money"><col class="col-pct"><col class="col-pct"></colgroup><thead><tr><th class="col-type">Tipo</th><th class="col-money">Inv.</th><th class="col-money">Actual</th><th class="col-money">Gan.</th><th class="col-pct">% total</th><th class="col-pct">% diario</th></tr></thead><tbody>${rows}</tbody>`;
   document.querySelectorAll("#investmentBreakdownTable [data-investment-type]").forEach(row => row.addEventListener("click", () => openInvestmentOverview(row.dataset.investmentType)));
 }
 
 function renderInvestmentPositionCharts(type) {
-  const positions = state.investments.filter(i => normalizeType(i.tipo) === normalizeType(type) && i.total > 0).sort((a, b) => b.total - a.total);
-  const rows = positions.map((i, idx) => ({ label: i.nombre, value: i.total, color: chartColor(PIE_CHART_COLORS, idx) }));
+  const positions = state.investments.filter(i => normalizeType(i.tipo) === normalizeType(type) && currentInvestmentTotal(i) > 0).sort((a, b) => currentInvestmentTotal(b) - currentInvestmentTotal(a));
+  const rows = positions.map((i, idx) => ({ label: i.nombre, value: currentInvestmentTotal(i), color: chartColor(PIE_CHART_COLORS, idx) }));
   renderColorRowsTable("investmentOverviewTable", rows, ["", "Detalle", "Total", ""]);
   upsertChart("investmentBreakdownDonut", "doughnut", {
     labels: rows.map(row => row.label),
@@ -2752,9 +2882,18 @@ function renderInvestments() {
   });
   document.getElementById("investmentCurrentTotal").textContent = money(summary.valueTotal);
   document.getElementById("investmentTotalMetrics").innerHTML = `
-    <div><span>Invertido</span><strong>${money(summary.investedTotal)}</strong></div>
-    <div><span>Ganancia</span><strong class="${summary.profitLoss >= 0 ? "positive" : "negative"}">${money(summary.profitLoss)}</strong></div>
-    <div><span>% P/L</span><strong class="${summary.profitLoss >= 0 ? "positive" : "negative"}">${pct(summary.profitLossPct)}</strong></div>
+    <div class="total-metrics-line">
+      <span>Invertido</span>
+      <strong>${money(summary.investedTotal)}</strong>
+    </div>
+    <div class="total-metrics-line split">
+      <div><span>Ganancia total</span><strong class="${summary.profitLoss >= 0 ? "positive" : "negative"}">${money(summary.profitLoss)}</strong></div>
+      <div><span>Ganancia diaria</span><strong class="${summary.dailyVariationTotal >= 0 ? "positive" : "negative"}">${money(summary.dailyVariationTotal)}</strong></div>
+    </div>
+    <div class="total-metrics-line split">
+      <div><span>% total</span><strong class="${summary.profitLossPct >= 0 ? "positive" : "negative"}">${pct(summary.profitLossPct)}</strong></div>
+      <div><span>% diario</span><strong class="${summary.dailyVariationPct >= 0 ? "positive" : "negative"}">${pct(summary.dailyVariationPct)}</strong></div>
+    </div>
   `;
   if (document.getElementById("investmentOverviewDialog").open) renderInvestmentBreakdownCharts(summary);
   renderInvestmentGoals(summary);
@@ -2949,7 +3088,33 @@ function shortWeekday(date) {
 
 function tag(value) { return `<span class="tag">${escapeHtml(value || "Sin tipo")}</span>`; }
 function amountCell(value) { return `<span class="amount ${value >= 0 ? "positive" : "negative"}">${money(value)}</span>`; }
-function pctGain(value, invested) { return invested ? pct((value - invested) / invested) : "0,0 %"; }
+function gainPct(value, invested) { return invested ? (value - invested) / invested : 0; }
+function pctGain(value, invested) { return pctCell(gainPct(value, invested)); }
+function pctCell(value) { return `<span class="amount ${Number(value || 0) >= 0 ? "positive" : "negative"}">${pct(value)}</span>`; }
+function currentInvestmentTotal(item) {
+  const total = safeNumber(item?.total);
+  if (total) return total;
+  return safeNumber(item?.cantidad) * safeNumber(item?.valor);
+}
+function previousInvestmentTotal(item) {
+  const previous = safeNumber(item?.valorAnterior);
+  const quantity = safeNumber(item?.cantidad);
+  return previous && quantity ? previous * quantity : currentInvestmentTotal(item);
+}
+function dailyInvestmentPct(item) {
+  if (Number.isFinite(Number(item?.variacion)) && Number(item.variacion) !== 0) return Number(item.variacion);
+  const previous = safeNumber(item?.valorAnterior);
+  const current = safeNumber(item?.valor);
+  return previous ? (current - previous) / previous : 0;
+}
+function recalculateInvestmentTotal(item) {
+  if (!item) return item;
+  const quantity = safeNumber(item.cantidad);
+  const value = safeNumber(item.valor);
+  item.total = quantity * value;
+  if (safeNumber(item.valorAnterior)) item.variacion = dailyInvestmentPct(item);
+  return item;
+}
 function emptyBlock(text) { return `<div class="empty">${escapeHtml(text)}</div>`; }
 function sum(values) { return values.reduce((a, b) => a + (Number(b) || 0), 0); }
 function unique(values) { return [...new Set(values.filter(v => v !== undefined && v !== null && String(v).trim() !== ""))]; }
@@ -2962,7 +3127,8 @@ function monthLabel(key) { return `${monthName(key.slice(5, 7))} ${key.slice(0, 
 function endOfToday() { const d = new Date(); d.setHours(23, 59, 59, 999); return d; }
 function isIncome(t) { return normalizeType(t.tipo) === "ingreso";}
 function isInvestment(t) { return normalizeType(t.tipo) === "inversion"; }
-function isMonthlyExpense(t) { return !isIncome(t) && !isInvestment(t);}
+function isTransfer(t) { return normalizeType(t.tipo) === "transferencia"; }
+function isMonthlyExpense(t) { return !isIncome(t) && !isInvestment(t) && !isTransfer(t);}
 function normalizeType(value) { return removeAccents(String(value || "")).toLowerCase().trim(); }
 function prettyType(value) {
   const n = normalizeType(value);

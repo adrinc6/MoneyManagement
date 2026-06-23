@@ -28,6 +28,8 @@
       </div>
       <div class="refresh-group">
         <span id="sourceNotice" class="sync-status"></span>
+        <button class="btn header-action hidden" id="investmentUpdatePricesBtn" type="button" aria-label="Actualizar precios" title="Actualizar precios"><i data-lucide="trending-up"></i><span>Precios</span></button>
+        <button class="btn header-action hidden" id="investmentSendNotificationsBtn" type="button" aria-label="Enviar notificaciones" title="Enviar notificaciones"><i data-lucide="send"></i><span>Notificar</span></button>
         <button class="icon-btn" id="refreshBtn" aria-label="Actualizar"><i data-lucide="refresh-cw"></i></button>
       </div>
     </header>
@@ -216,18 +218,11 @@
           <div class="form-grid">
             <label class="wide">URL de Apps Script <input id="configScriptUrl" placeholder="https://script.google.com/macros/s/.../exec" /></label>
             <label class="wide">Token opcional <input id="configAppToken" placeholder="Debe coincidir con APP_TOKEN" /></label>
-            <label class="wide">ID de Google Sheet <input id="configSheetId" placeholder="Opcional para CSV público" /></label>
             <input id="configMovementSheet" type="hidden" value="Control Finanzas" />
             <input id="configFutureMovementSheet" type="hidden" value="Movimientos futuros" />
             <input id="configInvestmentSheet" type="hidden" value="Inversiones" />
             <input id="configBankSheet" type="hidden" value="Bancos" />
             <input id="configDataSheet" type="hidden" value="Datos" />
-            <label>Modo lectura
-              <select id="configReadMode">
-                <option value="apps-script">Apps Script</option>
-                <option value="public-csv">CSV público</option>
-              </select>
-            </label>
             <label class="hidden">Banco inicial <input id="configInitialCash" type="number" step="0.01" value="6122.08" /></label>
           </div>
           <button class="btn primary full" id="saveConfigBtn"><i data-lucide="save"></i> Guardar ajustes</button>
@@ -352,6 +347,7 @@
     </div>
     <form id="investmentDetailForm" class="panel-body form-grid">
       <input id="editInvestmentIndex" type="hidden" />
+      <label>Divisa <input id="editInvestmentCurrency" placeholder="EUR, USD, GBP..." required /></label>
       <label>DATA <input id="editInvestmentData" required /></label>
       <label>Nombre <input id="editInvestmentName" required /></label>
       <label>Tipo <select id="editInvestmentType"></select></label>
@@ -376,6 +372,6 @@
     </form>
   </dialog>
 
-  <script src="app.js?v=20260618-objetivos-sync"></script>
+  <script src="app.js?v=20260623-transfer-yahoo-telegram"></script>
 </body>
 </html>
