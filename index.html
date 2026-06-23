@@ -200,9 +200,6 @@
           <div class="table-wrap pending-ops-wrap">
             <table id="pendingOpsTable"></table>
           </div>
-          <div class="table-wrap pending-ops-wrap">
-            <table id="sentOpsTable"></table>
-          </div>
           <div class="settings-row">
             <div>
               <strong>Tema</strong>
@@ -217,11 +214,11 @@
             <label class="wide">URL de Apps Script <input id="configScriptUrl" placeholder="https://script.google.com/macros/s/.../exec" /></label>
             <label class="wide">Token opcional <input id="configAppToken" placeholder="Debe coincidir con APP_TOKEN" /></label>
             <label class="wide">ID de Google Sheet <input id="configSheetId" placeholder="Opcional para CSV público" /></label>
-            <label>Hoja movimientos <input id="configMovementSheet" value="Control Finanzas" /></label>
-            <label>Hoja movs futuros <input id="configFutureMovementSheet" value="Movimientos futuros" /></label>
-            <label>Hoja inversiones <input id="configInvestmentSheet" value="Inversiones" /></label>
-            <label>Hoja bancos <input id="configBankSheet" value="Bancos" /></label>
-            <label>Hoja datos <input id="configDataSheet" value="Datos" /></label>
+            <input id="configMovementSheet" type="hidden" value="Control Finanzas" />
+            <input id="configFutureMovementSheet" type="hidden" value="Movimientos futuros" />
+            <input id="configInvestmentSheet" type="hidden" value="Inversiones" />
+            <input id="configBankSheet" type="hidden" value="Bancos" />
+            <input id="configDataSheet" type="hidden" value="Datos" />
             <label>Modo lectura
               <select id="configReadMode">
                 <option value="apps-script">Apps Script</option>

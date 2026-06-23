@@ -78,6 +78,10 @@ function doPost(e) {
       deleteMovementsBatch_(payload.movements || [], payload.sheetName || DEFAULT_MOVEMENT_SHEET);
       return finishPost_(pendingId, { ok: true });
     }
+    if (payload.action === 'updateInvestment') {
+      updateInvestment_(payload.investment || {}, payload.sheetName || DEFAULT_INVESTMENT_SHEET, payload.previousInvestment || null);
+      return finishPost_(pendingId, { ok: true });
+    }
     if (payload.action === 'saveInvestments') {
       saveInvestments_(payload.investments || [], payload.sheetName || DEFAULT_INVESTMENT_SHEET);
       return finishPost_(pendingId, { ok: true });
@@ -440,7 +444,14 @@ function saveInvestments_(investments, sheetName) {
     if (!item || !item.data || !item.nombre || !item.tipo) return;
     const rowNumber = Number(item.rowNumber || 0);
     if (rowNumber >= 2 && rowNumber <= sheet.getMaxRows()) {
-      sheet.getRange(rowNumber, 4).setValue(Number(item.cantidad || 0));
+      sheet.getRange(rowNumber, 1, 1, 6).setValues([[
+        item.data || '',
+        item.nombre || '',
+        item.tipo || '',
+        Number(item.cantidad || 0),
+        Number(item.valor || 0),
+        Number(item.total || 0)
+      ]]);
     } else {
       const values = [[
         item.data,
@@ -453,6 +464,47 @@ function saveInvestments_(investments, sheetName) {
       sheet.appendRow(values[0]);
     }
   });
+}
+
+function updateInvestment_(investment, sheetName, previousInvestment) {
+  if (!investment) throw new Error('Missing investment');
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(sheetName);
+  if (!sheet) throw new Error(`Sheet not found: ${sheetName}`);
+
+  const rowNumber = Number(investment.rowNumber || previousInvestment && previousInvestment.rowNumber || 0);
+  const targetRow = rowNumber >= 2 && rowNumber <= sheet.getLastRow()
+    ? rowNumber
+    : findInvestmentRow_(sheet, investment, previousInvestment);
+  if (targetRow < 2 || targetRow > sheet.getLastRow()) throw new Error('Investment not found');
+
+  sheet.getRange(targetRow, 1, 1, 6).setValues([[
+    investment.data || '',
+    investment.nombre || '',
+    investment.tipo || '',
+    Number(investment.cantidad || 0),
+    Number(investment.valor || 0),
+    Number(investment.total || 0)
+  ]]);
+}
+
+function findInvestmentRow_(sheet, investment, previousInvestment) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return 0;
+  const values = sheet.getRange(2, 1, lastRow - 1, Math.min(sheet.getLastColumn(), 6)).getValues();
+  const candidates = [investment, previousInvestment].filter(Boolean);
+  for (const candidate of candidates) {
+    for (let i = 0; i < values.length; i++) {
+      const row = values[i];
+      if (
+        String(row[0]).trim() === String(candidate.data || '').trim() &&
+        String(row[1]).trim() === String(candidate.nombre || '').trim()
+      ) {
+        return i + 2;
+      }
+    }
+  }
+  return 0;
 }
 
 function saveInvestmentGoals_(goals, sheetName) {

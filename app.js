@@ -650,6 +650,7 @@ function renderPendingOpsTable(queue = readOpQueue()) {
       addFutureMovement: "Movimiento futuro",
       addMovementsBatch: "Movs. periódicos",
       updateMovement: "Editar movimiento",
+      updateInvestment: "Editar inversión",
       deleteMovement: "Borrar movimiento",
       deleteMovementsBatch: "Borrar múltiple",
       saveBanks: "Guardar cuentas",
@@ -678,6 +679,7 @@ function renderSentOpsTable() {
     addFutureMovement: "Movimiento futuro",
     addMovementsBatch: "Movs. periódicos",
     updateMovement: "Editar movimiento",
+    updateInvestment: "Editar inversión",
     deleteMovement: "Borrar movimiento",
     deleteMovementsBatch: "Borrar múltiple",
     saveBanks: "Guardar cuentas",
@@ -1848,17 +1850,34 @@ function openInvestmentDetail(index) {
 function saveInvestmentDetail(event) {
   event.preventDefault();
   const btn = event.submitter;
+  markButtonSaving(btn);
   const index = Number(document.getElementById("editInvestmentIndex").value);
   const item = state.investments[index];
-  if (!item) return;
+  if (!item) {
+    restoreButton(btn);
+    return;
+  }
+  const previousItem = { ...item };
   Object.assign(item, {
     data: document.getElementById("editInvestmentData").value.trim(),
     nombre: document.getElementById("editInvestmentName").value.trim(),
     tipo: document.getElementById("editInvestmentType").value,
     cantidad: Number(document.getElementById("editInvestmentQuantity").value || 0)
   });
+  const isAppsScript = state.config.scriptUrl && state.config.readMode === "apps-script";
   writeDataCache();
-  rememberPendingSnapshot("investments");
+  if (isAppsScript) {
+    queueOp({
+      action: "updateInvestment",
+      sheetName: state.config.investmentSheet,
+      investment: { ...item },
+      previousInvestment: previousItem
+    });
+    setNotice("Cambio de inversión enviado a Sheets.", "ok");
+  } else {
+    rememberPendingSnapshot("investments");
+    setNotice(lineMessage("Cambio local.", "Para guardar en Sheets necesitas Apps Script."), "warn");
+  }
   markButtonSaved(btn);
   document.getElementById("investmentDetailDialog").close();
   renderInvestments();
