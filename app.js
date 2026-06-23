@@ -43,6 +43,7 @@ const DATA_CACHE_KEY = "moneyDataCache";
 const PENDING_CACHE_KEY = "moneyPendingChanges";
 const OP_QUEUE_KEY = "moneyOpQueue";
 const SENT_HISTORY_KEY = "moneySentHistory";
+const SYNC_LOG_KEY = "moneySyncLog";
 const THEME_KEY = "moneyTheme";
 const EVOLUTION_RANGE_KEY = "moneyEvolutionRange";
 const FULL_MONTH_NAMES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
@@ -53,6 +54,8 @@ const SYSTEM_GOAL_LABELS = {
   total: "Inversión total"
 };
 const DATA_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const DATA_CACHE_VERSION = 2;
+const CACHE_SECTION_KEYS = ["transactions", "futureTransactions", "investments", "banks", "investmentGoals", "categories"];
 const MOVEMENT_PAGE_SIZE = 500;
 
 const TEST_TRANSACTIONS = ENABLE_TEST_MODE ? [
@@ -81,7 +84,7 @@ const state = {
   charts: {},
   filtered: [],
   movementDrill: { level: "entries", year: String(new Date().getFullYear()), month: currentMonthKey() },
-  summaryModes: { situation: "ingresos", investmentMoney: "invested", moneyMix: "types", bankMoney: "summary", investmentOverviewType: null, investmentOverviewMode: "invested", investmentPanel: "current" },
+  summaryModes: { situation: "ingresos", investmentMoney: "invested", moneyMix: "types", bankMoney: "summary", investmentOverviewType: null, investmentOverviewMode: "invested", investmentPanel: "current", settingsPanel: "sync" },
   descriptionSuggestions: {},
   submittingMovement: false,
   movementBulkEdit: false,
@@ -89,6 +92,7 @@ const state = {
   tableControls: {},
   investmentGoals: loadInvestmentGoals(),
   evolutionRange: loadEvolutionRange(),
+  cacheMeta: defaultCacheMeta(),
   opQueueRunning: false
 };
 
@@ -99,7 +103,10 @@ document.addEventListener("DOMContentLoaded", () => {
   hydrateConfigForm();
   setDefaultDate();
   renderPendingOpsBadge();
-  refreshData();
+  renderSyncSettingsPanel();
+  renderSettingsPanelTabs();
+  syncRefreshButtonLabel("registrar");
+  refreshData({ scope: "all" });
 });
 
 function wireUi() {
@@ -120,6 +127,7 @@ function wireUi() {
   document.getElementById("recurrenceType").addEventListener("change", renderRecurrencePicker);
   document.getElementById("movementModeSwitch").addEventListener("click", setMovementModeFromClick);
   document.getElementById("investmentPanelSwitch").addEventListener("click", setInvestmentPanelFromClick);
+  document.getElementById("settingsPanelSwitch")?.addEventListener("click", setSettingsPanelFromClick);
   document.getElementById("editInvestmentGoalsBtn").addEventListener("click", editInvestmentGoals);
   document.getElementById("evolutionStartMonth")?.addEventListener("change", saveEvolutionRangeAndRender);
   document.getElementById("evolutionEndMonth")?.addEventListener("change", saveEvolutionRangeAndRender);
@@ -138,6 +146,7 @@ function wireUi() {
   document.getElementById("formAmount")?.addEventListener("change", enforceTransferPositiveAmount);
   document.getElementById("saveConfigBtn").addEventListener("click", saveConfigFromForm);
   document.getElementById("retryPendingOpsBtn")?.addEventListener("click", () => retryPendingOps());
+  document.getElementById("clearSyncLogsBtn")?.addEventListener("click", clearSyncLogs);
   document.getElementById("summaryYear").addEventListener("change", syncSummaryPeriodAndRender);
   document.getElementById("summaryMonth").addEventListener("change", syncSummaryPeriodAndRender);
   document.getElementById("openMonthSituationBtn").addEventListener("click", () => {
@@ -202,6 +211,7 @@ function showView(id) {
   }
   syncRegistrarActionButton();
   syncInvestmentHeaderActions(id);
+  syncRefreshButtonLabel(id);
   document.getElementById("viewTitle").textContent = {
     registrar: "Registrar",
     resumen: "Resumen",
@@ -209,6 +219,7 @@ function showView(id) {
     inversiones: "Inversiones",
     ajustes: "Ajustes"
   }[id] || "MoneyManagement";
+  renderCurrentView(id);
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
@@ -218,8 +229,39 @@ function syncInvestmentHeaderActions(activeViewId = "") {
   document.getElementById("investmentSendNotificationsBtn")?.classList.toggle("hidden", !show);
 }
 
+function activeViewId() {
+  return document.querySelector(".view.active")?.id || "registrar";
+}
+
+function refreshScopeForView(id = activeViewId()) {
+  if (id === "movimientos") return "movements";
+  if (id === "inversiones") return "investments";
+  if (id === "resumen") return "summary";
+  if (id === "ajustes") return "all";
+  return "all";
+}
+
+function refreshLabelForScope(scope, viewId = activeViewId()) {
+  return "Actualizar";
+}
+
+function syncRefreshButtonLabel(viewId = activeViewId()) {
+  const btn = document.getElementById("refreshBtn");
+  if (!btn) return;
+  const scope = refreshScopeForView(viewId);
+  const label = refreshLabelForScope(scope, viewId);
+  btn.title = label;
+  btn.setAttribute("aria-label", label);
+}
+
 function refreshActiveViewData() {
-  return refreshData({ force: true, scope: "all" });
+  const viewId = activeViewId();
+  const scope = refreshScopeForView(viewId);
+  return refreshData({
+    force: true,
+    scope,
+    successMessage: "Actualización completada."
+  });
 }
 
 async function updateInvestmentPricesFromHeader() {
@@ -308,7 +350,7 @@ async function saveConfigFromForm() {
   localStorage.setItem("moneyConfig", JSON.stringify(state.config));
   clearDataCache();
   clearPendingCache();
-  await refreshData({ force: true });
+  await refreshData({ force: true, scope: refreshScopeForView(activeViewId()) });
   markButtonSaved(btn);
 }
 
@@ -330,7 +372,7 @@ function setThemeFromToggle(event) {
 function refreshChartTheme() {
   Object.values(state.charts).forEach(chart => chart.destroy());
   state.charts = {};
-  renderAll();
+  renderCurrentView(activeViewId());
 }
 
 function setDefaultDate() {
@@ -341,6 +383,235 @@ function syncStatusStep(showProgress, message, type = "") {
   if (showProgress) setSyncStatus(message, type);
 }
 
+function cacheSectionsForScope(scope = "all") {
+  if (scope === "movements") return ["transactions", "futureTransactions", "banks"];
+  if (scope === "investments") return ["investments", "investmentGoals"];
+  if (scope === "summary") return ["transactions", "futureTransactions", "investments", "banks", "investmentGoals"];
+  if (scope === "banks") return ["banks"];
+  return [...CACHE_SECTION_KEYS];
+}
+
+function coreSectionsForScope(scope = "all") {
+  const sections = cacheSectionsForScope(scope);
+  return sections.filter(section => ["investments", "banks", "investmentGoals", "categories"].includes(section));
+}
+
+function movementSectionsForScope(scope = "all") {
+  const sections = cacheSectionsForScope(scope);
+  return sections.filter(section => ["transactions", "futureTransactions"].includes(section));
+}
+
+function defaultCacheMeta() {
+  return {
+    version: DATA_CACHE_VERSION,
+    savedAt: 0,
+    sections: Object.fromEntries(CACHE_SECTION_KEYS.map(section => [section, { rev: "", savedAt: 0, dirty: false }]))
+  };
+}
+
+function normalizeCacheMeta(cached = {}) {
+  const base = defaultCacheMeta();
+  const meta = cached.meta || {};
+  const savedAt = Number(meta.savedAt || cached.savedAt || 0) || 0;
+  CACHE_SECTION_KEYS.forEach(section => {
+    const current = meta.sections?.[section] || {};
+    base.sections[section] = {
+      rev: String(current.rev || ""),
+      savedAt: Number(current.savedAt || savedAt || 0) || 0,
+      dirty: Boolean(current.dirty)
+    };
+  });
+  base.savedAt = savedAt;
+  return base;
+}
+
+function manifestSectionSignature(info = {}) {
+  return [
+    info.rev || "",
+    Object.prototype.hasOwnProperty.call(info, "count") ? info.count : "",
+    info.lastRowHash || "",
+    info.schemaHash || ""
+  ].join(":");
+}
+
+function manifestSectionRev(info = {}) {
+  return String(info.rev || "");
+}
+
+function cachedSectionRev(cached, section) {
+  const signature = String(cached?.meta?.sections?.[section]?.rev || "");
+  return signature.split(":")[0] || "";
+}
+
+function isMovementSection(section) {
+  return section === "transactions" || section === "futureTransactions";
+}
+
+function applyManifestToCacheMeta(manifest, sections = []) {
+  if (!manifest || !manifest.sections) return;
+  const meta = normalizeCacheMeta({ meta: state.cacheMeta, savedAt: state.cacheMeta?.savedAt });
+  sections.forEach(section => {
+    if (!meta.sections[section]) return;
+    const remote = manifest.sections[section] || {};
+    meta.sections[section] = {
+      ...meta.sections[section],
+      rev: manifestSectionSignature(remote) || meta.sections[section].rev || "",
+      savedAt: Date.now(),
+      dirty: false
+    };
+  });
+  meta.savedAt = Date.now();
+  state.cacheMeta = meta;
+}
+
+function touchCacheSections(sections = [], dirty = false) {
+  const meta = normalizeCacheMeta({ meta: state.cacheMeta, savedAt: Date.now() });
+  sections.forEach(section => {
+    if (!meta.sections[section]) return;
+    meta.sections[section] = {
+      ...meta.sections[section],
+      savedAt: Date.now(),
+      dirty
+    };
+  });
+  meta.savedAt = Date.now();
+  state.cacheMeta = meta;
+}
+
+function markCacheSectionsDirty(...sections) {
+  touchCacheSections(sections.flat().filter(Boolean), true);
+}
+
+function markCacheSectionsSynced(sections = [], manifest = null) {
+  if (manifest) applyManifestToCacheMeta(manifest, sections);
+  else touchCacheSections(sections, false);
+}
+
+function cachedSectionIsDirty(cached, section) {
+  return Boolean(cached?.meta?.sections?.[section]?.dirty || state.cacheMeta?.sections?.[section]?.dirty);
+}
+
+function sectionsNeedingRefresh(requiredSections, cached, manifest, force = false) {
+  if (!cached) return requiredSections;
+  if (!manifest || !manifest.sections) {
+    const age = Date.now() - Number(cached.savedAt || cached.meta?.savedAt || 0);
+    return (!force && age < DATA_CACHE_TTL_MS) ? [] : requiredSections.filter(section => !cachedSectionIsDirty(cached, section));
+  }
+  return requiredSections.filter(section => {
+    if (cachedSectionIsDirty(cached, section)) return false;
+    const localRev = String(cached.meta?.sections?.[section]?.rev || "");
+    const remoteRev = manifestSectionSignature(manifest.sections?.[section] || {});
+    return localRev !== remoteRev;
+  });
+}
+
+async function fetchDataManifest() {
+  const payload = await fetchAppsScriptData({ action: "manifest" });
+  assertPayloadOk(payload);
+  return payload.manifest || { sections: payload.sections || {} };
+}
+
+function renderCurrentView(viewId = activeViewId()) {
+  if (viewId === "registrar") {
+    syncRegisterMode();
+    renderRegistrarSummaryCompact();
+    renderFutureDueNotice();
+  } else if (viewId === "resumen") {
+    renderSummary();
+  } else if (viewId === "movimientos") {
+    renderFutureDueNotice();
+    renderMovements();
+  } else if (viewId === "inversiones") {
+    renderInvestments();
+  } else if (viewId === "ajustes") {
+    renderSyncSettingsPanel();
+    renderPendingOpsBadge();
+  }
+  lucide.createIcons();
+}
+
+function renderDataScope(scope = "all") {
+  renderCurrentView(activeViewId());
+}
+
+async function downloadMovementSectionOptimized(kind, section, label, cached, manifest, options = {}) {
+  const localRev = cachedSectionRev(cached, section);
+  const remoteInfo = manifest?.sections?.[section] || {};
+  const remoteRev = manifestSectionRev(remoteInfo);
+  const localSignature = String(cached?.meta?.sections?.[section]?.rev || "");
+  const remoteSignature = manifestSectionSignature(remoteInfo);
+  const canTryIncremental = Boolean(cached && localRev && remoteRev && localRev !== remoteRev && localSignature && remoteSignature);
+
+  if (canTryIncremental && !options.disableIncremental) {
+    try {
+      syncStatusStep(options.showProgress, `Descargando ${label}\nCambios incrementales`, "");
+      const payload = await fetchAppsScriptData({
+        action: "downloadMovementChanges",
+        movementKind: kind,
+        sinceRev: localRev
+      });
+      assertPayloadOk(payload);
+      if (payload.incremental) {
+        const baseRows = section === "futureTransactions" ? state.futureTransactions : state.transactions;
+        const rows = applyMovementChanges(baseRows, payload.changes || []);
+        logSyncEvent(`Incremental ${label}: ${(payload.changes || []).length} cambio(s).`, "ok");
+        return rows;
+      }
+      logSyncEvent(`Incremental ${label} no disponible; descarga por páginas.`, "warn", payload.reason || "");
+    } catch (error) {
+      console.warn("No se pudo descargar incremental", section, error);
+      logSyncEvent(`Incremental ${label} falló; descarga por páginas.`, "warn", error.message || String(error));
+    }
+  } else if (localRev && remoteRev && localRev === remoteRev && localSignature !== remoteSignature) {
+    logSyncEvent(`Cambio de estructura en ${label}; descarga por páginas.`, "warn");
+  }
+  return downloadMovementPages(kind, label, { showProgress: options.showProgress });
+}
+
+function applyMovementChanges(rows = [], changes = []) {
+  const list = (rows || []).map(serializeTransaction).map(normalizeTransaction).filter(Boolean);
+  const bySid = new Map();
+  list.forEach((row, index) => {
+    if (row.sid) bySid.set(row.sid, index);
+  });
+  changes
+    .slice()
+    .sort((a, b) => String(a.at || "").localeCompare(String(b.at || "")))
+    .forEach(change => {
+      const sid = String(change.sid || change.movement?.sid || "").trim();
+      if (!sid) return;
+      const existingIndex = bySid.has(sid) ? bySid.get(sid) : -1;
+      if (change.type === "delete") {
+        if (existingIndex >= 0) {
+          list.splice(existingIndex, 1);
+          bySid.clear();
+          list.forEach((row, index) => { if (row.sid) bySid.set(row.sid, index); });
+        }
+        return;
+      }
+      const movement = normalizeTransaction({ ...(change.movement || {}), sid });
+      if (!movement) return;
+      if (existingIndex >= 0) list[existingIndex] = movement;
+      else {
+        list.push(movement);
+        bySid.set(sid, list.length - 1);
+      }
+    });
+  list.sort((a, b) => b.date - a.date);
+  return list;
+}
+
+function syncedSectionsFromData(data = {}) {
+  const sections = [];
+  if (Object.prototype.hasOwnProperty.call(data, "transactions")) sections.push("transactions");
+  if (Object.prototype.hasOwnProperty.call(data, "futureTransactions")) sections.push("futureTransactions");
+  if (Object.prototype.hasOwnProperty.call(data, "investments")) sections.push("investments");
+  if (Object.prototype.hasOwnProperty.call(data, "banks")) sections.push("banks");
+  if (Object.prototype.hasOwnProperty.call(data, "investmentGoals")) sections.push("investmentGoals");
+  if (Object.prototype.hasOwnProperty.call(data, "categories")) sections.push("categories");
+  return sections;
+}
+
 async function refreshData(options = {}) {
   const force = Boolean(options.force);
   const updateInvestments = Boolean(options.updateInvestments);
@@ -348,48 +619,81 @@ async function refreshData(options = {}) {
   const scope = options.scope || (updateInvestments || sendNotifications ? "investments" : "all");
   const isFullDownload = scope === "all";
   const showProgress = Boolean(options.showProgress || force || updateInvestments || sendNotifications);
+  const requestedSections = cacheSectionsForScope(scope);
   setRefreshLoading(true);
   syncStatusStep(showProgress, refreshStartStatus({ scope, updateInvestments, sendNotifications }), "");
 
   const cached = readDataCache();
-  const previousFutureTransactions = state.futureTransactions.map(serializeTransaction);
-  const dueFutureMovementsFromCache = cached ? findDueFutureMovements(cached.data?.futureTransactions || []) : [];
-  const shouldMoveDueFutureMovements = Boolean(cached && !force && isFullDownload && dueFutureMovementsFromCache.length);
-
-  if (cached && !force && isFullDownload) {
+  if (cached) {
+    state.cacheMeta = normalizeCacheMeta(cached);
     applyDataSnapshot(cached.data);
     syncOptions();
-    renderAll();
+    renderDataScope(scope);
+  }
 
-    const age = Date.now() - cached.savedAt;
-    if (shouldMoveDueFutureMovements) {
-      setNotice(`Hay ${dueFutureMovementsFromCache.length} movimiento(s) futuro(s) vencido(s). Los muevo y actualizo solo lo necesario...`, "warn");
-    } else if (age < DATA_CACHE_TTL_MS) {
-      setNotice(`Datos cargados desde cache (${formatCacheAge(age)}).`, "ok");
+  const previousFutureTransactions = state.futureTransactions.map(serializeTransaction);
+  const dueFutureMovementsFromCache = findDueFutureMovements(cached?.data?.futureTransactions || state.futureTransactions || []);
+  const shouldMoveDueFutureMovements = Boolean(scope !== "investments" && scope !== "banks" && dueFutureMovementsFromCache.length);
+
+  if (cached && !state.config.scriptUrl && !force) {
+    const age = Date.now() - Number(cached.savedAt || cached.meta?.savedAt || 0);
+    if (age < DATA_CACHE_TTL_MS && !shouldMoveDueFutureMovements) {
+      setNotice(`Datos cargados desde caché (${formatCacheAge(age)}).`, "ok");
       setRefreshLoading(false);
       return true;
-    } else {
-      setNotice("Mostrando cache mientras se actualiza por bloques...", "");
     }
-  } else if (cached && !force) {
-    applyDataSnapshot(cached.data);
-    syncOptions();
-    renderAll();
-  } else {
-    const loadingText = scope === "investments"
-      ? (sendNotifications ? "Enviando notificaciones..." : "Actualizando solo inversiones...")
+  }
+
+  const loadingText = sendNotifications
+    ? "Enviando notificaciones..."
+    : updateInvestments
+      ? "Actualizando precios y solo inversiones..."
       : scope === "movements"
-        ? "Actualizando solo movimientos por bloques..."
-        : "Cargando datos por bloques...";
-    setNotice(loadingText, "");
+        ? "Actualizando solo movimientos..."
+        : scope === "investments"
+          ? "Actualizando solo inversiones..."
+          : scope === "summary"
+            ? "Actualizando resumen por secciones..."
+            : "Actualizando datos por secciones...";
+  if (force || !cached || shouldMoveDueFutureMovements) setNotice(loadingText, "");
+  logSyncEvent(refreshStartStatus({ scope, updateInvestments, sendNotifications }).replace(/\n/g, " · "), "");
+
+  if (!ENABLE_TEST_MODE && !state.config.scriptUrl) {
+    syncOptions();
+    renderDataScope(scope);
+    setNotice("Configura la URL de Apps Script en Ajustes para sincronizar con Google Sheets.", "warn");
+    syncStatusStep(showProgress, "Falta URL de Apps Script", "warn");
+    setRefreshLoading(false);
+    return false;
   }
 
   try {
     const shouldFlushPending = updateInvestments || sendNotifications;
     syncStatusStep(showProgress && shouldFlushPending, "Enviando cambios pendientes", "");
     const flushedPending = shouldFlushPending ? await flushPendingChangesBeforeDownload() : [];
-    let freshData;
+    let freshData = {};
     let movedFutureMovements = [];
+    let manifest = null;
+    let syncedSections = [];
+
+    if (!ENABLE_TEST_MODE && state.config.scriptUrl) {
+      try {
+        manifest = await fetchDataManifest();
+        logSyncEvent("Manifiesto leído.", "ok");
+      } catch (error) {
+        console.warn("No se pudo leer el manifiesto", error);
+        logSyncEvent("No se pudo leer el manifiesto.", "warn", error.message || String(error));
+      }
+    }
+
+    let neededSections = updateInvestments || sendNotifications
+      ? ["investments", "investmentGoals"]
+      : sectionsNeedingRefresh(requestedSections, cached, manifest, force);
+
+    if (shouldMoveDueFutureMovements) {
+      neededSections = unique([...neededSections, "transactions", "futureTransactions", "banks"]);
+      setNotice(`Hay ${dueFutureMovementsFromCache.length} movimiento(s) futuro(s) vencido(s). Los muevo y actualizo lo necesario...`, "warn");
+    }
 
     if (ENABLE_TEST_MODE) {
       syncStatusStep(showProgress, "Modo prueba\nPreparando datos locales", "");
@@ -404,23 +708,68 @@ async function refreshData(options = {}) {
         ],
         categories: { types: STATIC_TYPES, concepts: STATIC_CONCEPTS }
       };
-    } else if (scope === "investments") {
-      syncStatusStep(showProgress, investmentRequestStatus({ updateInvestments, sendNotifications }), "");
-      const payload = await fetchAppsScriptData({ updateInvestments, sendNotifications, scope: "investments" });
+      syncedSections = [...CACHE_SECTION_KEYS];
+    } else if (sendNotifications) {
+      syncStatusStep(showProgress, "Enviando notificaciones", "");
+      const payload = await fetchAppsScriptData({ action: "sendDailyNotifications" });
       assertPayloadOk(payload);
-      syncStatusStep(showProgress, "Aplicando inversiones\nActualizando caché", "");
-      freshData = {
-        investments: payload.investments || [],
-        investmentGoals: payload.investmentGoals ?? state.investmentGoals
-      };
-    } else if (scope === "movements") {
-      syncStatusStep(showProgress, "Preparando movimientos", "");
-      freshData = await downloadMovementsDataOptimized({ moveDueFutureMovements: shouldMoveDueFutureMovements, showProgress });
-      movedFutureMovements = freshData.movedFutureMovements || [];
+    } else if (!neededSections.length && cached) {
+      setNotice(options.successMessage || `Caché al día: no había secciones nuevas que descargar.`, "ok");
+      syncStatusStep(showProgress, "Caché al día", "ok");
+      logSyncEvent("Caché al día; sin descargas.", "ok");
+      renderSyncSettingsPanel();
+      if (showProgress) window.setTimeout(() => setSyncStatus("", ""), 1800);
+      return true;
     } else {
-      syncStatusStep(showProgress, "Preparando descarga completa", "");
-      freshData = await downloadAllDataOptimized({ moveDueFutureMovements: shouldMoveDueFutureMovements, showProgress });
-      movedFutureMovements = freshData.movedFutureMovements || [];
+      const needsMovements = neededSections.some(section => ["transactions", "futureTransactions"].includes(section));
+      const needsCore = neededSections.some(section => ["investments", "banks", "investmentGoals", "categories"].includes(section));
+      const onlyInvestments = neededSections.every(section => ["investments", "investmentGoals"].includes(section));
+
+      if (updateInvestments || (onlyInvestments && !needsMovements)) {
+        syncStatusStep(showProgress, investmentRequestStatus({ updateInvestments, sendNotifications }), "");
+        const payload = await fetchAppsScriptData({ updateInvestments, scope: "investments" });
+        assertPayloadOk(payload);
+        freshData = {
+          ...freshData,
+          investments: payload.investments || [],
+          investmentGoals: payload.investmentGoals ?? state.investmentGoals
+        };
+        manifest = payload.manifest || manifest;
+      } else {
+        let core = null;
+        if (needsCore || shouldMoveDueFutureMovements) {
+          const coreAction = shouldMoveDueFutureMovements ? "moveDueFutureMovements" : "downloadCoreData";
+          syncStatusStep(showProgress, shouldMoveDueFutureMovements ? "Moviendo futuros vencidos\nDescargando datos base" : "Descargando datos base", "");
+          core = await fetchAppsScriptData({ action: coreAction });
+          assertPayloadOk(core);
+          movedFutureMovements = core.movedFutureMovements || [];
+          freshData = {
+            ...freshData,
+            investments: core.investments || state.investments,
+            banks: core.banks || state.banks,
+            investmentGoals: core.investmentGoals ?? state.investmentGoals,
+            categories: core.categories || state.categories
+          };
+          manifest = core.manifest || manifest;
+        }
+        if (needsMovements || shouldMoveDueFutureMovements) {
+          syncStatusStep(showProgress, "Descargando movimientos", "");
+          const movementDownloads = [];
+          if (neededSections.includes("transactions") || shouldMoveDueFutureMovements) {
+            movementDownloads.push(downloadMovementSectionOptimized("realized", "transactions", "movimientos", cached, manifest, { showProgress, disableIncremental: shouldMoveDueFutureMovements }));
+          } else {
+            movementDownloads.push(Promise.resolve(null));
+          }
+          if (neededSections.includes("futureTransactions") || shouldMoveDueFutureMovements) {
+            movementDownloads.push(downloadMovementSectionOptimized("future", "futureTransactions", "movimientos futuros", cached, manifest, { showProgress, disableIncremental: shouldMoveDueFutureMovements }));
+          } else {
+            movementDownloads.push(Promise.resolve(null));
+          }
+          const [transactions, futureTransactions] = await Promise.all(movementDownloads);
+          if (transactions) freshData.transactions = transactions;
+          if (futureTransactions) freshData.futureTransactions = futureTransactions;
+        }
+      }
     }
 
     const fallbackFutureTransactions = cached?.data?.futureTransactions?.length ? cached.data.futureTransactions : previousFutureTransactions;
@@ -432,13 +781,16 @@ async function refreshData(options = {}) {
     }
 
     syncStatusStep(showProgress, "Actualizando pantalla\nGuardando caché", "");
-    if (isFullDownload) applyDataSnapshot(freshData);
-    else mergeDataSnapshot(freshData);
+    if (Object.keys(freshData).length) {
+      if (isFullDownload && syncedSectionsFromData(freshData).length === CACHE_SECTION_KEYS.length) applyDataSnapshot(freshData);
+      else mergeDataSnapshot(freshData);
+      syncedSections = unique([...syncedSections, ...syncedSectionsFromData(freshData)]);
+    }
 
     if (pendingOpsCount() === 0) {
-      if (isFullDownload) clearPendingCache();
-      else if (scope === "investments") dropPendingSections("investments", "investmentGoals");
-      else if (scope === "movements") dropPendingSections("transactions");
+      if (isFullDownload && syncedSections.length === CACHE_SECTION_KEYS.length) clearPendingCache();
+      else if (syncedSections.includes("investments")) dropPendingSections("investments", "investmentGoals");
+      else if (syncedSections.includes("transactions")) dropPendingSections("transactions");
     }
 
     if (movedFutureMovements.length) {
@@ -450,28 +802,38 @@ async function refreshData(options = {}) {
         movedFutureMovementsPopupHtml(movedFutureMovements)
       );
     }
+
+    markCacheSectionsSynced(syncedSections, manifest);
     syncOptions();
-    renderAll();
-    writeDataCache();
+    renderDataScope(scope);
+    writeDataCache({ syncedSections, manifest });
     const defaultSuccess = sendNotifications
       ? "Notificaciones enviadas."
       : updateInvestments
         ? "Precios actualizados y caché de inversiones renovada."
         : scope === "movements"
-          ? "Movimientos descargados por bloques y cache actualizada."
-          : "Datos descargados por bloques y cache actualizada.";
+          ? "Movimientos actualizados por bloques."
+          : scope === "investments"
+            ? "Inversiones actualizadas."
+            : scope === "summary"
+              ? "Resumen actualizado por secciones."
+              : "Datos actualizados por secciones.";
     setNotice(lineMessage(
       options.successMessage || defaultSuccess,
       flushedPending.length ? `Pendientes enviados antes: ${flushedPending.join(", ")}` : ""
     ), "ok");
-    syncStatusStep(showProgress, "Cache actualizada", "ok");
+    syncStatusStep(showProgress, "Caché actualizada", "ok");
+    logSyncEvent(`Actualización completada: ${syncedSections.length ? syncedSections.join(", ") : "sin cambios"}.`, "ok");
+    renderSyncSettingsPanel();
     if (showProgress) window.setTimeout(() => setSyncStatus("", ""), 2500);
     return true;
   } catch (error) {
     console.error(error);
     if (cached) {
-      setNotice(lineMessage("No se pudo actualizar; sigo usando cache.", error.message), "warn");
-      syncStatusStep(showProgress, "Usando cache", "warn");
+      setNotice(lineMessage("No se pudo actualizar; sigo usando caché.", error.message), "warn");
+      syncStatusStep(showProgress, "Usando caché", "warn");
+      logSyncEvent("No se pudo actualizar; usando caché.", "warn", error.message || String(error));
+      renderSyncSettingsPanel();
       return false;
     }
     state.transactions = [];
@@ -483,6 +845,8 @@ async function refreshData(options = {}) {
     renderAll();
     setNotice(lineMessage(`No se pudieron cargar datos: ${error.message}`, "Revisa Ajustes."), "warn");
     syncStatusStep(showProgress, "Error de sincronización", "warn");
+    logSyncEvent("Error de sincronización.", "warn", error.message || String(error));
+    renderSyncSettingsPanel();
     return false;
   } finally {
     setRefreshLoading(false);
@@ -490,17 +854,18 @@ async function refreshData(options = {}) {
   }
 }
 
-
 function refreshStartStatus({ scope, updateInvestments, sendNotifications } = {}) {
   if (sendNotifications) return "Preparando notificaciones\nSin descargar datos";
   if (updateInvestments) return "Preparando precios\nSolo inversiones";
   if (scope === "investments") return "Preparando inversiones";
   if (scope === "movements") return "Preparando movimientos";
-  return "Preparando descarga completa";
+  if (scope === "summary") return "Preparando resumen";
+  if (scope === "banks") return "Preparando cuentas";
+  return "Preparando actualización";
 }
 
 function investmentRequestStatus({ updateInvestments, sendNotifications } = {}) {
-  if (sendNotifications) return "Enviando notificaciones\nSin actualizar precios";
+  if (sendNotifications) return "Enviando notificaciones";
   if (updateInvestments) return "Actualizando precios\nDescargando inversiones";
   return "Descargando inversiones\nObjetivos";
 }
@@ -513,15 +878,17 @@ async function downloadAllDataOptimized(options = {}) {
   const coreAction = options.moveDueFutureMovements ? "moveDueFutureMovements" : "downloadCoreData";
   syncStatusStep(options.showProgress, options.moveDueFutureMovements
     ? "Moviendo futuros vencidos\nDescargando datos base"
-    : "Descargando datos base\nBancos, categorías, objetivos e inversiones", "");
+    : "Descargando datos base\nBancos, objetivos e inversiones", "");
   const core = await fetchAppsScriptData({ action: coreAction });
   assertPayloadOk(core);
   if (!Object.prototype.hasOwnProperty.call(core, "banks")) {
     throw new Error("Apps Script no devuelve la hoja Bancos. Pega y despliega el apps-script.gs actualizado");
   }
 
-  const transactions = await downloadMovementPages("realized", "movimientos", { showProgress: options.showProgress });
-  const futureTransactions = await downloadMovementPages("future", "movimientos futuros", { showProgress: options.showProgress });
+  const [transactions, futureTransactions] = await Promise.all([
+    downloadMovementPages("realized", "movts", { showProgress: options.showProgress }),
+    downloadMovementPages("future", "movts futuros", { showProgress: options.showProgress })
+  ]);
   return {
     transactions,
     futureTransactions,
@@ -542,8 +909,10 @@ async function downloadMovementsDataOptimized(options = {}) {
     movedFutureMovements = moved.movedFutureMovements || [];
     if (Object.prototype.hasOwnProperty.call(moved, "banks")) mergeDataSnapshot({ banks: moved.banks });
   }
-  const transactions = await downloadMovementPages("realized", "movimientos", { showProgress: options.showProgress });
-  const futureTransactions = await downloadMovementPages("future", "movimientos futuros", { showProgress: options.showProgress });
+  const [transactions, futureTransactions] = await Promise.all([
+    downloadMovementPages("realized", "movimientos", { showProgress: options.showProgress }),
+    downloadMovementPages("future", "movimientos futuros", { showProgress: options.showProgress })
+  ]);
   return { transactions, futureTransactions, movedFutureMovements };
 }
 
@@ -588,7 +957,7 @@ async function refreshDataInPlace() {
   const activeView = document.querySelector(".view.active");
   const activeViewId = activeView?.id || "";
   const scrollTop = activeView?.scrollTop || 0;
-  await refreshData({ force: true });
+  await refreshData({ force: true, scope: refreshScopeForView(activeViewId) });
   requestAnimationFrame(() => {
     const currentView = activeViewId ? document.getElementById(activeViewId) : null;
     if (currentView) currentView.scrollTop = scrollTop;
@@ -687,17 +1056,28 @@ function readDataCache() {
   try {
     const cached = JSON.parse(localStorage.getItem(DATA_CACHE_KEY) || "null");
     if (!cached || cached.configKey !== dataCacheConfigKey() || !cached.data) return null;
-    return cached;
+    const meta = normalizeCacheMeta(cached);
+    return { ...cached, meta, savedAt: meta.savedAt || cached.savedAt || 0 };
   } catch {
     return null;
   }
 }
 
-function writeDataCache() {
+function writeDataCache(options = {}) {
   try {
+    const syncedSections = Array.isArray(options.syncedSections) ? options.syncedSections : [];
+    const dirtySections = Array.isArray(options.dirtySections) ? options.dirtySections : [];
+    if (options.manifest && syncedSections.length) applyManifestToCacheMeta(options.manifest, syncedSections);
+    if (syncedSections.length && !options.manifest) markCacheSectionsSynced(syncedSections);
+    if (dirtySections.length) markCacheSectionsDirty(dirtySections);
+    if (!syncedSections.length && !dirtySections.length) touchCacheSections([], false);
+    const meta = normalizeCacheMeta({ meta: state.cacheMeta, savedAt: Date.now() });
+    meta.savedAt = Date.now();
+    state.cacheMeta = meta;
     localStorage.setItem(DATA_CACHE_KEY, JSON.stringify({
       configKey: dataCacheConfigKey(),
-      savedAt: Date.now(),
+      savedAt: meta.savedAt,
+      meta,
       data: {
         transactions: state.transactions.map(serializeTransaction),
         futureTransactions: state.futureTransactions.map(serializeTransaction),
@@ -707,8 +1087,9 @@ function writeDataCache() {
         categories: state.categories
       }
     }));
+    renderSyncSettingsPanel();
   } catch (error) {
-    console.warn("No se pudo guardar la cache local", error);
+    console.warn("No se pudo guardar la caché local", error);
   }
 }
 
@@ -796,6 +1177,104 @@ function rememberPendingSnapshot(...sections) {
   writePendingCache(pending);
 }
 
+function readSyncLogs() {
+  try {
+    const logs = JSON.parse(localStorage.getItem(SYNC_LOG_KEY) || "[]");
+    return Array.isArray(logs) ? logs : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeSyncLogs(logs) {
+  localStorage.setItem(SYNC_LOG_KEY, JSON.stringify((logs || []).slice(-120)));
+}
+
+function logSyncEvent(message, type = "", detail = "") {
+  const logs = readSyncLogs();
+  logs.push({ at: Date.now(), message: String(message || ""), type: String(type || ""), detail: String(detail || "") });
+  writeSyncLogs(logs);
+  renderSyncSettingsPanel();
+}
+
+function clearSyncLogs() {
+  localStorage.removeItem(SYNC_LOG_KEY);
+  renderSyncSettingsPanel();
+}
+
+function formatDateTime(value) {
+  const date = new Date(value);
+  if (!value || Number.isNaN(date.getTime())) return "Nunca";
+  return date.toLocaleString("es-ES", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+}
+
+function formatCacheSectionName(section) {
+  const map = {
+    transactions: "Movimientos",
+    futureTransactions: "Futuros",
+    investments: "Inversiones",
+    banks: "Bancos",
+    investmentGoals: "Objetivos",
+    categories: "Categorías"
+  };
+  return map[section] || section;
+}
+
+function estimateLocalStorageSize() {
+  try {
+    let total = 0;
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i) || "";
+      const value = localStorage.getItem(key) || "";
+      if (key.startsWith("money")) total += key.length + value.length;
+    }
+    if (total < 1024) return `${total} B`;
+    if (total < 1024 * 1024) return `${(total / 1024).toFixed(1)} KB`;
+    return `${(total / 1024 / 1024).toFixed(2)} MB`;
+  } catch {
+    return "No disponible";
+  }
+}
+
+function renderSyncSettingsPanel() {
+  const summaryEl = document.getElementById("syncStatusSummary");
+  const sectionsEl = document.getElementById("cacheSectionsTable");
+  const logsEl = document.getElementById("syncLogsTable");
+  if (!summaryEl && !sectionsEl && !logsEl) return;
+  const cached = readDataCache();
+  const meta = normalizeCacheMeta(cached || { meta: state.cacheMeta });
+  const queue = readOpQueue();
+  const pending = queue.filter(op => op.status !== "done").length;
+  if (summaryEl) {
+    summaryEl.innerHTML = `
+      <div class="sync-summary-grid">
+        <article><span>Última sync</span><strong>${escapeHtml(formatDateTime(meta.savedAt))}</strong></article>
+        <article><span>Operaciones pendientes</span><strong>${pending}</strong></article>
+        <article><span>Tamaño local</span><strong>${escapeHtml(estimateLocalStorageSize())}</strong></article>
+      </div>`;
+  }
+  if (sectionsEl) {
+    const rows = CACHE_SECTION_KEYS.map(section => {
+      const info = meta.sections?.[section] || {};
+      const status = info.dirty ? "Pendiente" : info.rev ? "Sincronizada" : "Sin datos";
+      return `<tr>
+        <td>${escapeHtml(formatCacheSectionName(section))}</td>
+        <td>${escapeHtml(status)}</td>
+        <td>${escapeHtml(formatDateTime(info.savedAt))}</td>
+      </tr>`;
+    }).join("");
+    sectionsEl.innerHTML = `<thead><tr><th>Sección</th><th>Estado</th><th>Última vez</th></tr></thead><tbody>${rows}</tbody>`;
+  }
+  if (logsEl) {
+    const logs = readSyncLogs().slice(-30).reverse();
+    const rows = logs.map(log => `<tr class="${log.type === "warn" ? "log-warn" : log.type === "ok" ? "log-ok" : ""}">
+      <td>${escapeHtml(formatDateTime(log.at))}</td>
+      <td>${escapeHtml(log.message)}${log.detail ? `<small>${escapeHtml(log.detail)}</small>` : ""}</td>
+    </tr>`).join("");
+    logsEl.innerHTML = `<thead><tr><th>Hora</th><th>Evento</th></tr></thead><tbody>${rows || `<tr><td class="empty" colspan="2">Sin logs todavía.</td></tr>`}</tbody>`;
+  }
+}
+
 function readOpQueue() {
   try {
     const queue = JSON.parse(localStorage.getItem(OP_QUEUE_KEY) || "[]");
@@ -869,6 +1348,7 @@ function renderPendingOpsBadge() {
   el.classList.toggle("hidden", count === 0);
   renderPendingOpsTable(queue);
   renderSentOpsTable();
+  renderSyncSettingsPanel();
 }
 
 function renderPendingOpsTable(queue = readOpQueue()) {
@@ -926,9 +1406,42 @@ function renderSentOpsTable() {
   table.innerHTML = `<thead><tr><th>#</th><th>Tipo</th><th>Estado</th><th></th></tr></thead><tbody><tr class="table-section-row"><td colspan="4">Enviados hoy con éxito</td></tr>${rows || `<tr><td class="empty" colspan="4">Sin envíos de hoy.</td></tr>`}</tbody>`;
 }
 
+function queuePayloadSections(payload = {}) {
+  const action = payload.action || "";
+  if (["addMovement", "updateMovement", "deleteMovement"].includes(action)) {
+    const sheetName = String(payload.sheetName || "");
+    return sheetName === (state.config.futureMovementSheet || "Movimientos futuros") || action === "addFutureMovement"
+      ? ["futureTransactions"]
+      : ["transactions"];
+  }
+  if (action === "addFutureMovement") return ["futureTransactions"];
+  if (action === "addMovementsBatch") return ["transactions", "futureTransactions", "banks"];
+  if (action === "deleteMovementsBatch") {
+    const sheetName = String(payload.sheetName || "");
+    return sheetName === (state.config.futureMovementSheet || "Movimientos futuros") ? ["futureTransactions"] : ["transactions"];
+  }
+  if (["transferBank", "saveBanks", "addTransfersBatch"].includes(action)) return action === "addTransfersBatch" ? ["futureTransactions", "banks"] : ["banks"];
+  if (["saveInvestments", "updateInvestment"].includes(action)) return ["investments"];
+  if (action === "saveInvestmentGoals") return ["investmentGoals"];
+  return [];
+}
+
+function withClientOpId(payload = {}) {
+  if (payload.clientOpId) return payload;
+  return { ...payload, clientOpId: createSid("op") };
+}
+
+function sleep(ms) {
+  return new Promise(resolve => window.setTimeout(resolve, ms));
+}
+
 function queueOp(payload) {
   const queue = readOpQueue();
-  queue.push({ id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, createdAt: Date.now(), status: "queued", payload });
+  const queuedPayload = withClientOpId(payload || {});
+  queue.push({ id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, createdAt: Date.now(), status: "queued", payload: queuedPayload });
+  logSyncEvent(`Operación en cola: ${queuedPayload.action || "cambio"}.`, "");
+  markCacheSectionsDirty(queuePayloadSections(queuedPayload));
+  writeDataCache({ dirtySections: queuePayloadSections(queuedPayload) });
   writeOpQueue(queue);
   if (payload?.action === "saveInvestments") rememberPendingSnapshot("investments");
   if (payload?.action === "saveBanks") rememberPendingSnapshot("banks");
@@ -948,12 +1461,16 @@ async function processOpQueue() {
   setSyncStatus(queueActionStatus(item.payload), "");
   try {
     await postAppsScript(item.payload);
+    logSyncEvent(`Operación confirmada: ${item.payload?.action || "cambio"}.`, "ok");
     rememberSentOp(item.payload);
     const next = readOpQueue().filter(op => op.id !== item.id);
     writeOpQueue(next);
     if (item.payload?.action === "saveInvestments") dropPendingSections("investments");
     if (item.payload?.action === "saveBanks") dropPendingSections("banks");
     if (item.payload?.action === "saveInvestmentGoals") dropPendingSections("investmentGoals");
+    const synced = queuePayloadSections(item.payload);
+    markCacheSectionsSynced(synced);
+    writeDataCache({ syncedSections: synced });
     setSyncStatus("Cambio enviado\nCaché sincronizada", "ok");
     window.setTimeout(() => {
       if (!state.opQueueRunning) setSyncStatus("", "");
@@ -968,6 +1485,8 @@ async function processOpQueue() {
       target.error = String(error.message || error);
     }
     writeOpQueue(nextQueue);
+    logSyncEvent(`Operación pendiente por error: ${item.payload?.action || "cambio"}.`, "warn", error.message || String(error));
+    renderSyncSettingsPanel();
     state.opQueueRunning = false;
   }
 }
@@ -998,6 +1517,7 @@ function futureMovementSignature(row) {
 
 function serializeTransaction(t) {
   return {
+    sid: t.sid || "",
     rowNumber: t.rowNumber,
     fecha: formatDate(t.date),
     tipo: t.tipo,
@@ -1046,6 +1566,8 @@ async function fetchAppsScriptData(options = {}) {
     dataSheet: state.config.dataSheet
   });
   if (options.updateInvestments) params.set("updateInvestments", "1");
+  if (options.clientOpId) params.set("clientOpId", options.clientOpId);
+  if (options.sinceRev) params.set("sinceRev", options.sinceRev);
   if (options.movementKind) params.set("movementKind", options.movementKind);
   if (Number.isFinite(Number(options.offset))) params.set("offset", String(Number(options.offset)));
   if (Number.isFinite(Number(options.limit))) params.set("limit", String(Number(options.limit)));
@@ -1182,7 +1704,7 @@ function getSelectedSummaryMonth() {
 }
 
 function syncSummaryPeriodAndRender() {
-  renderAll();
+  renderDataScope("summary");
 }
 
 function fillSelect(id, values, placeholder = null) {
@@ -1254,6 +1776,8 @@ function renderAll() {
   renderSummary();
   renderMovements();
   renderInvestments();
+  renderSyncSettingsPanel();
+  renderSettingsPanelTabs();
   lucide.createIcons();
 }
 
@@ -1787,7 +2311,7 @@ async function deleteSelectedMovements() {
       }
       state.movementBulkEdit = false;
       syncOptions();
-      renderAll();
+      renderDataScope("movements");
     };
     if (state.banks.length) {
       const totalAmount = sum(movements.map(movement => Number(movement.amount || 0)));
@@ -1865,6 +2389,34 @@ function renderInvestmentsLegacyUnused() {
   renderInvestmentEditTable();
 }
 
+
+function setSettingsPanelFromClick(event) {
+  const btn = event.target.closest("[data-settings-panel]");
+  if (!btn) return;
+  state.summaryModes.settingsPanel = btn.dataset.settingsPanel || "sync";
+  renderSettingsPanelTabs();
+}
+
+function renderSettingsPanelTabs() {
+  const panel = state.summaryModes.settingsPanel || "sync";
+  const labels = {
+    sync: ["Sincronización", "Estado de caché, secciones y logs internos."],
+    connection: ["Conexión", "Peticiones pendientes y envíos confirmados de hoy."],
+    params: ["Parámetros", "Tema, URL de Apps Script y token opcional."]
+  };
+  document.querySelectorAll("#settingsPanelSwitch [data-settings-panel]").forEach(btn => {
+    btn.classList.toggle("active", btn.dataset.settingsPanel === panel);
+  });
+  document.querySelectorAll("[data-settings-panel-section]").forEach(section => {
+    section.classList.toggle("hidden", section.dataset.settingsPanelSection !== panel);
+  });
+  const [title, subtitle] = labels[panel] || labels.sync;
+  const titleEl = document.getElementById("settingsPanelTitle");
+  const subtitleEl = document.getElementById("settingsPanelSubtitle");
+  if (titleEl) titleEl.textContent = title;
+  if (subtitleEl) subtitleEl.textContent = subtitle;
+}
+
 function setInvestmentPanelFromClick(event) {
   const btn = event.target.closest("[data-investment-panel]");
   if (!btn) return;
@@ -1928,7 +2480,7 @@ function addInvestmentRow() {
 async function saveInvestments() {
   readInvestmentEditor();
   if (!state.config.scriptUrl) {
-    writeDataCache();
+    writeDataCache({ dirtySections: ["investments"] });
     rememberPendingSnapshot("investments");
     setNotice(lineMessage("Para modificar inversiones necesitas Apps Script.", "Cambio guardado solo en cache local."), "warn");
     renderInvestments();
@@ -1986,6 +2538,7 @@ async function saveMovementDetail(event) {
     return;
   }
   const movement = normalizeTransaction({
+    sid: previous.sid,
     rowNumber: previous.rowNumber,
     fecha: document.getElementById("editMovementDate").value,
     tipo: document.getElementById("editMovementType").value,
@@ -2018,7 +2571,7 @@ async function saveMovementDetail(event) {
     markButtonSaved(btn);
     document.getElementById("movementDetailDialog").close();
     syncOptions();
-    renderAll();
+    renderDataScope("movements");
   };
   try {
     const accountDelta = roundMoney(movement.amount - previous.amount);
@@ -2065,7 +2618,7 @@ async function deleteMovementDetail() {
     markButtonSaved(btn, "Eliminado");
     document.getElementById("movementDetailDialog").close();
     syncOptions();
-    renderAll();
+    renderDataScope("movements");
   };
   try {
     if (!state.banks.length) {
@@ -2201,7 +2754,7 @@ async function submitMovement(event) {
       state.transactions.push(...realized);
       state.futureTransactions.push(...futureMovs);
       writeDataCache();
-      queueOp({ action: "addMovementsBatch", movements, movementSheet: state.config.movementSheet, futureMovementSheet: state.config.futureMovementSheet || "Movimientos futuros", bankSheet: state.config.bankSheet || "Bancos", account });
+      queueOp({ action: "addMovementsBatch", movements: movements.map(serializeTransaction), movementSheet: state.config.movementSheet, futureMovementSheet: state.config.futureMovementSheet || "Movimientos futuros", bankSheet: state.config.bankSheet || "Bancos", account });
       showMovementPopup("Movimientos periódicos guardados", realized[0] || futureMovs[0], account, lineMessage(
         `${realized.length} ${plural(realized.length, "realizado", "realizados")} y ${futureMovs.length} futuros`,
         realized.length ? bankChangeLines(totalBefore, totalAfter, account, accountBefore) : ""
@@ -2229,7 +2782,7 @@ async function submitMovement(event) {
       writeDataCache();
       queueOp({
         action: future ? "addFutureMovement" : "addMovement",
-        movement,
+        movement: serializeTransaction(movement),
         sheetName: future ? (state.config.futureMovementSheet || "Movimientos futuros") : state.config.movementSheet,
         bankSheet: state.config.bankSheet || "Bancos",
         account
@@ -2242,7 +2795,7 @@ async function submitMovement(event) {
       );
     }
     syncOptions();
-    renderAll();
+    renderDataScope("movements");
     event.target.reset();
     setDefaultDate();
     syncRegistrarMode();
@@ -2528,9 +3081,9 @@ async function saveInvestmentGoalsFromDialog(event) {
   const total = roundMoney(document.getElementById("goalTotalInput").value);
   state.investmentGoals = normalizeInvestmentGoals({ expenseMonthly, investmentMonthly, monthly: investmentMonthly, yearly, total });
   localStorage.setItem('investmentGoals', JSON.stringify(state.investmentGoals));
-  writeDataCache();
+  writeDataCache({ dirtySections: ["investmentGoals"] });
   rememberPendingSnapshot("investmentGoals");
-  renderAll();
+  renderDataScope("investments");
   if (state.config.scriptUrl) {
     try {
       queueOp({ action: "saveInvestmentGoals", sheetName: state.config.objectiveSheet || "Objetivos", goals: state.investmentGoals });
@@ -2691,7 +3244,7 @@ async function saveBanks() {
     if (state.banks[idx]) state.banks[idx].dinero = roundMoney(input.value);
   });
   if (!state.config.scriptUrl) {
-    writeDataCache();
+    writeDataCache({ dirtySections: ["banks"] });
     rememberPendingSnapshot("banks");
     renderSummary();
     markButtonSaved(document.getElementById("saveBanksBtn") || btn);
@@ -2702,7 +3255,7 @@ async function saveBanks() {
     writeDataCache();
     queueOp({ action: "saveBanks", bankSheet: state.config.bankSheet || "Bancos", banks: state.banks });
     document.getElementById("moneyDialog")?.close();
-    renderAll();
+    renderDataScope("banks");
     markButtonSaved(document.getElementById("saveBanksBtn") || btn);
     setNotice("Cuentas guardadas.", "ok");
   } catch (error) {
@@ -2713,12 +3266,34 @@ async function saveBanks() {
 }
 
 async function postAppsScript(payload) {
+  const finalPayload = withClientOpId(payload || {});
   await fetch(state.config.scriptUrl, {
     method: "POST",
     mode: "no-cors",
     headers: { "Content-Type": "text/plain;charset=utf-8" },
-    body: JSON.stringify({ token: state.config.appToken, ...payload })
+    body: JSON.stringify({ token: state.config.appToken, ...finalPayload })
   });
+  await confirmClientOp(finalPayload.clientOpId);
+}
+
+async function confirmClientOp(clientOpId) {
+  if (!clientOpId) return;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    await sleep(350 + attempt * 250);
+    try {
+      const payload = await fetchAppsScriptData({ action: "checkClientOp", clientOpId });
+      if (payload?.ok && payload.completed) return;
+      if (payload?.ok && payload.pending) continue;
+    } catch (error) {
+      if (attempt >= 4) throw error;
+    }
+  }
+  throw new Error("Apps Script no confirmó la operación; se queda en cola para reintentar.");
+}
+
+function createSid(prefix = "id") {
+  if (window.crypto?.randomUUID) return `${prefix}_${window.crypto.randomUUID()}`;
+  return `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2)}`;
 }
 
 function normalizeTransaction(row) {
@@ -2731,6 +3306,7 @@ function normalizeTransaction(row) {
   const cuenta = String(row.cuenta || row.CUENTA || row.account || row[8] || "").trim();
   const transferParts = parseTransferAccountText(cuenta || descripcion);
   return {
+    sid: String(row.sid || row.SID || row.Id || row.ID || row[9] || "").trim() || createSid("mov"),
     rowNumber: Number(row.rowNumber || row.row || 0) || null,
     date,
     tipo,

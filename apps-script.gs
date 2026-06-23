@@ -1,13 +1,18 @@
-const APP_TOKEN = '';
-const DEFAULT_MOVEMENT_SHEET = 'Control Finanzas';
-const DEFAULT_INVESTMENT_SHEET = 'Inversiones';
-const DEFAULT_BANK_SHEET = 'Bancos';
-const DEFAULT_FUTURE_MOVEMENT_SHEET = 'Movimientos futuros';
-const DEFAULT_OBJECTIVE_SHEET = 'Objetivos';
-const DEFAULT_PENDING_SHEET = 'Pendientes';
-const TELEGRAM_BOT_TOKEN = '';
-const TELEGRAM_CHAT_ID = '';
-const DAILY_NOTIFICATION_HOUR = 23;
+var APP_TOKEN = '';
+var DEFAULT_MOVEMENT_SHEET = 'Control Finanzas';
+var DEFAULT_INVESTMENT_SHEET = 'Inversiones';
+var DEFAULT_BANK_SHEET = 'Bancos';
+var DEFAULT_FUTURE_MOVEMENT_SHEET = 'Movimientos futuros';
+var DEFAULT_OBJECTIVE_SHEET = 'Objetivos';
+var DEFAULT_PENDING_SHEET = 'Pendientes';
+var MANIFEST_REV_PREFIX = 'moneyManifestRev:';
+var PROCESSED_CLIENT_OPS_KEY = 'moneyProcessedClientOps';
+var MOVEMENT_CHANGELOG_KEY = 'moneyMovementChangelog';
+var MOVEMENT_CHANGELOG_LIMIT = 1200;
+var MOVEMENT_SID_HEADER = 'SID';
+var TELEGRAM_BOT_TOKEN = '';
+var TELEGRAM_CHAT_ID = '';
+var DAILY_NOTIFICATION_HOUR = 23;
 
 function doGet(e) {
   const params = e && e.parameter ? e.parameter : {};
@@ -23,12 +28,16 @@ function doGet(e) {
   let payload;
   try {
     requireToken_(params.token || '');
-    if (action === 'downloadData') {
+    if (action === 'manifest') {
+      payload = buildManifestPayload_(movementSheet, futureMovementSheet, investmentSheet, bankSheet, objectiveSheet, dataSheet);
+    } else if (action === 'checkClientOp') {
+      payload = buildClientOpStatusPayload_(params.clientOpId || '');
+    } else if (action === 'downloadData') {
       payload = buildAllDataPayload_(movementSheet, futureMovementSheet, investmentSheet, bankSheet, objectiveSheet, dataSheet, []);
     } else if (action === 'downloadCoreData') {
-      payload = buildCoreDataPayload_(investmentSheet, bankSheet, objectiveSheet, dataSheet, []);
+      payload = buildCoreDataPayload_(investmentSheet, bankSheet, objectiveSheet, dataSheet, [], movementSheet, futureMovementSheet);
     } else if (action === 'downloadInvestments') {
-      payload = buildInvestmentDataPayload_(investmentSheet, objectiveSheet);
+      payload = buildInvestmentDataPayload_(investmentSheet, objectiveSheet, movementSheet, futureMovementSheet, bankSheet, dataSheet);
     } else if (action === 'downloadMovements') {
       payload = {
         ok: true,
@@ -42,15 +51,37 @@ function doGet(e) {
         params.offset,
         params.limit
       );
+    } else if (action === 'downloadMovementChanges') {
+      payload = buildMovementChangesPayload_(
+        params.movementKind === 'future' ? 'futureTransactions' : 'transactions',
+        params.sinceRev || '',
+        movementSheet,
+        futureMovementSheet,
+        investmentSheet,
+        bankSheet,
+        objectiveSheet,
+        dataSheet
+      );
     } else if (action === 'moveDueFutureMovements') {
       const movedFutureMovements = moveDueFutureMovements_(futureMovementSheet, movementSheet, bankSheet);
-      payload = buildCoreDataPayload_(investmentSheet, bankSheet, objectiveSheet, dataSheet, movedFutureMovements);
+      if (movedFutureMovements.length) {
+        const previousRevs = { transactions: getSectionRevision_('transactions'), futureTransactions: getSectionRevision_('futureTransactions') };
+        const moveStamp = bumpSections_('transactions', 'futureTransactions', 'banks');
+        recordMovedFutureChanges_(movedFutureMovements, moveStamp, previousRevs);
+      }
+      payload = buildCoreDataPayload_(investmentSheet, bankSheet, objectiveSheet, dataSheet, movedFutureMovements, movementSheet, futureMovementSheet);
     } else if (action === 'all') {
       const movedFutureMovements = moveDueFutureMovements_(futureMovementSheet, movementSheet, bankSheet);
+      if (movedFutureMovements.length) {
+        const previousRevs = { transactions: getSectionRevision_('transactions'), futureTransactions: getSectionRevision_('futureTransactions') };
+        const moveStamp = bumpSections_('transactions', 'futureTransactions', 'banks');
+        recordMovedFutureChanges_(movedFutureMovements, moveStamp, previousRevs);
+      }
       payload = buildAllDataPayload_(movementSheet, futureMovementSheet, investmentSheet, bankSheet, objectiveSheet, dataSheet, movedFutureMovements);
     } else if (action === 'updateInvestmentPrices') {
       const priceUpdateResult = updateInvestmentQuotesFromYahoo(investmentSheet);
-      payload = buildInvestmentDataPayload_(investmentSheet, objectiveSheet);
+      bumpSections_('investments');
+      payload = buildInvestmentDataPayload_(investmentSheet, objectiveSheet, movementSheet, futureMovementSheet, bankSheet, dataSheet);
       payload.pricesUpdated = true;
       payload.priceUpdateResult = priceUpdateResult;
     } else if (action === 'sendDailyNotifications') {
@@ -79,26 +110,29 @@ function buildAllDataPayload_(movementSheet, futureMovementSheet, investmentShee
     investments: readInvestments_(investmentSheet),
     banks: readBanks_(bankSheet),
     investmentGoals: readInvestmentGoals_(objectiveSheet),
-    categories: readCategories_(dataSheet)
+    categories: readCategories_(dataSheet),
+    manifest: buildManifestPayload_(movementSheet, futureMovementSheet, investmentSheet, bankSheet, objectiveSheet, dataSheet).manifest
   };
 }
 
-function buildCoreDataPayload_(investmentSheet, bankSheet, objectiveSheet, dataSheet, movedFutureMovements) {
+function buildCoreDataPayload_(investmentSheet, bankSheet, objectiveSheet, dataSheet, movedFutureMovements, movementSheet, futureMovementSheet) {
   return {
     ok: true,
     movedFutureMovements: movedFutureMovements || [],
     investments: readInvestments_(investmentSheet),
     banks: readBanks_(bankSheet),
     investmentGoals: readInvestmentGoals_(objectiveSheet),
-    categories: readCategories_(dataSheet)
+    categories: readCategories_(dataSheet),
+    manifest: buildManifestPayload_(movementSheet || DEFAULT_MOVEMENT_SHEET, futureMovementSheet || DEFAULT_FUTURE_MOVEMENT_SHEET, investmentSheet, bankSheet, objectiveSheet, dataSheet).manifest
   };
 }
 
-function buildInvestmentDataPayload_(investmentSheet, objectiveSheet) {
+function buildInvestmentDataPayload_(investmentSheet, objectiveSheet, movementSheet, futureMovementSheet, bankSheet, dataSheet) {
   return {
     ok: true,
     investments: readInvestments_(investmentSheet),
-    investmentGoals: readInvestmentGoals_(objectiveSheet)
+    investmentGoals: readInvestmentGoals_(objectiveSheet),
+    manifest: buildManifestPayload_(movementSheet || DEFAULT_MOVEMENT_SHEET, futureMovementSheet || DEFAULT_FUTURE_MOVEMENT_SHEET, investmentSheet, bankSheet || DEFAULT_BANK_SHEET, objectiveSheet, dataSheet || 'Datos').manifest
   };
 }
 
@@ -116,6 +150,267 @@ function buildMovementPagePayload_(sheetName, payloadKey, offset, limit) {
   return payload;
 }
 
+function buildMovementChangesPayload_(section, sinceRev, movementSheet, futureMovementSheet, investmentSheet, bankSheet, objectiveSheet, dataSheet) {
+  const currentRev = getSectionRevision_(section);
+  const manifest = buildManifestPayload_(movementSheet || DEFAULT_MOVEMENT_SHEET, futureMovementSheet || DEFAULT_FUTURE_MOVEMENT_SHEET, investmentSheet || DEFAULT_INVESTMENT_SHEET, bankSheet || DEFAULT_BANK_SHEET, objectiveSheet || DEFAULT_OBJECTIVE_SHEET, dataSheet || 'Datos').manifest;
+  if (!sinceRev || String(sinceRev) === String(currentRev)) {
+    return { ok: true, incremental: true, section, sinceRev: sinceRev || '', currentRev, changes: [], manifest };
+  }
+  const log = readMovementChangeLog_().filter(item => item && item.section === section);
+  let changes = [];
+  const firstByPrevious = log.findIndex(item => String(item.previousRev || '') === String(sinceRev));
+  if (firstByPrevious !== -1) {
+    changes = log.slice(firstByPrevious);
+  } else {
+    const startIndex = log.findIndex(item => String(item.rev || '') === String(sinceRev));
+    if (startIndex !== -1) changes = log.slice(startIndex + 1);
+  }
+  if (!changes.length) {
+    return { ok: true, incremental: false, reason: 'La base local ya no está en el changelog.', section, sinceRev, currentRev, changes: [], manifest };
+  }
+  return { ok: true, incremental: true, section, sinceRev, currentRev, changes, manifest };
+}
+
+function buildManifestPayload_(movementSheet, futureMovementSheet, investmentSheet, bankSheet, objectiveSheet, dataSheet) {
+  return {
+    ok: true,
+    manifest: {
+      version: 3,
+      generatedAt: new Date().toISOString(),
+      sections: {
+        transactions: sectionManifest_('transactions', movementSheet),
+        futureTransactions: sectionManifest_('futureTransactions', futureMovementSheet),
+        investments: sectionManifest_('investments', investmentSheet),
+        banks: sectionManifest_('banks', bankSheet),
+        investmentGoals: sectionManifest_('investmentGoals', objectiveSheet),
+        categories: sectionManifest_('categories', dataSheet)
+      }
+    }
+  };
+}
+
+
+function manifestRevKey_(section) {
+  return 'moneyManifestRev:' + String(section || '');
+}
+
+function processedClientOpsKey_() {
+  return 'moneyProcessedClientOps';
+}
+
+function movementSidHeader_() {
+  return 'SID';
+}
+
+function sectionManifest_(section, sheetName) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
+  const rev = getSectionRevision_(section);
+  const count = sheet ? Math.max(0, sheet.getLastRow() - 1) : 0;
+  const schemaHash = sheet ? fastHash_(sheet.getRange(1, 1, 1, Math.max(1, sheet.getLastColumn())).getDisplayValues()[0].join('|')) : '';
+  const lastRowHash = sheet && sheet.getLastRow() >= 2
+    ? fastHash_(sheet.getRange(sheet.getLastRow(), 1, 1, Math.max(1, sheet.getLastColumn())).getDisplayValues()[0].join('|'))
+    : '';
+  return { rev, count, lastUpdatedAt: revisionToIso_(rev), schemaHash, lastRowHash };
+}
+
+function revisionToIso_(rev) {
+  const ms = Number(String(rev || '').split('-')[0]);
+  if (!Number.isFinite(ms) || ms <= 0) return '';
+  return new Date(ms).toISOString();
+}
+
+function fastHash_(text) {
+  const value = String(text || '');
+  let hash = 0;
+  for (let i = 0; i < value.length; i++) {
+    hash = ((hash << 5) - hash) + value.charCodeAt(i);
+    hash |= 0;
+  }
+  return String(hash);
+}
+
+function getSectionRevision_(section) {
+  const props = PropertiesService.getDocumentProperties();
+  let rev = props.getProperty(manifestRevKey_(section));
+  if (!rev) {
+    rev = String(Date.now());
+    props.setProperty(manifestRevKey_(section), rev);
+  }
+  return rev;
+}
+
+function bumpSections_() {
+  const sections = Array.from(new Set(Array.prototype.slice.call(arguments).filter(Boolean)));
+  if (!sections.length) return '';
+  const props = PropertiesService.getDocumentProperties();
+  const stamp = `${Date.now()}-${Utilities.getUuid().slice(0, 8)}`;
+  sections.forEach(section => props.setProperty(manifestRevKey_(section), stamp));
+  return stamp;
+}
+
+function sectionsForPayload_(payload) {
+  const action = payload && payload.action || '';
+  if (action === 'addMovement') return ['transactions', 'banks'];
+  if (action === 'addFutureMovement') return ['futureTransactions'];
+  if (action === 'addMovementsBatch') return ['transactions', 'futureTransactions', 'banks'];
+  if (action === 'addTransfersBatch') return ['futureTransactions', 'banks'];
+  if (action === 'updateMovement' || action === 'deleteMovement' || action === 'deleteMovementsBatch') {
+    const sheet = String(payload.sheetName || '');
+    return sheet === DEFAULT_FUTURE_MOVEMENT_SHEET ? ['futureTransactions'] : ['transactions'];
+  }
+  if (action === 'updateInvestment' || action === 'saveInvestments') return ['investments'];
+  if (action === 'saveInvestmentGoals') return ['investmentGoals'];
+  if (action === 'saveBanks' || action === 'transferBank') return ['banks'];
+  return [];
+}
+
+function movementChangelogKey_() {
+  return 'moneyMovementChangelog';
+}
+
+function readMovementChangeLog_() {
+  try {
+    const items = JSON.parse(PropertiesService.getDocumentProperties().getProperty(movementChangelogKey_()) || '[]');
+    return Array.isArray(items) ? items : [];
+  } catch (err) {
+    return [];
+  }
+}
+
+function writeMovementChangeLog_(items) {
+  PropertiesService.getDocumentProperties().setProperty(movementChangelogKey_(), JSON.stringify((items || []).slice(-MOVEMENT_CHANGELOG_LIMIT)));
+}
+
+function appendMovementChanges_(changes) {
+  if (!changes || !changes.length) return;
+  const log = readMovementChangeLog_();
+  writeMovementChangeLog_(log.concat(changes));
+}
+
+function movementChangeEntry_(section, type, movement, rev, previousRev) {
+  const sid = String(movement && movement.sid || '').trim();
+  if (!sid) return null;
+  return {
+    id: Utilities.getUuid(),
+    at: new Date().toISOString(),
+    rev: String(rev || getSectionRevision_(section)),
+    previousRev: String(previousRev || ''),
+    section,
+    type,
+    sid,
+    movement: type === 'delete' ? null : normalizeMovementForChange_(movement)
+  };
+}
+
+function normalizeMovementForChange_(movement) {
+  if (!movement) return null;
+  return {
+    sid: String(movement.sid || '').trim(),
+    rowNumber: movement.rowNumber || '',
+    fecha: normalizeDate_(movement.fecha || movement.date),
+    tipo: movement.tipo || '',
+    concepto: movement.concepto || '',
+    descripcion: movement.descripcion || '',
+    importe: parseNumber_(movement.importe !== undefined ? movement.importe : movement.amount),
+    cuenta: movement.cuenta || movement.account || '',
+    transferFrom: movement.transferFrom || movement.from || '',
+    transferTo: movement.transferTo || movement.to || ''
+  };
+}
+
+function sectionForMovementSheetName_(sheetName) {
+  const normalized = normalizeType_(sheetName || '');
+  return normalized.indexOf('futuro') !== -1 || String(sheetName || '') === DEFAULT_FUTURE_MOVEMENT_SHEET ? 'futureTransactions' : 'transactions';
+}
+
+function sectionForMovementDate_(movement) {
+  const date = new Date(movement && (movement.date || movement.fecha));
+  if (Number.isNaN(date.getTime())) return 'futureTransactions';
+  const today = new Date();
+  today.setHours(23, 59, 59, 999);
+  return date <= today ? 'transactions' : 'futureTransactions';
+}
+
+function recordPayloadMovementChanges_(payload, rev, previousRevs) {
+  const action = payload && payload.action || '';
+  const changes = [];
+  if (action === 'addMovement') {
+    changes.push(movementChangeEntry_('transactions', 'upsert', Object.assign({}, payload.movement || {}, { cuenta: payload.account || payload.movement && payload.movement.cuenta || '' }), rev, previousRevs && previousRevs.transactions));
+  } else if (action === 'addFutureMovement') {
+    changes.push(movementChangeEntry_('futureTransactions', 'upsert', Object.assign({}, payload.movement || {}, { cuenta: payload.account || payload.movement && payload.movement.cuenta || '' }), rev, previousRevs && previousRevs.futureTransactions));
+  } else if (action === 'addMovementsBatch') {
+    (payload.movements || []).forEach(movement => {
+      const section = sectionForMovementDate_(movement);
+      changes.push(movementChangeEntry_(section, 'upsert', Object.assign({}, movement || {}, { cuenta: payload.account || movement && movement.cuenta || '' }), rev, previousRevs && previousRevs[section]));
+    });
+  } else if (action === 'updateMovement') {
+    const section = sectionForMovementSheetName_(payload.sheetName || DEFAULT_MOVEMENT_SHEET);
+    changes.push(movementChangeEntry_(section, 'upsert', payload.movement || {}, rev, previousRevs && previousRevs[section]));
+  } else if (action === 'deleteMovement') {
+    const section = sectionForMovementSheetName_(payload.sheetName || DEFAULT_MOVEMENT_SHEET);
+    const movement = payload.movement || {};
+    changes.push(movementChangeEntry_(section, 'delete', movement, rev, previousRevs && previousRevs[section]));
+  } else if (action === 'deleteMovementsBatch') {
+    const section = sectionForMovementSheetName_(payload.sheetName || DEFAULT_MOVEMENT_SHEET);
+    (payload.movements || []).forEach(item => {
+      const movement = item && (item.movement || item) || {};
+      changes.push(movementChangeEntry_(section, 'delete', movement, rev, previousRevs && previousRevs[section]));
+    });
+  } else if (action === 'addTransfersBatch') {
+    (payload.transfers || []).forEach(transfer => {
+      const section = sectionForMovementDate_(transfer);
+      if (section === 'futureTransactions') {
+        const accounts = transferAccountsFromMovement_(transfer, payload.from || '', payload.to || '');
+        changes.push(movementChangeEntry_(section, 'upsert', Object.assign({}, transfer || {}, {
+          tipo: 'Transferencia',
+          concepto: 'Transferencia',
+          descripcion: `${accounts.from} → ${accounts.to}`,
+          cuenta: `${accounts.from} → ${accounts.to}`,
+          importe: Math.abs(Number(transfer.amount || transfer.importe || payload.amount || 0))
+        }), rev, previousRevs && previousRevs[section]));
+      }
+    });
+  }
+  appendMovementChanges_(changes.filter(Boolean));
+}
+
+function recordMovedFutureChanges_(movements, rev, previousRevs) {
+  const changes = [];
+  (movements || []).forEach(movement => {
+    changes.push(movementChangeEntry_('futureTransactions', 'delete', movement, rev, previousRevs && previousRevs.futureTransactions));
+    changes.push(movementChangeEntry_('transactions', 'upsert', movement, rev, previousRevs && previousRevs.transactions));
+  });
+  appendMovementChanges_(changes.filter(Boolean));
+}
+
+function buildClientOpStatusPayload_(clientOpId) {
+  if (!clientOpId) return { ok: true, completed: false, pending: false };
+  return { ok: true, completed: wasClientOpProcessed_(clientOpId), pending: isClientOpPending_(clientOpId) };
+}
+
+function rememberProcessedClientOp_(clientOpId) {
+  if (!clientOpId) return;
+  const props = PropertiesService.getDocumentProperties();
+  const items = JSON.parse(props.getProperty(processedClientOpsKey_()) || '[]')
+    .filter(item => item && item.id !== clientOpId)
+    .slice(-200);
+  items.push({ id: clientOpId, at: new Date().toISOString() });
+  props.setProperty(processedClientOpsKey_(), JSON.stringify(items));
+}
+
+function wasClientOpProcessed_(clientOpId) {
+  const items = JSON.parse(PropertiesService.getDocumentProperties().getProperty(processedClientOpsKey_()) || '[]');
+  return items.some(item => item && item.id === clientOpId);
+}
+
+function isClientOpPending_(clientOpId) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(DEFAULT_PENDING_SHEET);
+  if (!sheet || sheet.getLastRow() < 2) return false;
+  const values = sheet.getRange(2, 4, sheet.getLastRow() - 1, 1).getValues();
+  return values.some(row => String(row[0] || '').indexOf(clientOpId) !== -1);
+}
+
+
 function doPost(e) {
   let payload = {};
   let pendingId = '';
@@ -126,53 +421,53 @@ function doPost(e) {
     if (payload.action === 'addMovement') {
       addMovement_(payload.movement, payload.sheetName || DEFAULT_MOVEMENT_SHEET);
       if (payload.account) adjustBank_(payload.bankSheet || DEFAULT_BANK_SHEET, payload.account, Number(payload.movement && (payload.movement.amount || payload.movement.importe) || 0));
-      return finishPost_(pendingId, { ok: true });
+      return finishPost_(pendingId, payload, { ok: true });
     }
     if (payload.action === 'addFutureMovement') {
       addFutureMovement_(payload.movement, payload.sheetName || DEFAULT_FUTURE_MOVEMENT_SHEET, payload.account || '');
-      return finishPost_(pendingId, { ok: true });
+      return finishPost_(pendingId, payload, { ok: true });
     }
     if (payload.action === 'addMovementsBatch') {
       addMovementsBatch_(payload.movements || [], payload.movementSheet || DEFAULT_MOVEMENT_SHEET, payload.futureMovementSheet || DEFAULT_FUTURE_MOVEMENT_SHEET, payload.bankSheet || DEFAULT_BANK_SHEET, payload.account || '');
-      return finishPost_(pendingId, { ok: true });
+      return finishPost_(pendingId, payload, { ok: true });
     }
     if (payload.action === 'addTransfersBatch') {
       addTransfersBatch_(payload.transfers || [], payload.futureMovementSheet || DEFAULT_FUTURE_MOVEMENT_SHEET, payload.bankSheet || DEFAULT_BANK_SHEET, payload.from || '', payload.to || '', Number(payload.amount || 0));
-      return finishPost_(pendingId, { ok: true });
+      return finishPost_(pendingId, payload, { ok: true });
     }
     if (payload.action === 'updateMovement') {
       updateMovement_(payload.movement, payload.sheetName || DEFAULT_MOVEMENT_SHEET, payload.previousMovement || null);
-      return finishPost_(pendingId, { ok: true });
+      return finishPost_(pendingId, payload, { ok: true });
     }
     if (payload.action === 'deleteMovement') {
       deleteMovement_(payload.rowNumber, payload.sheetName || DEFAULT_MOVEMENT_SHEET, payload.movement || null);
-      return finishPost_(pendingId, { ok: true });
+      return finishPost_(pendingId, payload, { ok: true });
     }
     if (payload.action === 'deleteMovementsBatch') {
       deleteMovementsBatch_(payload.movements || [], payload.sheetName || DEFAULT_MOVEMENT_SHEET);
-      return finishPost_(pendingId, { ok: true });
+      return finishPost_(pendingId, payload, { ok: true });
     }
     if (payload.action === 'updateInvestment') {
       updateInvestment_(payload.investment || {}, payload.sheetName || DEFAULT_INVESTMENT_SHEET, payload.previousInvestment || null);
-      return finishPost_(pendingId, { ok: true });
+      return finishPost_(pendingId, payload, { ok: true });
     }
     if (payload.action === 'saveInvestments') {
       saveInvestments_(payload.investments || [], payload.sheetName || DEFAULT_INVESTMENT_SHEET);
-      return finishPost_(pendingId, { ok: true });
+      return finishPost_(pendingId, payload, { ok: true });
     }
     if (payload.action === 'saveInvestmentGoals') {
       saveInvestmentGoals_(payload.goals || {}, payload.sheetName || DEFAULT_OBJECTIVE_SHEET);
-      return finishPost_(pendingId, { ok: true });
+      return finishPost_(pendingId, payload, { ok: true });
     }
     if (payload.action === 'saveBanks') {
       saveBanks_(payload.banks || [], payload.bankSheet || DEFAULT_BANK_SHEET);
-      return finishPost_(pendingId, { ok: true });
+      return finishPost_(pendingId, payload, { ok: true });
     }
     if (payload.action === 'transferBank') {
       transferBank_(payload.bankSheet || DEFAULT_BANK_SHEET, payload.from, payload.to, Number(payload.amount || 0));
-      return finishPost_(pendingId, { ok: true });
+      return finishPost_(pendingId, payload, { ok: true });
     }
-    return finishPost_(pendingId, { ok: false, error: 'Unknown action' });
+    return finishPost_(pendingId, payload, { ok: false, error: 'Unknown action' });
   } catch (err) {
     return json_({ ok: false, error: String(err && err.message ? err.message : err) });
   }
@@ -191,9 +486,18 @@ function appendPendingPost_(payload) {
   return id;
 }
 
-function finishPost_(pendingId, payload) {
+function finishPost_(pendingId, requestPayload, responsePayload) {
   removePendingPost_(pendingId);
-  return json_(payload);
+  const response = responsePayload || requestPayload || { ok: true };
+  if (response.ok !== false && requestPayload && requestPayload.action) {
+    const sections = sectionsForPayload_(requestPayload);
+    const previousRevs = {};
+    sections.forEach(section => previousRevs[section] = getSectionRevision_(section));
+    const stamp = bumpSections_.apply(null, sections);
+    recordPayloadMovementChanges_(requestPayload, stamp, previousRevs);
+    rememberProcessedClientOp_(requestPayload.clientOpId || '');
+  }
+  return json_(response);
 }
 
 function removePendingPost_(pendingId) {
@@ -217,31 +521,69 @@ function sanitizePendingPayload_(payload) {
   return copy;
 }
 
+function createMovementSid_() {
+  return `mov_${Utilities.getUuid()}`;
+}
+
+function movementSidFrom_(movement) {
+  return String(movement && (movement.sid || movement.SID || movement.id || movement.ID) || '').trim() || createMovementSid_();
+}
+
+function ensureMovementSidColumn_(sheet) {
+  if (!sheet) return 0;
+  const lastCol = Math.max(sheet.getLastColumn(), 1);
+  const headers = sheet.getRange(1, 1, 1, lastCol).getDisplayValues()[0].map(normalizeHeader_);
+  let sidCol = headers.indexOf('sid') + 1;
+  if (!sidCol) {
+    sidCol = lastCol + 1;
+    sheet.getRange(1, sidCol).setValue(movementSidHeader_());
+  }
+  const lastRow = sheet.getLastRow();
+  if (lastRow >= 2) {
+    const range = sheet.getRange(2, sidCol, lastRow - 1, 1);
+    const values = range.getValues();
+    let changed = false;
+    for (let i = 0; i < values.length; i++) {
+      if (!String(values[i][0] || '').trim()) {
+        values[i][0] = createMovementSid_();
+        changed = true;
+      }
+    }
+    if (changed) range.setValues(values);
+  }
+  return sidCol;
+}
+
+function writeMovementRow_(sheet, rowNumber, movement, sid, account) {
+  const date = new Date(movement.date || movement.fecha);
+  if (Number.isNaN(date.getTime())) throw new Error('Invalid date');
+  const amount = Number(movement.amount || movement.importe);
+  if (!Number.isFinite(amount)) throw new Error('Invalid amount');
+  const sidCol = ensureMovementSidColumn_(sheet);
+  sheet.getRange(rowNumber, 1, 1, 8).setValues([[date, `=YEAR(A${rowNumber})`, `=MONTH(A${rowNumber})`, `=DAY(A${rowNumber})`, movement.tipo || '', movement.concepto || '', movement.descripcion || '', amount]]);
+  if (sheet.getLastColumn() >= 9) sheet.getRange(rowNumber, 9).setValue(account ?? movement.cuenta ?? movement.account ?? '');
+  if (sidCol) sheet.getRange(rowNumber, sidCol).setValue(sid || movementSidFrom_(movement));
+}
+
+function findMovementRowBySid_(sheet, sid, sidCol) {
+  const target = String(sid || '').trim();
+  if (!target || !sidCol || sheet.getLastRow() < 2) return 0;
+  const values = sheet.getRange(2, sidCol, sheet.getLastRow() - 1, 1).getValues();
+  for (let i = values.length - 1; i >= 0; i--) {
+    if (String(values[i][0] || '').trim() === target) return i + 2;
+  }
+  return 0;
+}
+
+
 function addMovement_(movement, sheetName) {
   if (!movement) throw new Error('Missing movement');
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName(sheetName);
   if (!sheet) throw new Error(`Sheet not found: ${sheetName}`);
-
-  const date = new Date(movement.date || movement.fecha);
-  if (Number.isNaN(date.getTime())) throw new Error('Invalid date');
-
-  const amount = Number(movement.amount || movement.importe);
-  if (!Number.isFinite(amount)) throw new Error('Invalid amount');
-
+  ensureMovementSidColumn_(sheet);
   const row = sheet.getLastRow() + 1;
-  const values = [
-    date,
-    `=YEAR(A${row})`,
-    `=MONTH(A${row})`,
-    `=DAY(A${row})`,
-    movement.tipo || '',
-    movement.concepto || '',
-    movement.descripcion || '',
-    amount
-  ];
-  if (sheet.getLastColumn() >= 9) values.push(movement.cuenta || movement.account || '');
-  sheet.appendRow(values);
+  writeMovementRow_(sheet, row, movement, movementSidFrom_(movement), movement.cuenta || movement.account || '');
 }
 
 function readMovements_(sheetName) {
@@ -255,6 +597,7 @@ function readMovementsPage_(sheetName, offset, limit, optional) {
     if (optional) return { rows: [], total: 0, offset: 0, limit: Math.max(1, Math.min(Number(limit || 500), 1000)), nextOffset: 0, hasMore: false };
     throw new Error(`Sheet not found: ${sheetName}`);
   }
+  const sidCol = ensureMovementSidColumn_(sheet);
   const total = Math.max(0, sheet.getLastRow() - 1);
   const safeOffset = Math.max(0, Math.min(Number(offset || 0), total));
   const requestedLimit = Number(limit || 500);
@@ -264,18 +607,19 @@ function readMovementsPage_(sheetName, offset, limit, optional) {
   }
   const count = Math.min(safeLimit, total - safeOffset);
   const startRow = 2 + safeOffset;
-  const width = Math.max(sheet.getLastColumn(), 9);
+  const width = Math.max(sheet.getLastColumn(), sidCol, 9);
   const values = sheet.getRange(startRow, 1, count, width).getValues();
   const rows = values
-    .map((row, index) => movementObjectFromRow_(row, startRow + index))
+    .map((row, index) => movementObjectFromRow_(row, startRow + index, sidCol))
     .filter(Boolean);
   const nextOffset = safeOffset + count;
   return { rows, total, offset: safeOffset, limit: safeLimit, nextOffset, hasMore: nextOffset < total };
 }
 
-function movementObjectFromRow_(row, rowNumber) {
+function movementObjectFromRow_(row, rowNumber, sidCol) {
   if (!row[0] || !row[4] || row[7] === '') return null;
   return {
+    sid: sidCol ? String(row[sidCol - 1] || '').trim() : '',
     rowNumber,
     fecha: normalizeDate_(row[0]),
     tipo: row[4],
@@ -290,35 +634,22 @@ function updateMovement_(movement, sheetName, previousMovement) {
   if (!movement) throw new Error('Missing movement');
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
   if (!sheet) throw new Error(`Sheet not found: ${sheetName}`);
-  let rowNumber = Number(movement.rowNumber || 0);
+  const sidCol = ensureMovementSidColumn_(sheet);
+  const targetSid = String(movement.sid || previousMovement && previousMovement.sid || '').trim();
+  let rowNumber = targetSid ? findMovementRowBySid_(sheet, targetSid, sidCol) : Number(movement.rowNumber || 0);
   if (rowNumber < 2 || rowNumber > sheet.getLastRow()) rowNumber = 0;
   if (rowNumber && previousMovement && !movementMatchesSheetRow_(sheet, rowNumber, previousMovement)) rowNumber = 0;
   if (!rowNumber && previousMovement) rowNumber = findMovementRow_(sheet, previousMovement);
   if (rowNumber < 2 || rowNumber > sheet.getLastRow()) throw new Error('Movement not found');
-
-  const date = new Date(movement.date || movement.fecha);
-  if (Number.isNaN(date.getTime())) throw new Error('Invalid date');
-  const amount = Number(movement.amount || movement.importe);
-  if (!Number.isFinite(amount)) throw new Error('Invalid amount');
-
-  const values = [
-    date,
-    `=YEAR(A${rowNumber})`,
-    `=MONTH(A${rowNumber})`,
-    `=DAY(A${rowNumber})`,
-    movement.tipo || '',
-    movement.concepto || '',
-    movement.descripcion || '',
-    amount
-  ];
-  if (sheet.getLastColumn() >= 9) values.push(movement.cuenta || movement.account || '');
-  sheet.getRange(rowNumber, 1, 1, values.length).setValues([values]);
+  writeMovementRow_(sheet, rowNumber, movement, targetSid || movementSidFrom_(movement), movement.cuenta || movement.account || '');
 }
 
 function deleteMovement_(rowNumber, sheetName, movement) {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
   if (!sheet) throw new Error(`Sheet not found: ${sheetName}`);
-  let row = Number(rowNumber || 0);
+  const sidCol = ensureMovementSidColumn_(sheet);
+  const sid = String(movement && movement.sid || '').trim();
+  let row = sid ? findMovementRowBySid_(sheet, sid, sidCol) : Number(rowNumber || 0);
   if (movement && row >= 2 && row <= sheet.getLastRow() && !movementMatchesSheetRow_(sheet, row, movement)) {
     row = 0;
   }
@@ -334,9 +665,11 @@ function deleteMovementsBatch_(items, sheetName) {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
   if (!sheet) throw new Error(`Sheet not found: ${sheetName}`);
   const rows = [];
+  const sidCol = ensureMovementSidColumn_(sheet);
   items.forEach(item => {
     const movement = item && (item.movement || item);
-    let row = Number(item && item.rowNumber || 0);
+    const sid = String(movement && movement.sid || '').trim();
+    let row = sid ? findMovementRowBySid_(sheet, sid, sidCol) : Number(item && item.rowNumber || 0);
     if (movement && row >= 2 && row <= sheet.getLastRow() && !movementMatchesSheetRow_(sheet, row, movement)) {
       row = 0;
     }
@@ -354,6 +687,10 @@ function findMovementRow_(sheet, movement, excludedRows) {
   const excluded = excludedRows || [];
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) return 0;
+  const sidCol = ensureMovementSidColumn_(sheet);
+  const sid = String(movement && movement.sid || '').trim();
+  const sidRow = sid ? findMovementRowBySid_(sheet, sid, sidCol) : 0;
+  if (sidRow && excluded.indexOf(sidRow) === -1) return sidRow;
   for (let row = lastRow; row >= 2; row--) {
     if (excluded.indexOf(row) !== -1) continue;
     if (movementMatchesSheetRow_(sheet, row, movement)) return row;
@@ -362,7 +699,11 @@ function findMovementRow_(sheet, movement, excludedRows) {
 }
 
 function movementMatchesSheetRow_(sheet, row, movement) {
-  const values = sheet.getRange(row, 1, 1, Math.max(sheet.getLastColumn(), 8)).getValues()[0];
+  const sidCol = ensureMovementSidColumn_(sheet);
+  const values = sheet.getRange(row, 1, 1, Math.max(sheet.getLastColumn(), sidCol, 8)).getValues()[0];
+  const movementSid = String(movement && movement.sid || '').trim();
+  const rowSid = sidCol ? String(values[sidCol - 1] || '').trim() : '';
+  if (movementSid && rowSid && movementSid === rowSid) return true;
   const movementDate = normalizeDate_(movement.date || movement.fecha);
   const rowDate = normalizeDate_(values[0]);
   const movementAmount = parseNumber_(movement.amount || movement.importe);
@@ -376,13 +717,10 @@ function movementMatchesSheetRow_(sheet, row, movement) {
 
 function addFutureMovement_(movement, sheetName, account) {
   if (!movement) throw new Error('Missing movement');
-  const sheet = getOrCreateSheet_(sheetName, ['FECHA', 'AÑO', 'MES', 'DIA', 'TIPO', 'CONCEPTO', 'DESCRIPCION', 'IMPORTE', 'Cuenta']);
-  const date = new Date(movement.date || movement.fecha);
-  if (Number.isNaN(date.getTime())) throw new Error('Invalid date');
-  const amount = Number(movement.amount || movement.importe);
-  if (!Number.isFinite(amount)) throw new Error('Invalid amount');
+  const sheet = getOrCreateSheet_(sheetName, ['FECHA', 'AÑO', 'MES', 'DIA', 'TIPO', 'CONCEPTO', 'DESCRIPCION', 'IMPORTE', 'Cuenta', movementSidHeader_()]);
+  ensureMovementSidColumn_(sheet);
   const row = sheet.getLastRow() + 1;
-  sheet.appendRow([date, `=YEAR(A${row})`, `=MONTH(A${row})`, `=DAY(A${row})`, movement.tipo || '', movement.concepto || '', movement.descripcion || '', amount, account || movement.account || movement.cuenta || '']);
+  writeMovementRow_(sheet, row, movement, movementSidFrom_(movement), account || movement.account || movement.cuenta || '');
 }
 
 function addMovementsBatch_(movements, movementSheet, futureSheet, bankSheet, account) {
@@ -425,7 +763,8 @@ function addFutureTransfer_(transfer, sheetName, from, to, amount) {
     concepto: 'Transferencia',
     descripcion: accountText,
     importe: Math.abs(Number(amount || transfer.amount || transfer.importe || 0)),
-    cuenta: accountText
+    cuenta: accountText,
+    sid: transfer.sid || transfer.SID || ''
   }, sheetName, accountText);
 }
 
@@ -477,7 +816,8 @@ function moveDueFutureMovements_(futureSheetName, movementSheetName, bankSheetNa
     const row = values[r];
     const date = new Date(row[0]);
     if (!row[0] || Number.isNaN(date.getTime()) || date > today) continue;
-    const movement = { fecha: normalizeDate_(date), tipo: row[4], concepto: row[5], descripcion: row[6], importe: parseNumber_(row[7]) };
+    const sidCol = ensureMovementSidColumn_(futureSheet);
+    const movement = { sid: sidCol ? String(row[sidCol - 1] || '').trim() : '', fecha: normalizeDate_(date), tipo: row[4], concepto: row[5], descripcion: row[6], importe: parseNumber_(row[7]) };
     if (isTransferType_(movement.tipo)) {
       const accounts = parseTransferAccountText_(row[8] || row[6]);
       const amount = Math.abs(Number(movement.importe || 0));
@@ -689,65 +1029,62 @@ function findInvestmentRow_(sheet, investment, previousInvestment) {
 
 
 function updateInvestmentQuotesFromYahoo(sheetName) {
-  const prices = updateInvestmentPricesFromYahoo(sheetName || DEFAULT_INVESTMENT_SHEET);
-  const previous = updateInvestmentPreviousPricesFromYahoo(sheetName || DEFAULT_INVESTMENT_SHEET);
-  return { prices, previous };
+  return updateInvestmentQuotesFromYahooOptimized_(sheetName || DEFAULT_INVESTMENT_SHEET);
 }
 
 function updateInvestmentPricesFromYahoo(sheetName) {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName || DEFAULT_INVESTMENT_SHEET);
-  if (!sheet) throw new Error(`Sheet not found: ${sheetName || DEFAULT_INVESTMENT_SHEET}`);
-  const col = investmentColumnMap_(sheet);
-  const rates = getCurrencyRates_();
-  const lastRow = sheet.getLastRow();
-  const results = [];
-
-  for (let row = 2; row <= lastRow; row++) {
-    const ticker = String(sheet.getRange(row, col.data).getValue() || '').trim();
-    const type = String(sheet.getRange(row, col.tipo).getValue() || '').trim();
-    const quantity = parseNumber_(sheet.getRange(row, col.cantidad).getValue());
-    if (!ticker || !isInvestmentPositionType_(type)) continue;
-    const quote = getYahooQuote_(ticker);
-    const sourceCurrency = investmentRowCurrency_(sheet, row, col, quote.currency);
-    const priceEur = convertQuotePriceToEur_(quote.regularMarketPrice, sourceCurrency, rates);
-    if (!Number.isFinite(priceEur)) continue;
-    sheet.getRange(row, col.valor).setValue(priceEur);
-    if (col.total && Number.isFinite(quantity)) sheet.getRange(row, col.total).setValue(quantity * priceEur);
-    if (col.variacion) {
-      const previousValue = parseNumber_(sheet.getRange(row, col.valorAnterior).getValue());
-      if (Number.isFinite(previousValue) && previousValue) writeInvestmentVariation_(sheet, row, col.variacion, percentageChange_(priceEur, previousValue));
-    }
-    results.push({ row, ticker, price: priceEur, currency: sourceCurrency, yahooCurrency: quote.currency });
-  }
-  updateCurrencyHelperRow_(sheet, col, rates);
-  return results;
+  return updateInvestmentQuotesFromYahooOptimized_(sheetName || DEFAULT_INVESTMENT_SHEET).prices;
 }
 
 function updateInvestmentPreviousPricesFromYahoo(sheetName) {
+  return updateInvestmentQuotesFromYahooOptimized_(sheetName || DEFAULT_INVESTMENT_SHEET).previous;
+}
+
+function updateInvestmentQuotesFromYahooOptimized_(sheetName) {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName || DEFAULT_INVESTMENT_SHEET);
   if (!sheet) throw new Error(`Sheet not found: ${sheetName || DEFAULT_INVESTMENT_SHEET}`);
   const col = investmentColumnMap_(sheet);
   const rates = getCurrencyRates_();
   const lastRow = sheet.getLastRow();
-  const results = [];
+  const rowCount = Math.max(0, lastRow - 1);
+  if (!rowCount) return { prices: [], previous: [] };
+  const width = Math.max(sheet.getLastColumn(), col.variacion || 1, col.valorAnterior || 1, col.total || 1);
+  const values = sheet.getRange(2, 1, rowCount, width).getValues();
+  const tickers = Array.from(new Set(values
+    .filter(row => String(row[col.data - 1] || '').trim() && isInvestmentPositionType_(row[col.tipo - 1]))
+    .map(row => yahooTickerAlias_(String(row[col.data - 1] || '').trim()))));
+  const quotes = getYahooQuotes_(tickers);
+  const prices = [];
+  const previous = [];
 
-  for (let row = 2; row <= lastRow; row++) {
-    const ticker = String(sheet.getRange(row, col.data).getValue() || '').trim();
-    const type = String(sheet.getRange(row, col.tipo).getValue() || '').trim();
-    if (!ticker || !isInvestmentPositionType_(type)) continue;
-    const quote = getYahooQuote_(ticker);
-    const sourceCurrency = investmentRowCurrency_(sheet, row, col, quote.currency);
+  values.forEach((row, index) => {
+    const ticker = String(row[col.data - 1] || '').trim();
+    const type = String(row[col.tipo - 1] || '').trim();
+    const quantity = parseNumber_(row[col.cantidad - 1]);
+    if (!ticker || !isInvestmentPositionType_(type)) return;
+    const quote = quotes[yahooTickerAlias_(ticker)];
+    if (!quote) return;
+    const sourceCurrency = normalizeInvestmentCurrency_(row[(col.divisa || 1) - 1] || quote.currency || 'EUR');
+    const priceEur = convertQuotePriceToEur_(quote.regularMarketPrice, sourceCurrency, rates);
     const previousEur = convertQuotePriceToEur_(quote.previousClose, sourceCurrency, rates);
-    if (!Number.isFinite(previousEur)) continue;
-    sheet.getRange(row, col.valorAnterior).setValue(previousEur);
-    if (col.variacion) {
-      const currentValue = parseNumber_(sheet.getRange(row, col.valor).getValue());
-      if (Number.isFinite(currentValue) && previousEur) writeInvestmentVariation_(sheet, row, col.variacion, percentageChange_(currentValue, previousEur));
+    if (Number.isFinite(priceEur)) {
+      row[col.valor - 1] = priceEur;
+      if (col.total && Number.isFinite(quantity)) row[col.total - 1] = quantity * priceEur;
+      prices.push({ row: index + 2, ticker, price: priceEur, currency: sourceCurrency, yahooCurrency: quote.currency });
     }
-    results.push({ row, ticker, previousClose: previousEur, currency: sourceCurrency, yahooCurrency: quote.currency });
-  }
+    if (Number.isFinite(previousEur) && col.valorAnterior) {
+      row[col.valorAnterior - 1] = previousEur;
+      previous.push({ row: index + 2, ticker, previousClose: previousEur, currency: sourceCurrency, yahooCurrency: quote.currency });
+    }
+    if (col.variacion && Number.isFinite(priceEur) && Number.isFinite(previousEur) && previousEur) {
+      row[col.variacion - 1] = percentageChange_(priceEur, previousEur);
+    }
+  });
+
+  sheet.getRange(2, 1, rowCount, width).setValues(values);
+  if (col.variacion) sheet.getRange(2, col.variacion, rowCount, 1).setNumberFormat('0.00');
   updateCurrencyHelperRow_(sheet, col, rates);
-  return results;
+  return { prices, previous };
 }
 
 function writeInvestmentVariation_(sheet, row, column, percentagePoints) {
@@ -807,6 +1144,35 @@ function normalizeInvestmentCurrency_(value) {
   return text;
 }
 
+function getYahooQuotes_(tickers) {
+  const uniqueTickers = Array.from(new Set((tickers || []).map(yahooTickerAlias_).filter(Boolean)));
+  const out = {};
+  if (!uniqueTickers.length) return out;
+  const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(uniqueTickers.join(','))}`;
+  try {
+    const res = UrlFetchApp.fetch(url, { muteHttpExceptions: true, headers: { 'User-Agent': 'Mozilla/5.0' } });
+    if (res.getResponseCode() === 200) {
+      const json = JSON.parse(res.getContentText());
+      const rows = json && json.quoteResponse && json.quoteResponse.result || [];
+      rows.forEach(item => {
+        const symbol = item.symbol;
+        const price = Number(item.regularMarketPrice || item.ask || item.bid || item.regularMarketPreviousClose);
+        const previous = Number(item.regularMarketPreviousClose || item.regularMarketPrice);
+        if (symbol && Number.isFinite(price)) {
+          out[symbol] = { ticker: symbol, yahooTicker: symbol, currency: item.currency || '', regularMarketPrice: price, previousClose: previous };
+        }
+      });
+    }
+  } catch (err) {
+    // Fallback individual abajo.
+  }
+  uniqueTickers.forEach(ticker => {
+    if (!out[ticker]) out[ticker] = getYahooQuote_(ticker);
+  });
+  return out;
+}
+
+
 function getYahooQuote_(ticker) {
   const yahooTicker = yahooTickerAlias_(ticker);
   const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooTicker)}`;
@@ -838,29 +1204,15 @@ function yahooTickerAlias_(ticker) {
 
 function getCurrencyRates_() {
   const rates = { EUR: 1 };
-  const pairs = {
-    USD: 'EURUSD=X',
-    GBP: 'GBPEUR=X',
-    CHF: 'EURCHF=X'
-  };
-  const eurUsdQuote = getYahooQuote_(pairs.USD);
-  rates.eurUsd = Number(eurUsdQuote.regularMarketPrice);
+  const quotes = getYahooQuotes_(['EURUSD=X', 'GBPEUR=X', 'EURCHF=X']);
+  const eurUsd = Number(quotes['EURUSD=X'] && quotes['EURUSD=X'].regularMarketPrice);
+  rates.eurUsd = Number.isFinite(eurUsd) && eurUsd ? eurUsd : 1;
   rates.USD = rates.eurUsd ? 1 / rates.eurUsd : 1;
-  try {
-    const gbpEurQuote = getYahooQuote_(pairs.GBP);
-    rates.gbpEur = Number(gbpEurQuote.regularMarketPrice);
-    rates.GBP = rates.gbpEur || 1;
-  } catch (err) {
-    rates.gbpEur = 1;
-    rates.GBP = 1;
-  }
-  try {
-    const eurChfQuote = getYahooQuote_(pairs.CHF);
-    const eurChf = Number(eurChfQuote.regularMarketPrice);
-    rates.CHF = eurChf ? 1 / eurChf : 1;
-  } catch (err) {
-    rates.CHF = 1;
-  }
+  const gbpEur = Number(quotes['GBPEUR=X'] && quotes['GBPEUR=X'].regularMarketPrice);
+  rates.gbpEur = Number.isFinite(gbpEur) && gbpEur ? gbpEur : 1;
+  rates.GBP = rates.gbpEur || 1;
+  const eurChf = Number(quotes['EURCHF=X'] && quotes['EURCHF=X'].regularMarketPrice);
+  rates.CHF = Number.isFinite(eurChf) && eurChf ? 1 / eurChf : 1;
   return rates;
 }
 
@@ -971,7 +1323,7 @@ function buildInvestmentVariationSummary_(sheetName) {
     addVariationRow_(totals[normalizedType], position);
   });
   Object.keys(totals).forEach(key => {
-    totals[key].positions.sort((a, b) => Math.abs(b.variation) - Math.abs(a.variation));
+    totals[key].positions.sort((a, b) => Number(b.current || 0) - Number(a.current || 0));
   });
   return totals;
 }

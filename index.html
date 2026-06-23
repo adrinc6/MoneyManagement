@@ -191,41 +191,66 @@
     </section>
 
     <section id="ajustes" class="view">
-      <article class="panel">
-        <div class="panel-header">
+      <article class="panel settings-main-panel">
+        <div class="panel-header settings-panel-head">
+          <div class="segmented compact-switch no-margin settings-panel-switch" id="settingsPanelSwitch">
+            <button class="active" data-settings-panel="sync" type="button">Sync</button>
+            <button data-settings-panel="connection" type="button">Conexión</button>
+            <button data-settings-panel="params" type="button">Parámetros</button>
+          </div>
           <div>
-            <h2>Conexión</h2>
-            <p>Datos guardados solo en este navegador.</p>
+            <h2 id="settingsPanelTitle">Sincronización</h2>
+            <p id="settingsPanelSubtitle">Estado de caché, secciones y logs internos.</p>
           </div>
         </div>
-        <div class="panel-body">
-          <div class="table-wrap pending-ops-wrap">
-            <table id="pendingOpsTable"></table>
-          </div>
-          <div class="table-wrap pending-ops-wrap">
-            <table id="sentOpsTable"></table>
-          </div>
-          <div class="settings-row">
-            <div>
-              <strong>Tema</strong>
-              <span>Claro u oscuro</span>
+        <div class="panel-body settings-panel-body">
+          <section class="settings-tab-panel" data-settings-panel-section="sync">
+            <div id="syncStatusSummary"></div>
+            <h3 class="settings-subtitle">Estado de caché</h3>
+            <div class="table-wrap pending-ops-wrap">
+              <table id="cacheSectionsTable"></table>
             </div>
-            <label class="theme-toggle" for="themeToggle">
-              <input id="themeToggle" type="checkbox" />
-              <span aria-hidden="true"></span>
-            </label>
-          </div>
-          <div class="form-grid">
-            <label class="wide">URL de Apps Script <input id="configScriptUrl" placeholder="https://script.google.com/macros/s/.../exec" /></label>
-            <label class="wide">Token opcional <input id="configAppToken" placeholder="Debe coincidir con APP_TOKEN" /></label>
-            <input id="configMovementSheet" type="hidden" value="Control Finanzas" />
-            <input id="configFutureMovementSheet" type="hidden" value="Movimientos futuros" />
-            <input id="configInvestmentSheet" type="hidden" value="Inversiones" />
-            <input id="configBankSheet" type="hidden" value="Bancos" />
-            <input id="configDataSheet" type="hidden" value="Datos" />
-            <label class="hidden">Banco inicial <input id="configInitialCash" type="number" step="0.01" value="6122.08" /></label>
-          </div>
-          <button class="btn primary full" id="saveConfigBtn"><i data-lucide="save"></i> Guardar ajustes</button>
+            <div class="section-toolbar settings-log-toolbar">
+              <h3 class="settings-subtitle">Logs internos</h3>
+              <button class="mini-edit-btn" id="clearSyncLogsBtn" type="button">Limpiar</button>
+            </div>
+            <div class="table-wrap pending-ops-wrap sync-log-wrap">
+              <table id="syncLogsTable"></table>
+            </div>
+          </section>
+
+          <section class="settings-tab-panel hidden" data-settings-panel-section="connection">
+            <div class="table-wrap pending-ops-wrap">
+              <table id="pendingOpsTable"></table>
+            </div>
+            <div class="table-wrap pending-ops-wrap">
+              <table id="sentOpsTable"></table>
+            </div>
+          </section>
+
+          <section class="settings-tab-panel hidden" data-settings-panel-section="params">
+            <div class="settings-row">
+              <div>
+                <strong>Tema</strong>
+                <span>Claro u oscuro</span>
+              </div>
+              <label class="theme-toggle" for="themeToggle">
+                <input id="themeToggle" type="checkbox" />
+                <span aria-hidden="true"></span>
+              </label>
+            </div>
+            <div class="form-grid">
+              <label class="wide">URL de Apps Script <input id="configScriptUrl" placeholder="https://script.google.com/macros/s/.../exec" /></label>
+              <label class="wide">Token opcional <input id="configAppToken" placeholder="Debe coincidir con APP_TOKEN" /></label>
+              <input id="configMovementSheet" type="hidden" value="Control Finanzas" />
+              <input id="configFutureMovementSheet" type="hidden" value="Movimientos futuros" />
+              <input id="configInvestmentSheet" type="hidden" value="Inversiones" />
+              <input id="configBankSheet" type="hidden" value="Bancos" />
+              <input id="configDataSheet" type="hidden" value="Datos" />
+              <label class="hidden">Banco inicial <input id="configInitialCash" type="number" step="0.01" value="6122.08" /></label>
+            </div>
+            <button class="btn primary full" id="saveConfigBtn"><i data-lucide="save"></i> Guardar ajustes</button>
+          </section>
         </div>
       </article>
     </section>
@@ -372,6 +397,6 @@
     </form>
   </dialog>
 
-  <script src="app.js?v=20260623-refresh-status-v2"></script>
+  <script src="app.js?v=20260623-sync-v3"></script>
 </body>
 </html>
