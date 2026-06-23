@@ -25,19 +25,37 @@ function doGet(e) {
     requireToken_(params.token || '');
     if (action === 'downloadData') {
       payload = buildAllDataPayload_(movementSheet, futureMovementSheet, investmentSheet, bankSheet, objectiveSheet, dataSheet, []);
+    } else if (action === 'downloadCoreData') {
+      payload = buildCoreDataPayload_(investmentSheet, bankSheet, objectiveSheet, dataSheet, []);
+    } else if (action === 'downloadInvestments') {
+      payload = buildInvestmentDataPayload_(investmentSheet, objectiveSheet);
+    } else if (action === 'downloadMovements') {
+      payload = {
+        ok: true,
+        transactions: readMovements_(movementSheet),
+        futureTransactions: readFutureMovements_(futureMovementSheet)
+      };
+    } else if (action === 'downloadMovementsPage') {
+      payload = buildMovementPagePayload_(
+        params.movementKind === 'future' ? futureMovementSheet : movementSheet,
+        params.movementKind === 'future' ? 'futureTransactions' : 'transactions',
+        params.offset,
+        params.limit
+      );
+    } else if (action === 'moveDueFutureMovements') {
+      const movedFutureMovements = moveDueFutureMovements_(futureMovementSheet, movementSheet, bankSheet);
+      payload = buildCoreDataPayload_(investmentSheet, bankSheet, objectiveSheet, dataSheet, movedFutureMovements);
     } else if (action === 'all') {
       const movedFutureMovements = moveDueFutureMovements_(futureMovementSheet, movementSheet, bankSheet);
       payload = buildAllDataPayload_(movementSheet, futureMovementSheet, investmentSheet, bankSheet, objectiveSheet, dataSheet, movedFutureMovements);
     } else if (action === 'updateInvestmentPrices') {
-      updateInvestmentQuotesFromYahoo(investmentSheet);
-      payload = buildAllDataPayload_(movementSheet, futureMovementSheet, investmentSheet, bankSheet, objectiveSheet, dataSheet, []);
+      const priceUpdateResult = updateInvestmentQuotesFromYahoo(investmentSheet);
+      payload = buildInvestmentDataPayload_(investmentSheet, objectiveSheet);
       payload.pricesUpdated = true;
+      payload.priceUpdateResult = priceUpdateResult;
     } else if (action === 'sendDailyNotifications') {
-      updateInvestmentQuotesFromYahoo(investmentSheet);
       sendInvestmentNotificationMessages_(investmentSheet);
-      payload = buildAllDataPayload_(movementSheet, futureMovementSheet, investmentSheet, bankSheet, objectiveSheet, dataSheet, []);
-      payload.notificationsSent = true;
-      payload.pricesUpdated = true;
+      payload = { ok: true, notificationsSent: true, pricesUpdated: false };
     } else {
       payload = { ok: false, error: 'Unknown action' };
     }
@@ -63,6 +81,39 @@ function buildAllDataPayload_(movementSheet, futureMovementSheet, investmentShee
     investmentGoals: readInvestmentGoals_(objectiveSheet),
     categories: readCategories_(dataSheet)
   };
+}
+
+function buildCoreDataPayload_(investmentSheet, bankSheet, objectiveSheet, dataSheet, movedFutureMovements) {
+  return {
+    ok: true,
+    movedFutureMovements: movedFutureMovements || [],
+    investments: readInvestments_(investmentSheet),
+    banks: readBanks_(bankSheet),
+    investmentGoals: readInvestmentGoals_(objectiveSheet),
+    categories: readCategories_(dataSheet)
+  };
+}
+
+function buildInvestmentDataPayload_(investmentSheet, objectiveSheet) {
+  return {
+    ok: true,
+    investments: readInvestments_(investmentSheet),
+    investmentGoals: readInvestmentGoals_(objectiveSheet)
+  };
+}
+
+function buildMovementPagePayload_(sheetName, payloadKey, offset, limit) {
+  const page = readMovementsPage_(sheetName, offset, limit, payloadKey === 'futureTransactions');
+  const payload = {
+    ok: true,
+    total: page.total,
+    offset: page.offset,
+    limit: page.limit,
+    nextOffset: page.nextOffset,
+    hasMore: page.hasMore
+  };
+  payload[payloadKey] = page.rows;
+  return payload;
 }
 
 function doPost(e) {
@@ -178,33 +229,61 @@ function addMovement_(movement, sheetName) {
   const amount = Number(movement.amount || movement.importe);
   if (!Number.isFinite(amount)) throw new Error('Invalid amount');
 
-  sheet.appendRow([
+  const row = sheet.getLastRow() + 1;
+  const values = [
     date,
-    `=YEAR(A${sheet.getLastRow() + 1})`,
-    `=MONTH(A${sheet.getLastRow() + 1})`,
-    `=DAY(A${sheet.getLastRow() + 1})`,
+    `=YEAR(A${row})`,
+    `=MONTH(A${row})`,
+    `=DAY(A${row})`,
     movement.tipo || '',
     movement.concepto || '',
     movement.descripcion || '',
     amount
-  ]);
+  ];
+  if (sheet.getLastColumn() >= 9) values.push(movement.cuenta || movement.account || '');
+  sheet.appendRow(values);
 }
 
 function readMovements_(sheetName) {
+  const page = readMovementsPage_(sheetName, 0, Number.MAX_SAFE_INTEGER);
+  return page.rows;
+}
+
+function readMovementsPage_(sheetName, offset, limit, optional) {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
-  if (!sheet) throw new Error(`Sheet not found: ${sheetName}`);
-  const values = sheet.getDataRange().getValues();
-  return values.slice(1)
-    .map((row, index) => ({ row, rowNumber: index + 2 }))
-    .filter(item => item.row[0] && item.row[4] && item.row[7] !== '')
-    .map(item => ({
-      rowNumber: item.rowNumber,
-      fecha: normalizeDate_(item.row[0]),
-      tipo: item.row[4],
-      concepto: item.row[5],
-      descripcion: item.row[6],
-      importe: parseNumber_(item.row[7])
-    }));
+  if (!sheet) {
+    if (optional) return { rows: [], total: 0, offset: 0, limit: Math.max(1, Math.min(Number(limit || 500), 1000)), nextOffset: 0, hasMore: false };
+    throw new Error(`Sheet not found: ${sheetName}`);
+  }
+  const total = Math.max(0, sheet.getLastRow() - 1);
+  const safeOffset = Math.max(0, Math.min(Number(offset || 0), total));
+  const requestedLimit = Number(limit || 500);
+  const safeLimit = requestedLimit >= Number.MAX_SAFE_INTEGER ? Math.max(1, total) : Math.max(1, Math.min(requestedLimit, 1000));
+  if (!total || safeOffset >= total) {
+    return { rows: [], total, offset: safeOffset, limit: safeLimit, nextOffset: safeOffset, hasMore: false };
+  }
+  const count = Math.min(safeLimit, total - safeOffset);
+  const startRow = 2 + safeOffset;
+  const width = Math.max(sheet.getLastColumn(), 9);
+  const values = sheet.getRange(startRow, 1, count, width).getValues();
+  const rows = values
+    .map((row, index) => movementObjectFromRow_(row, startRow + index))
+    .filter(Boolean);
+  const nextOffset = safeOffset + count;
+  return { rows, total, offset: safeOffset, limit: safeLimit, nextOffset, hasMore: nextOffset < total };
+}
+
+function movementObjectFromRow_(row, rowNumber) {
+  if (!row[0] || !row[4] || row[7] === '') return null;
+  return {
+    rowNumber,
+    fecha: normalizeDate_(row[0]),
+    tipo: row[4],
+    concepto: row[5],
+    descripcion: row[6],
+    importe: parseNumber_(row[7]),
+    cuenta: row[8] || ''
+  };
 }
 
 function updateMovement_(movement, sheetName, previousMovement) {
@@ -381,19 +460,8 @@ function isInvestmentPositionType_(value) {
 function readFutureMovements_(sheetName) {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
   if (!sheet) return [];
-  const values = sheet.getDataRange().getValues();
-  return values.slice(1)
-    .map((row, index) => ({ row, rowNumber: index + 2 }))
-    .filter(item => item.row[0] && item.row[4] && item.row[7] !== '')
-    .map(item => ({
-      rowNumber: item.rowNumber,
-      fecha: normalizeDate_(item.row[0]),
-      tipo: item.row[4],
-      concepto: item.row[5],
-      descripcion: item.row[6],
-      importe: parseNumber_(item.row[7]),
-      cuenta: item.row[8] || ''
-    }));
+  const page = readMovementsPage_(sheetName, 0, Number.MAX_SAFE_INTEGER);
+  return page.rows;
 }
 
 function moveDueFutureMovements_(futureSheetName, movementSheetName, bankSheetName) {
@@ -440,9 +508,12 @@ function getOrCreateSheet_(sheetName, headers) {
 function readInvestments_(sheetName) {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
   if (!sheet) return [];
-  const values = sheet.getDataRange().getValues();
+  const range = sheet.getDataRange();
+  const values = range.getValues();
+  const displayValues = range.getDisplayValues();
   return values.slice(1)
     .map((row, index) => {
+      const displayRow = displayValues[index + 1] || [];
       const cantidad = parseNumber_(row[4]);
       const valor = parseNumber_(row[5]);
       let total = parseNumber_(row[6]);
@@ -457,7 +528,7 @@ function readInvestments_(sheetName) {
         valor,
         total,
         valorAnterior: parseNumber_(row[7]),
-        variacion: parseNumber_(row[8])
+        variacion: normalizeInvestmentPercent_(row[8], displayRow[8])
       };
     })
     .filter(row => row.data && row.nombre && isInvestmentPositionType_(row.tipo) && Number.isFinite(row.total) && row.total >= 0);
@@ -593,7 +664,7 @@ function recalculateInvestmentTotalInRow_(sheet, row) {
   if (Number.isFinite(quantity) && Number.isFinite(price)) sheet.getRange(row, col.total).setValue(quantity * price);
   if (col.variacion && col.valorAnterior) {
     const previous = parseNumber_(sheet.getRange(row, col.valorAnterior).getValue());
-    if (Number.isFinite(previous) && previous) sheet.getRange(row, col.variacion).setValue((price - previous) / previous);
+    if (Number.isFinite(previous) && previous) writeInvestmentVariation_(sheet, row, col.variacion, percentageChange_(price, previous));
   }
 }
 
@@ -644,7 +715,7 @@ function updateInvestmentPricesFromYahoo(sheetName) {
     if (col.total && Number.isFinite(quantity)) sheet.getRange(row, col.total).setValue(quantity * priceEur);
     if (col.variacion) {
       const previousValue = parseNumber_(sheet.getRange(row, col.valorAnterior).getValue());
-      if (Number.isFinite(previousValue) && previousValue) sheet.getRange(row, col.variacion).setValue((priceEur - previousValue) / previousValue);
+      if (Number.isFinite(previousValue) && previousValue) writeInvestmentVariation_(sheet, row, col.variacion, percentageChange_(priceEur, previousValue));
     }
     results.push({ row, ticker, price: priceEur, currency: sourceCurrency, yahooCurrency: quote.currency });
   }
@@ -671,12 +742,18 @@ function updateInvestmentPreviousPricesFromYahoo(sheetName) {
     sheet.getRange(row, col.valorAnterior).setValue(previousEur);
     if (col.variacion) {
       const currentValue = parseNumber_(sheet.getRange(row, col.valor).getValue());
-      if (Number.isFinite(currentValue) && previousEur) sheet.getRange(row, col.variacion).setValue((currentValue - previousEur) / previousEur);
+      if (Number.isFinite(currentValue) && previousEur) writeInvestmentVariation_(sheet, row, col.variacion, percentageChange_(currentValue, previousEur));
     }
     results.push({ row, ticker, previousClose: previousEur, currency: sourceCurrency, yahooCurrency: quote.currency });
   }
   updateCurrencyHelperRow_(sheet, col, rates);
   return results;
+}
+
+function writeInvestmentVariation_(sheet, row, column, percentagePoints) {
+  const amount = Number(percentagePoints);
+  if (!Number.isFinite(amount)) return;
+  sheet.getRange(row, column).setNumberFormat('0.00').setValue(amount);
 }
 
 function investmentColumnMap_(sheet) {
@@ -951,7 +1028,7 @@ function escapeTelegramHtml_(value) {
 }
 
 function percentageChange_(current, previous) {
-  return previous ? (current - previous) / previous : 0;
+  return previous ? ((current - previous) / previous) * 100 : 0;
 }
 
 function emojiForType_(type) {
@@ -971,7 +1048,7 @@ function formatSignedMoney_(value) {
 }
 
 function formatPct_(value) {
-  const amount = Number(value || 0) * 100;
+  const amount = Number(value || 0);
   return `${amount >= 0 ? '+' : ''}${amount.toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} %`;
 }
 
@@ -1017,6 +1094,14 @@ function parseNumber_(value) {
     cleaned = cleaned.replace(',', '.');
   }
   return Number(cleaned);
+}
+
+function normalizeInvestmentPercent_(rawValue, displayValue) {
+  const displayText = String(displayValue || '');
+  const displayNumber = parseNumber_(displayText);
+  if (displayText.indexOf('%') !== -1 && Number.isFinite(displayNumber)) return displayNumber;
+  const rawNumber = parseNumber_(rawValue);
+  return Number.isFinite(rawNumber) ? rawNumber : NaN;
 }
 
 function normalizeGoalKey_(value) {

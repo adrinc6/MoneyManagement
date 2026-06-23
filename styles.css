@@ -520,12 +520,12 @@ input[readonly] {
 .notice.warn { background: var(--warn-soft); border-color: var(--warn); color: var(--warn); }
 .sync-status {
   display: none;
-  max-width: min(46vw, 260px);
+  max-width: min(48vw, 300px);
   color: var(--muted);
   font-size: .74rem;
-  line-height: 1.2;
+  line-height: 1.15;
   text-align: right;
-  white-space: nowrap;
+  white-space: pre-line;
   overflow: hidden;
   text-overflow: ellipsis;
 }

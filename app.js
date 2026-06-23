@@ -53,6 +53,7 @@ const SYSTEM_GOAL_LABELS = {
   total: "Inversión total"
 };
 const DATA_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const MOVEMENT_PAGE_SIZE = 500;
 
 const TEST_TRANSACTIONS = ENABLE_TEST_MODE ? [
   ["2026-05-10", "Ingreso", "Otros", "Nomina", 2100],
@@ -111,7 +112,7 @@ function wireUi() {
       showView(btn.dataset.viewButton);
     });
   });
-  document.getElementById("refreshBtn").addEventListener("click", () => refreshData({ force: true }));
+  document.getElementById("refreshBtn").addEventListener("click", refreshActiveViewData);
   document.getElementById("investmentUpdatePricesBtn")?.addEventListener("click", updateInvestmentPricesFromHeader);
   document.getElementById("investmentSendNotificationsBtn")?.addEventListener("click", sendInvestmentNotificationsFromHeader);
   document.getElementById("movementForm").addEventListener("submit", submitMovement);
@@ -217,27 +218,45 @@ function syncInvestmentHeaderActions(activeViewId = "") {
   document.getElementById("investmentSendNotificationsBtn")?.classList.toggle("hidden", !show);
 }
 
+function refreshActiveViewData() {
+  return refreshData({ force: true, scope: "all" });
+}
+
 async function updateInvestmentPricesFromHeader() {
   const btn = document.getElementById("investmentUpdatePricesBtn");
   markButtonSaving(btn, "Precios");
-  const ok = await refreshData({ force: true, updateInvestments: true });
-  if (ok) {
-    markButtonSaved(btn, "Listo");
-    setNotice("Precios actualizados con Yahoo y datos descargados.", "ok");
-  } else {
-    restoreButton(btn);
-  }
+  const ok = await refreshData({
+    force: true,
+    updateInvestments: true,
+    scope: "investments",
+    successMessage: "Precios actualizados y caché de inversiones renovada."
+  });
+  if (ok) markButtonSaved(btn, "Listo");
+  else restoreButton(btn);
 }
 
 async function sendInvestmentNotificationsFromHeader() {
   const btn = document.getElementById("investmentSendNotificationsBtn");
   markButtonSaving(btn, "Enviando");
-  const ok = await refreshData({ force: true, sendNotifications: true });
-  if (ok) {
+  setRefreshLoading(true);
+  setSyncStatus("Enviando notificaciones", "");
+  try {
+    const payload = await fetchAppsScriptData({ action: "sendDailyNotifications" });
+    assertPayloadOk(payload);
+    setNotice("Notificaciones enviadas con los datos actuales de Google Sheets.", "ok");
+    setSyncStatus("Notificaciones enviadas", "ok");
     markButtonSaved(btn, "Enviado");
-    setNotice("Precios actualizados, datos descargados y notificaciones enviadas.", "ok");
-  } else {
+    window.setTimeout(() => setSyncStatus("", ""), 2500);
+    return true;
+  } catch (error) {
+    console.error(error);
+    setNotice(lineMessage("No se pudieron enviar las notificaciones.", error.message), "warn");
+    setSyncStatus("Error al notificar", "warn");
     restoreButton(btn);
+    return false;
+  } finally {
+    setRefreshLoading(false);
+    processOpQueue();
   }
 }
 
@@ -318,41 +337,62 @@ function setDefaultDate() {
   document.getElementById("formDate").value = formatDate(new Date());
 }
 
+function syncStatusStep(showProgress, message, type = "") {
+  if (showProgress) setSyncStatus(message, type);
+}
+
 async function refreshData(options = {}) {
   const force = Boolean(options.force);
   const updateInvestments = Boolean(options.updateInvestments);
   const sendNotifications = Boolean(options.sendNotifications);
+  const scope = options.scope || (updateInvestments || sendNotifications ? "investments" : "all");
+  const isFullDownload = scope === "all";
+  const showProgress = Boolean(options.showProgress || force || updateInvestments || sendNotifications);
   setRefreshLoading(true);
+  syncStatusStep(showProgress, refreshStartStatus({ scope, updateInvestments, sendNotifications }), "");
+
   const cached = readDataCache();
   const previousFutureTransactions = state.futureTransactions.map(serializeTransaction);
   const dueFutureMovementsFromCache = cached ? findDueFutureMovements(cached.data?.futureTransactions || []) : [];
-  const shouldMoveDueFutureMovements = Boolean(cached && !force && !updateInvestments && !sendNotifications && dueFutureMovementsFromCache.length);
+  const shouldMoveDueFutureMovements = Boolean(cached && !force && isFullDownload && dueFutureMovementsFromCache.length);
 
-  if (cached && !force) {
+  if (cached && !force && isFullDownload) {
     applyDataSnapshot(cached.data);
     syncOptions();
     renderAll();
 
     const age = Date.now() - cached.savedAt;
     if (shouldMoveDueFutureMovements) {
-      setNotice(`Hay ${dueFutureMovementsFromCache.length} movimiento(s) futuro(s) vencido(s). Los muevo y vuelvo a descargar datos...`, "warn");
+      setNotice(`Hay ${dueFutureMovementsFromCache.length} movimiento(s) futuro(s) vencido(s). Los muevo y actualizo solo lo necesario...`, "warn");
     } else if (age < DATA_CACHE_TTL_MS) {
       setNotice(`Datos cargados desde cache (${formatCacheAge(age)}).`, "ok");
       setRefreshLoading(false);
-      return;
+      return true;
     } else {
-      setNotice("Mostrando cache mientras se actualiza...", "");
+      setNotice("Mostrando cache mientras se actualiza por bloques...", "");
     }
+  } else if (cached && !force) {
+    applyDataSnapshot(cached.data);
+    syncOptions();
+    renderAll();
   } else {
-    setNotice("Cargando datos...", "");
+    const loadingText = scope === "investments"
+      ? (sendNotifications ? "Enviando notificaciones..." : "Actualizando solo inversiones...")
+      : scope === "movements"
+        ? "Actualizando solo movimientos por bloques..."
+        : "Cargando datos por bloques...";
+    setNotice(loadingText, "");
   }
 
   try {
     const shouldFlushPending = updateInvestments || sendNotifications;
+    syncStatusStep(showProgress && shouldFlushPending, "Enviando cambios pendientes", "");
     const flushedPending = shouldFlushPending ? await flushPendingChangesBeforeDownload() : [];
     let freshData;
     let movedFutureMovements = [];
+
     if (ENABLE_TEST_MODE) {
+      syncStatusStep(showProgress, "Modo prueba\nPreparando datos locales", "");
       freshData = {
         transactions: [...TEST_TRANSACTIONS],
         futureTransactions: [],
@@ -364,31 +404,43 @@ async function refreshData(options = {}) {
         ],
         categories: { types: STATIC_TYPES, concepts: STATIC_CONCEPTS }
       };
-    } else {
-      const payload = await fetchAppsScriptData({ updateInvestments, sendNotifications, moveDueFutureMovements: shouldMoveDueFutureMovements });
-      if (!payload.ok) throw new Error(payload.error || "Apps Script devolvio error");
-      if (!Object.prototype.hasOwnProperty.call(payload, "banks")) {
-        throw new Error("Apps Script no devuelve la hoja Bancos. Pega y despliega el apps-script.gs actualizado");
-      }
-      movedFutureMovements = payload.movedFutureMovements || [];
+    } else if (scope === "investments") {
+      syncStatusStep(showProgress, investmentRequestStatus({ updateInvestments, sendNotifications }), "");
+      const payload = await fetchAppsScriptData({ updateInvestments, sendNotifications, scope: "investments" });
+      assertPayloadOk(payload);
+      syncStatusStep(showProgress, "Aplicando inversiones\nActualizando caché", "");
       freshData = {
-        transactions: payload.transactions || [],
-        futureTransactions: payload.futureTransactions || [],
         investments: payload.investments || [],
-        banks: payload.banks || [],
-        investmentGoals: payload.investmentGoals,
-        categories: payload.categories
+        investmentGoals: payload.investmentGoals ?? state.investmentGoals
       };
+    } else if (scope === "movements") {
+      syncStatusStep(showProgress, "Preparando movimientos", "");
+      freshData = await downloadMovementsDataOptimized({ moveDueFutureMovements: shouldMoveDueFutureMovements, showProgress });
+      movedFutureMovements = freshData.movedFutureMovements || [];
+    } else {
+      syncStatusStep(showProgress, "Preparando descarga completa", "");
+      freshData = await downloadAllDataOptimized({ moveDueFutureMovements: shouldMoveDueFutureMovements, showProgress });
+      movedFutureMovements = freshData.movedFutureMovements || [];
     }
+
     const fallbackFutureTransactions = cached?.data?.futureTransactions?.length ? cached.data.futureTransactions : previousFutureTransactions;
-    if (movedFutureMovements.length && !freshData.futureTransactions.length && fallbackFutureTransactions.length) {
+    if (movedFutureMovements.length && !freshData.futureTransactions?.length && fallbackFutureTransactions.length) {
       freshData.futureTransactions = fallbackFutureTransactions.filter(fallbackMovement => {
         const cachedSignature = futureMovementSignature(fallbackMovement);
         return !movedFutureMovements.some(movedMovement => futureMovementSignature(movedMovement) === cachedSignature);
       });
     }
-    applyDataSnapshot(freshData);
-    clearPendingCache();
+
+    syncStatusStep(showProgress, "Actualizando pantalla\nGuardando caché", "");
+    if (isFullDownload) applyDataSnapshot(freshData);
+    else mergeDataSnapshot(freshData);
+
+    if (pendingOpsCount() === 0) {
+      if (isFullDownload) clearPendingCache();
+      else if (scope === "investments") dropPendingSections("investments", "investmentGoals");
+      else if (scope === "movements") dropPendingSections("transactions");
+    }
+
     if (movedFutureMovements.length) {
       ensureMovedFutureMovementsVisible(movedFutureMovements);
       showMovementPopup(
@@ -401,35 +453,129 @@ async function refreshData(options = {}) {
     syncOptions();
     renderAll();
     writeDataCache();
-    const successBase = sendNotifications
-      ? "Precios actualizados, datos descargados y notificaciones enviadas."
+    const defaultSuccess = sendNotifications
+      ? "Notificaciones enviadas."
       : updateInvestments
-        ? "Precios actualizados con Yahoo y datos descargados."
-        : "Datos descargados y actualizados.";
+        ? "Precios actualizados y caché de inversiones renovada."
+        : scope === "movements"
+          ? "Movimientos descargados por bloques y cache actualizada."
+          : "Datos descargados por bloques y cache actualizada.";
     setNotice(lineMessage(
-      successBase,
+      options.successMessage || defaultSuccess,
       flushedPending.length ? `Pendientes enviados antes: ${flushedPending.join(", ")}` : ""
     ), "ok");
+    syncStatusStep(showProgress, "Cache actualizada", "ok");
+    if (showProgress) window.setTimeout(() => setSyncStatus("", ""), 2500);
     return true;
   } catch (error) {
     console.error(error);
     if (cached) {
       setNotice(lineMessage("No se pudo actualizar; sigo usando cache.", error.message), "warn");
+      syncStatusStep(showProgress, "Usando cache", "warn");
       return false;
     }
     state.transactions = [];
+    state.futureTransactions = [];
     state.investments = [];
     state.banks = [];
     state.categories = { types: STATIC_TYPES, concepts: STATIC_CONCEPTS };
     syncOptions();
     renderAll();
     setNotice(lineMessage(`No se pudieron cargar datos: ${error.message}`, "Revisa Ajustes."), "warn");
+    syncStatusStep(showProgress, "Error de sincronización", "warn");
     return false;
   } finally {
     setRefreshLoading(false);
     processOpQueue();
   }
 }
+
+
+function refreshStartStatus({ scope, updateInvestments, sendNotifications } = {}) {
+  if (sendNotifications) return "Preparando notificaciones\nSin descargar datos";
+  if (updateInvestments) return "Preparando precios\nSolo inversiones";
+  if (scope === "investments") return "Preparando inversiones";
+  if (scope === "movements") return "Preparando movimientos";
+  return "Preparando descarga completa";
+}
+
+function investmentRequestStatus({ updateInvestments, sendNotifications } = {}) {
+  if (sendNotifications) return "Enviando notificaciones\nSin actualizar precios";
+  if (updateInvestments) return "Actualizando precios\nDescargando inversiones";
+  return "Descargando inversiones\nObjetivos";
+}
+
+function assertPayloadOk(payload) {
+  if (!payload || !payload.ok) throw new Error(payload?.error || "Apps Script devolvio error");
+}
+
+async function downloadAllDataOptimized(options = {}) {
+  const coreAction = options.moveDueFutureMovements ? "moveDueFutureMovements" : "downloadCoreData";
+  syncStatusStep(options.showProgress, options.moveDueFutureMovements
+    ? "Moviendo futuros vencidos\nDescargando datos base"
+    : "Descargando datos base\nBancos, categorías, objetivos e inversiones", "");
+  const core = await fetchAppsScriptData({ action: coreAction });
+  assertPayloadOk(core);
+  if (!Object.prototype.hasOwnProperty.call(core, "banks")) {
+    throw new Error("Apps Script no devuelve la hoja Bancos. Pega y despliega el apps-script.gs actualizado");
+  }
+
+  const transactions = await downloadMovementPages("realized", "movimientos", { showProgress: options.showProgress });
+  const futureTransactions = await downloadMovementPages("future", "movimientos futuros", { showProgress: options.showProgress });
+  return {
+    transactions,
+    futureTransactions,
+    movedFutureMovements: core.movedFutureMovements || [],
+    investments: core.investments || [],
+    banks: core.banks || [],
+    investmentGoals: core.investmentGoals,
+    categories: core.categories
+  };
+}
+
+async function downloadMovementsDataOptimized(options = {}) {
+  let movedFutureMovements = [];
+  if (options.moveDueFutureMovements) {
+    syncStatusStep(options.showProgress, "Moviendo futuros vencidos", "");
+    const moved = await fetchAppsScriptData({ action: "moveDueFutureMovements" });
+    assertPayloadOk(moved);
+    movedFutureMovements = moved.movedFutureMovements || [];
+    if (Object.prototype.hasOwnProperty.call(moved, "banks")) mergeDataSnapshot({ banks: moved.banks });
+  }
+  const transactions = await downloadMovementPages("realized", "movimientos", { showProgress: options.showProgress });
+  const futureTransactions = await downloadMovementPages("future", "movimientos futuros", { showProgress: options.showProgress });
+  return { transactions, futureTransactions, movedFutureMovements };
+}
+
+async function downloadMovementPages(kind, label, options = {}) {
+  let offset = 0;
+  let total = null;
+  const rows = [];
+  syncStatusStep(options.showProgress, `Descargando ${label}\nCalculando páginas`, "");
+  while (true) {
+    const pageNumber = Math.floor(offset / MOVEMENT_PAGE_SIZE) + 1;
+    if (total !== null) {
+      const knownTotalPages = Math.max(1, Math.ceil(total / MOVEMENT_PAGE_SIZE));
+      syncStatusStep(options.showProgress, `Descargando ${label}\nPágina ${pageNumber}/${knownTotalPages}`, "");
+    }
+    const payload = await fetchAppsScriptData({
+      action: "downloadMovementsPage",
+      movementKind: kind,
+      offset,
+      limit: MOVEMENT_PAGE_SIZE
+    });
+    assertPayloadOk(payload);
+    const pageRows = kind === "future" ? (payload.futureTransactions || []) : (payload.transactions || []);
+    rows.push(...pageRows);
+    total = Number.isFinite(Number(payload.total)) ? Number(payload.total) : rows.length;
+    const totalPages = Math.max(1, Math.ceil(total / MOVEMENT_PAGE_SIZE));
+    offset = Number.isFinite(Number(payload.nextOffset)) ? Number(payload.nextOffset) : offset + pageRows.length;
+    syncStatusStep(options.showProgress, `Descargando ${label}\nPágina ${pageNumber}/${totalPages} · ${Math.min(rows.length, total)}/${total}`, "");
+    if (!payload.hasMore || !pageRows.length) break;
+  }
+  return rows;
+}
+
 
 function setRefreshLoading(loading) {
   const btn = document.getElementById("refreshBtn");
@@ -509,6 +655,27 @@ function applyDataSnapshot(data) {
   state.banks = (data.banks || []).map(normalizeBank).filter(Boolean);
   state.investmentGoals = normalizeInvestmentGoals(data.investmentGoals ?? state.investmentGoals);
   state.categories = normalizeCategories(data.categories);
+}
+
+function mergeDataSnapshot(data = {}) {
+  if (Object.prototype.hasOwnProperty.call(data, "transactions")) {
+    state.transactions = (data.transactions || []).map(normalizeTransaction).filter(Boolean);
+  }
+  if (Object.prototype.hasOwnProperty.call(data, "futureTransactions")) {
+    state.futureTransactions = (data.futureTransactions || []).map(normalizeTransaction).filter(Boolean);
+  }
+  if (Object.prototype.hasOwnProperty.call(data, "investments")) {
+    state.investments = (data.investments || []).map(normalizeInvestment).filter(Boolean).map(recalculateInvestmentTotal);
+  }
+  if (Object.prototype.hasOwnProperty.call(data, "banks")) {
+    state.banks = (data.banks || []).map(normalizeBank).filter(Boolean);
+  }
+  if (Object.prototype.hasOwnProperty.call(data, "investmentGoals")) {
+    state.investmentGoals = normalizeInvestmentGoals(data.investmentGoals ?? state.investmentGoals);
+  }
+  if (Object.prototype.hasOwnProperty.call(data, "categories")) {
+    state.categories = normalizeCategories(data.categories);
+  }
 }
 
 function dataCacheConfigKey() {
@@ -675,6 +842,24 @@ function pendingOpsCount() {
   return readOpQueue().filter(op => op.status !== "done").length;
 }
 
+function queueActionStatus(payload = {}) {
+  const map = {
+    addMovement: "Enviando movimiento",
+    addFutureMovement: "Enviando movimiento futuro",
+    addMovementsBatch: "Enviando movimientos periódicos",
+    updateMovement: "Guardando movimiento",
+    updateInvestment: "Guardando inversión",
+    deleteMovement: "Borrando movimiento",
+    deleteMovementsBatch: "Borrando movimientos",
+    saveBanks: "Guardando cuentas",
+    saveInvestments: "Guardando inversiones",
+    saveInvestmentGoals: "Guardando objetivos",
+    transferBank: "Enviando transferencia",
+    addTransfersBatch: "Enviando transferencias periódicas"
+  };
+  return `${map[payload.action] || "Enviando cambio"}\nSincronizando Google Sheets`;
+}
+
 function renderPendingOpsBadge() {
   const el = document.getElementById("pendingOpsBadge");
   if (!el) return;
@@ -760,6 +945,7 @@ async function processOpQueue() {
   state.opQueueRunning = true;
   item.status = "sending";
   writeOpQueue(queue);
+  setSyncStatus(queueActionStatus(item.payload), "");
   try {
     await postAppsScript(item.payload);
     rememberSentOp(item.payload);
@@ -768,6 +954,10 @@ async function processOpQueue() {
     if (item.payload?.action === "saveInvestments") dropPendingSections("investments");
     if (item.payload?.action === "saveBanks") dropPendingSections("banks");
     if (item.payload?.action === "saveInvestmentGoals") dropPendingSections("investmentGoals");
+    setSyncStatus("Cambio enviado\nCaché sincronizada", "ok");
+    window.setTimeout(() => {
+      if (!state.opQueueRunning) setSyncStatus("", "");
+    }, 1800);
     state.opQueueRunning = false;
     processOpQueue();
   } catch (error) {
@@ -836,16 +1026,30 @@ function findDueFutureMovements(futureTransactions = []) {
 
 async function fetchAppsScriptData(options = {}) {
   if (!state.config.scriptUrl) throw new Error("falta la URL de Apps Script");
-  const action = options.sendNotifications
+  const action = options.action || (options.sendNotifications
     ? "sendDailyNotifications"
     : options.updateInvestments
       ? "updateInvestmentPrices"
-      : options.moveDueFutureMovements
-        ? "all"
-        : "downloadData";
-  const updateInvestments = options.updateInvestments ? "&updateInvestments=1" : "";
-  const url = `${state.config.scriptUrl}?action=${encodeURIComponent(action)}&token=${encodeURIComponent(state.config.appToken)}&movementSheet=${encodeURIComponent(state.config.movementSheet)}&futureMovementSheet=${encodeURIComponent(state.config.futureMovementSheet || "Movimientos futuros")}&investmentSheet=${encodeURIComponent(state.config.investmentSheet)}&bankSheet=${encodeURIComponent(state.config.bankSheet || "Bancos")}&objectiveSheet=${encodeURIComponent(state.config.objectiveSheet || "Objetivos")}&dataSheet=${encodeURIComponent(state.config.dataSheet)}${updateInvestments}`;
-  return jsonp(url);
+      : options.scope === "investments"
+        ? "downloadInvestments"
+        : options.moveDueFutureMovements
+          ? "moveDueFutureMovements"
+          : "downloadData");
+  const params = new URLSearchParams({
+    action,
+    token: state.config.appToken,
+    movementSheet: state.config.movementSheet,
+    futureMovementSheet: state.config.futureMovementSheet || "Movimientos futuros",
+    investmentSheet: state.config.investmentSheet,
+    bankSheet: state.config.bankSheet || "Bancos",
+    objectiveSheet: state.config.objectiveSheet || "Objetivos",
+    dataSheet: state.config.dataSheet
+  });
+  if (options.updateInvestments) params.set("updateInvestments", "1");
+  if (options.movementKind) params.set("movementKind", options.movementKind);
+  if (Number.isFinite(Number(options.offset))) params.set("offset", String(Number(options.offset)));
+  if (Number.isFinite(Number(options.limit))) params.set("limit", String(Number(options.limit)));
+  return jsonp(`${state.config.scriptUrl}?${params.toString()}`);
 }
 
 function jsonp(url) {
@@ -2561,7 +2765,7 @@ function normalizeInvestment(row) {
   const valor = parseNumber(row.valor ?? row.VALOR ?? row[5]);
   let total = parseNumber(row.total ?? row["VALOR TOTAL (€)"] ?? row["VALOR TOTAL"] ?? row[6]);
   const valorAnterior = parseNumber(row.valorAnterior ?? row["VALOR ANTERIOR"] ?? row[7]);
-  const variacion = parseNumber(row.variacion ?? row["% VARIACIÓN"] ?? row["% VARIACION"] ?? row[8]);
+  const variacion = normalizePercentPoints(parseNumber(row.variacion ?? row["% VARIACIÓN"] ?? row["% VARIACION"] ?? row[8]));
   if (Number.isNaN(total) && Number.isFinite(cantidad) && Number.isFinite(valor)) total = cantidad * valor;
   if (!data || !nombre || !isInvestmentPositionType(tipo) || Number.isNaN(total) || total < 0) return null;
   return {
@@ -3122,7 +3326,8 @@ function previousInvestmentTotal(item) {
   return previous && quantity ? previous * quantity : currentInvestmentTotal(item);
 }
 function dailyInvestmentPct(item) {
-  if (Number.isFinite(Number(item?.variacion)) && Number(item.variacion) !== 0) return Number(item.variacion) / 100;
+  const storedPercent = normalizePercentPoints(item?.variacion);
+  if (Number.isFinite(storedPercent) && storedPercent !== 0) return storedPercent / 100;
   const previous = safeNumber(item?.valorAnterior);
   const current = safeNumber(item?.valor);
   return previous ? (current - previous) / previous : 0;
@@ -3132,6 +3337,7 @@ function recalculateInvestmentTotal(item) {
   const quantity = safeNumber(item.cantidad);
   const value = safeNumber(item.valor);
   item.total = quantity * value;
+  item.variacion = normalizePercentPoints(item.variacion);
 
   const previous = safeNumber(item.valorAnterior);
   if (!Number.isFinite(Number(item.variacion)) && previous) {
@@ -3192,6 +3398,11 @@ function parseNumber(value) {
   return Number(cleaned);
 }
 
+function normalizePercentPoints(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : NaN;
+}
+
 function formatDate(date) { return date ? `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}` : ""; }
 function money(value, decimals = 2) { return new Intl.NumberFormat("es-ES", { style: "currency", currency: "EUR", maximumFractionDigits: decimals, minimumFractionDigits: 0 }).format(Number(value) || 0); }
 function pct(value, digits = 1) {
@@ -3204,7 +3415,7 @@ function pct(value, digits = 1) {
 function formatDecimalInput(value, decimals = 2) { return safeNumber(parseNumber(value)).toFixed(decimals); }
 function roundMoney(value) { const parsed = parseNumber(value); return Number.isFinite(parsed) ? Math.round(parsed * 100) / 100 : 0; }
 function formatPct_(value) {
-  const amount = Number(value || 0) * 100;
+  const amount = Number(value || 0);
   return `${amount >= 0 ? '+' : ''}${amount.toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} %`;
 }
 function numberFmt(value, decimals = 2) { return new Intl.NumberFormat("es-ES", { maximumFractionDigits: decimals }).format(Number(value) || 0); }
@@ -3217,6 +3428,15 @@ function safeNumber(value) { return Number.isFinite(value) ? value : 0; }
 function escapeHtml(value) { return String(value ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" }[c])); }
 function escapeAttr(value) { return escapeHtml(value).replace(/`/g, "&#096;"); }
 function removeAccents(value) { return String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, ""); }
+
+function setSyncStatus(message, type = "") {
+  const el = document.getElementById("sourceNotice");
+  if (!el) return;
+  el.textContent = message || "";
+  el.classList.toggle("show", Boolean(message));
+  el.classList.toggle("ok", type === "ok");
+  el.classList.toggle("warn", type === "warn");
+}
 
 function setNotice(message, type, durationMs) {
   showToast(message, type, durationMs);
