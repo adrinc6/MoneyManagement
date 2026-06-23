@@ -644,7 +644,10 @@ function queueOp(payload) {
   const queue = readOpQueue();
   queue.push({ id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, createdAt: Date.now(), status: "queued", payload });
   writeOpQueue(queue);
-  processOpQueue();
+  if (payload?.action === "saveInvestments") rememberPendingSnapshot("investments");
+  if (payload?.action === "saveBanks") rememberPendingSnapshot("banks");
+  if (payload?.action === "saveInvestmentGoals") rememberPendingSnapshot("investmentGoals");
+  setTimeout(() => processOpQueue(), 0);
 }
 
 async function processOpQueue() {
@@ -660,6 +663,9 @@ async function processOpQueue() {
     await postAppsScript(item.payload);
     const next = readOpQueue().filter(op => op.id !== item.id);
     writeOpQueue(next);
+    if (item.payload?.action === "saveInvestments") dropPendingSections("investments");
+    if (item.payload?.action === "saveBanks") dropPendingSections("banks");
+    if (item.payload?.action === "saveInvestmentGoals") dropPendingSections("investmentGoals");
     state.opQueueRunning = false;
     processOpQueue();
   } catch (error) {
