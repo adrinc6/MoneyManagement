@@ -44,6 +44,7 @@ const BAR_CHART_COLORS = [
 const DATA_CACHE_KEY = "moneyDataCache";
 const PENDING_CACHE_KEY = "moneyPendingChanges";
 const OP_QUEUE_KEY = "moneyOpQueue";
+const SENT_HISTORY_KEY = "moneySentHistory";
 const THEME_KEY = "moneyTheme";
 const EVOLUTION_RANGE_KEY = "moneyEvolutionRange";
 const FULL_MONTH_NAMES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
@@ -597,6 +598,34 @@ function writeOpQueue(queue) {
   renderPendingOpsBadge();
 }
 
+function todayKey() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function readSentHistory() {
+  try {
+    const history = JSON.parse(localStorage.getItem(SENT_HISTORY_KEY) || "[]");
+    return Array.isArray(history) ? history : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeSentHistory(history) {
+  const next = history.filter(item => item && item.status === "ok").slice(-100);
+  localStorage.setItem(SENT_HISTORY_KEY, JSON.stringify(next));
+}
+
+function rememberSentOp(payload) {
+  const history = readSentHistory();
+  history.push({ id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, createdAt: Date.now(), day: todayKey(), status: "ok", payload });
+  writeSentHistory(history);
+}
+
 function pendingOpsCount() {
   return readOpQueue().filter(op => op.status !== "done").length;
 }
@@ -609,6 +638,7 @@ function renderPendingOpsBadge() {
   el.textContent = String(count);
   el.classList.toggle("hidden", count === 0);
   renderPendingOpsTable(queue);
+  renderSentOpsTable();
 }
 
 function renderPendingOpsTable(queue = readOpQueue()) {
@@ -640,6 +670,28 @@ function renderPendingOpsTable(queue = readOpQueue()) {
   table.querySelectorAll("[data-retry-op]").forEach(btn => btn.addEventListener("click", () => retryPendingOps(btn.dataset.retryOp)));
 }
 
+function renderSentOpsTable() {
+  const table = document.getElementById("sentOpsTable");
+  if (!table) return;
+  const actionMap = {
+    addMovement: "Movimiento",
+    addFutureMovement: "Movimiento futuro",
+    addMovementsBatch: "Movs. periódicos",
+    updateMovement: "Editar movimiento",
+    deleteMovement: "Borrar movimiento",
+    deleteMovementsBatch: "Borrar múltiple",
+    saveBanks: "Guardar cuentas",
+    saveInvestments: "Guardar inversiones",
+    saveInvestmentGoals: "Guardar objetivos",
+    transferBank: "Transferencia"
+  };
+  const rows = readSentHistory()
+    .filter(item => item.day === todayKey())
+    .map((op, idx) => `<tr class="sent-row"><td>${idx + 1}</td><td>${escapeHtml(actionMap[op.payload?.action] || op.payload?.action || "Operación")}</td><td>Enviado hoy</td><td></td></tr>`)
+    .join("");
+  table.innerHTML = `<thead><tr><th>#</th><th>Tipo</th><th>Estado</th><th></th></tr></thead><tbody><tr class="table-section-row"><td colspan="4">Enviados hoy con éxito</td></tr>${rows || `<tr><td class="empty" colspan="4">Sin envíos de hoy.</td></tr>`}</tbody>`;
+}
+
 function queueOp(payload) {
   const queue = readOpQueue();
   queue.push({ id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, createdAt: Date.now(), status: "queued", payload });
@@ -661,6 +713,7 @@ async function processOpQueue() {
   writeOpQueue(queue);
   try {
     await postAppsScript(item.payload);
+    rememberSentOp(item.payload);
     const next = readOpQueue().filter(op => op.id !== item.id);
     writeOpQueue(next);
     if (item.payload?.action === "saveInvestments") dropPendingSections("investments");
