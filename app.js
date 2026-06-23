@@ -1670,8 +1670,8 @@ function syncRegistrarActionButton() {
     registrarButton.innerHTML = state.submittingMovement
       ? `<i data-lucide="loader-2"></i><span>Guardando</span>`
       : isTransfer
-      ? `<i data-lucide="repeat-2"></i><span>Transferir</span>`
-      : `<i data-lucide="save"></i><span>Guardar</span>`;
+        ? `<i data-lucide="repeat-2"></i><span>Transferir</span>`
+        : `<i data-lucide="save"></i><span>Guardar</span>`;
   } else {
     registrarButton.classList.remove("save-mode");
     registrarButton.classList.remove("saving");
@@ -2216,13 +2216,12 @@ function renderMovementTable(rows) {
   if (!visibleRows.length) {
     table.innerHTML = `<thead><tr>${state.movementBulkEdit ? `<th class="col-select"></th>` : ""}${columns.map(c => `<th class="col-${c[0]}"><button class="table-head-btn" data-table-column="${c[0]}">${c[1]}</button></th>`).join("")}</tr></thead><tbody><tr><td class="empty" colspan="${columns.length + (state.movementBulkEdit ? 1 : 0)}">Sin datos para mostrar.</td></tr></tbody>`;
   } else {
-    table.innerHTML = `<thead><tr>${state.movementBulkEdit ? `<th class="col-select"></th>` : ""}${columns.map(c => `<th class="col-${c[0]}"><button class="table-head-btn" data-table-column="${c[0]}">${c[1]}</button></th>`).join("")}</tr></thead><tbody>${
-      visibleRows.map(t => {
-        const index = getDisplayedMovements().indexOf(t);
-        const selector = state.movementBulkEdit ? `<td class="col-select"><input class="movement-select" type="checkbox" data-movement-select="${index}" aria-label="Seleccionar movimiento"></td>` : "";
-        return `<tr class="clickable-row ${state.movementBulkEdit ? "selectable-row" : ""}" data-movement-index="${index}">${selector}${columns.map(column => renderCell(column, t)).join("")}</tr>`;
-      }).join("")
-    }</tbody>`;
+    table.innerHTML = `<thead><tr>${state.movementBulkEdit ? `<th class="col-select"></th>` : ""}${columns.map(c => `<th class="col-${c[0]}"><button class="table-head-btn" data-table-column="${c[0]}">${c[1]}</button></th>`).join("")}</tr></thead><tbody>${visibleRows.map(t => {
+      const index = getDisplayedMovements().indexOf(t);
+      const selector = state.movementBulkEdit ? `<td class="col-select"><input class="movement-select" type="checkbox" data-movement-select="${index}" aria-label="Seleccionar movimiento"></td>` : "";
+      return `<tr class="clickable-row ${state.movementBulkEdit ? "selectable-row" : ""}" data-movement-index="${index}">${selector}${columns.map(column => renderCell(column, t)).join("")}</tr>`;
+    }).join("")
+      }</tbody>`;
   }
   table.querySelectorAll("[data-table-column]").forEach(btn => btn.addEventListener("click", () => configureMovementTable(btn.dataset.tableColumn, rows)));
   table.querySelectorAll("[data-movement-index]").forEach(row => {
@@ -2444,10 +2443,60 @@ function renderInvestmentEditTable() {
     return [group + body];
   });
   const body = rows.join("");
-  document.getElementById("investmentEditTable").innerHTML = `<colgroup><col class="col-detail"><col class="col-qty"><col class="col-money"><col class="col-money"><col class="col-pct"></colgroup><thead><tr><th class="col-detail">Detalle</th><th class="col-qty">Cant.</th><th class="col-money">Valor</th><th class="col-money">Total</th><th class="col-pct">% día</th></tr></thead><tbody>${body || `<tr><td class="empty" colspan="5">Sin posiciones.</td></tr>`}</tbody>`;
+  document.getElementById("investmentEditTable").innerHTML = `<colgroup><col class="col-detail"><col class="col-qty"><col class="col-money"><col class="col-money"><col class="col-pct"></colgroup><thead><tr><th class="col-detail"></th><th class="col-qty">Shares</th><th class="col-money">Price</th><th class="col-money">Value</th><th class="col-pct">%d</th></tr></thead><tbody>${body || `<tr><td class="empty" colspan="5">Sin posiciones.</td></tr>`}</tbody>`;
   document.querySelectorAll("#investmentEditTable [data-investment-index]").forEach(row => {
     row.addEventListener("click", () => openInvestmentDetail(Number(row.dataset.investmentIndex)));
   });
+}
+
+
+function fitInvestmentTables() {
+  fitInvestmentTableColumns("investmentEditTable", 0);
+  fitInvestmentTableColumns("investmentBreakdownTable", 0);
+}
+
+function fitInvestmentTableColumns(tableId, flexibleColumnIndex = 0) {
+  const table = document.getElementById(tableId);
+  if (!table || !table.offsetParent) return;
+  const cols = [...table.querySelectorAll("colgroup col")];
+  if (!cols.length) return;
+
+  table.style.tableLayout = "auto";
+  cols.forEach(col => {
+    col.style.width = "";
+    col.style.minWidth = "";
+  });
+
+  const columnCount = cols.length;
+  const measuredWidths = Array(columnCount).fill(0);
+  const rows = [...table.querySelectorAll("tr")];
+
+  rows.forEach(row => {
+    let columnIndex = 0;
+    [...row.children].forEach(cell => {
+      const span = Math.max(1, Number(cell.colSpan) || 1);
+      if (span === 1 && columnIndex !== flexibleColumnIndex) {
+        measuredWidths[columnIndex] = Math.max(measuredWidths[columnIndex], cell.scrollWidth);
+      }
+      columnIndex += span;
+    });
+  });
+
+  measuredWidths.forEach((width, index) => {
+    if (index === flexibleColumnIndex || !cols[index]) return;
+    const safeWidth = Math.ceil(width + 1);
+    cols[index].style.width = `${safeWidth}px`;
+  });
+
+  table.style.tableLayout = "fixed";
+}
+
+function debounce(fn, wait = 100) {
+  let timeoutId = null;
+  return (...args) => {
+    window.clearTimeout(timeoutId);
+    timeoutId = window.setTimeout(() => fn(...args), wait);
+  };
 }
 
 function renderInvestmentBreakdownCharts(summary) {
@@ -2919,7 +2968,7 @@ function syncRegisterMode() {
   if (formDate) formDate.required = !showRecurring && !isTransfer;
   const recurrenceAccount = document.getElementById('recurrenceAccount');
   if (recurrenceAccount) recurrenceAccount.required = showRecurring && !isTransfer;
-  ['recurrenceStart','recurrenceEnd'].forEach(id => { const el=document.getElementById(id); if (el) el.required = showRecurring; });
+  ['recurrenceStart', 'recurrenceEnd'].forEach(id => { const el = document.getElementById(id); if (el) el.required = showRecurring; });
   if (showRecurring) setDefaultRecurrenceDates();
   renderRecurrencePicker();
 }
@@ -2947,7 +2996,7 @@ function renderRecurrencePicker() {
   if (!picker) return;
   const type = document.getElementById('recurrenceType')?.value || 'weekly';
   const items = type === 'weekly'
-    ? ['L','M','X','J','V','S','D'].map((label, i) => ({ label, value: i }))
+    ? ['L', 'M', 'X', 'J', 'V', 'S', 'D'].map((label, i) => ({ label, value: i }))
     : Array.from({ length: 31 }, (_, i) => ({ label: String(i + 1), value: i + 1 }));
   picker.innerHTML = `<p>${type === 'weekly' ? 'Días de la semana' : 'Días del mes'}</p><div class="choice-grid ${type}">${items.map(item => `<label><input type="checkbox" value="${item.value}"><span>${item.label}</span></label>`).join('')}</div>`;
 }
@@ -3459,7 +3508,7 @@ function renderInvestmentBreakdownTable(summary) {
     const dailyPct = dailyPrevious ? (current - dailyPrevious) / dailyPrevious : 0;
     return `<tr class="clickable-row" data-investment-type="${escapeAttr(type)}"><td class="text-clip col-type">${type}</td><td class="amount col-money">${money(invested)}</td><td class="amount col-money">${money(current)}</td><td class="amount col-money">${amountCell(current - invested)}</td><td class="amount col-pct">${pctCell(gainPct(current, invested))}</td><td class="amount col-pct">${pctCell(dailyPct)}</td></tr>`;
   }).join("");
-  document.getElementById("investmentBreakdownTable").innerHTML = `<colgroup><col class="col-type"><col class="col-money"><col class="col-money"><col class="col-money"><col class="col-pct"><col class="col-pct"></colgroup><thead><tr><th class="col-type">Tipo</th><th class="col-money">Inv.</th><th class="col-money">Actual</th><th class="col-money">Gan.</th><th class="col-pct">% total</th><th class="col-pct">% diario</th></tr></thead><tbody>${rows}</tbody>`;
+  document.getElementById("investmentBreakdownTable").innerHTML = `<colgroup><col class="col-type"><col class="col-money"><col class="col-money"><col class="col-money"><col class="col-pct"><col class="col-pct"></colgroup><thead><tr><th class="col-type"></th><th class="col-money">Cost</th><th class="col-money">Value</th><th class="col-money">Gain</th><th class="col-pct">%Gain</th><th class="col-pct">%d</th></tr></thead><tbody>${rows}</tbody>`;
   document.querySelectorAll("#investmentBreakdownTable [data-investment-type]").forEach(row => row.addEventListener("click", () => openInvestmentOverview(row.dataset.investmentType)));
 }
 
@@ -3691,8 +3740,8 @@ function renderInvestments() {
       <div><span>Ganancia diaria</span><strong class="${summary.dailyVariationTotal >= 0 ? "positive" : "negative"}">${money(summary.dailyVariationTotal)}</strong></div>
     </div>
     <div class="total-metrics-line split">
-      <div><span>% total</span><strong class="${summary.profitLossPct >= 0 ? "positive" : "negative"}">${pct(summary.profitLossPct)}</strong></div>
-      <div><span>% diario</span><strong class="${summary.dailyVariationPct >= 0 ? "positive" : "negative"}">${pct(summary.dailyVariationPct)}</strong></div>
+      <div><span>% total</span><strong class="${summary.profitLossPct >= 0 ? "positive" : "negative"}">${pctNoSymbol(summary.profitLossPct)}</strong></div>
+      <div><span>% diario</span><strong class="${summary.dailyVariationPct >= 0 ? "positive" : "negative"}">${pctNoSymbol(summary.dailyVariationPct)}</strong></div>
     </div>
   `;
   if (document.getElementById("investmentOverviewDialog").open) renderInvestmentBreakdownCharts(summary);
@@ -3701,6 +3750,7 @@ function renderInvestments() {
   else {
     renderInvestmentBreakdownTable(summary);
     renderInvestmentEditTable();
+    fitInvestmentTables();
   }
   const hideLowerSections = showingGoals || showingEvolution;
   document.querySelectorAll("#inversiones > article.panel, #saveInvestmentsBtn").forEach(el => {
@@ -3890,7 +3940,9 @@ function tag(value) { return `<span class="tag">${escapeHtml(value || "Sin tipo"
 function amountCell(value) { return `<span class="amount ${value >= 0 ? "positive" : "negative"}">${money(value)}</span>`; }
 function gainPct(value, invested) { return invested ? (value - invested) / invested : 0; }
 function pctGain(value, invested) { return pctCell(gainPct(value, invested)); }
-function pctCell(value) { return `<span class="amount ${Number(value || 0) >= 0 ? "positive" : "negative"}">${pct(value)}</span>`; }
+function pctCell(value) {
+  return `<span class="amount ${Number(value || 0) >= 0 ? "positive" : "negative"}">${pctNoSymbol(value)}</span>`;
+}
 function currentInvestmentTotal(item) {
   const total = safeNumber(item?.total);
   if (total) return total;
@@ -3932,10 +3984,10 @@ function monthName(month) {
 }
 function monthLabel(key) { return `${monthName(key.slice(5, 7))} ${key.slice(0, 4)}`; }
 function endOfToday() { const d = new Date(); d.setHours(23, 59, 59, 999); return d; }
-function isIncome(t) { return normalizeType(t.tipo) === "ingreso";}
+function isIncome(t) { return normalizeType(t.tipo) === "ingreso"; }
 function isInvestment(t) { return normalizeType(t.tipo) === "inversion"; }
 function isTransfer(t) { return normalizeType(t.tipo) === "transferencia"; }
-function isMonthlyExpense(t) { return !isIncome(t) && !isInvestment(t) && !isTransfer(t);}
+function isMonthlyExpense(t) { return !isIncome(t) && !isInvestment(t) && !isTransfer(t); }
 function normalizeType(value) { return removeAccents(String(value || "")).toLowerCase().trim(); }
 function prettyType(value) {
   const n = normalizeType(value);
@@ -3987,6 +4039,9 @@ function pct(value, digits = 1) {
     minimumFractionDigits: digits,
     maximumFractionDigits: digits
   })} %`;
+}
+function pctNoSymbol(value) {
+  return pct(value).replace(/\s*%$/, "");
 }
 function formatDecimalInput(value, decimals = 2) { return safeNumber(parseNumber(value)).toFixed(decimals); }
 function roundMoney(value) { const parsed = parseNumber(value); return Number.isFinite(parsed) ? Math.round(parsed * 100) / 100 : 0; }

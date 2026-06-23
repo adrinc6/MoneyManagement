@@ -1877,11 +1877,11 @@ html, body {
 }
 
 /* =========================================================
-   TABLAS DE INVERSIONES: autoajuste sin scroll horizontal
-   - Las columnas numéricas ocupan lo mínimo que necesitan.
-   - Detalle y Tipo absorben todo el espacio sobrante.
+TABLAS DE INVERSIONES: ajuste mínimo sin scroll horizontal
+   - Se mantienen fuente y padding generales de tablas.
+   - JS mide el contenido numérico real y fija solo esas columnas.
+   - Detalle/Tipo absorben el recorte primero.
    ========================================================= */
-
 .table-wrap:has(#investmentEditTable),
 .table-wrap:has(#investmentBreakdownTable) {
   overflow-x: hidden;
@@ -1892,9 +1892,9 @@ html, body {
   width: 100%;
   min-width: 0;
   max-width: 100%;
-  table-layout: auto;
-  border-collapse: collapse;
-  font-size: .78rem;
+  table-layout: fixed;
+  font-size: .7rem;
+  
 }
 
 #investmentEditTable th,
@@ -1902,7 +1902,7 @@ html, body {
 #investmentBreakdownTable th,
 #investmentBreakdownTable td {
   min-width: 0;
-  padding: 7px 5px;
+  padding: 6px 4px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: clip;
@@ -1953,34 +1953,6 @@ html, body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-@media (max-width: 720px) {
-  #investmentEditTable,
-  #investmentBreakdownTable {
-    font-size: .72rem;
-  }
-
-  #investmentEditTable th,
-  #investmentEditTable td,
-  #investmentBreakdownTable th,
-  #investmentBreakdownTable td {
-    padding: 6px 4px;
-  }
-}
-
-@media (max-width: 380px) {
-  #investmentEditTable,
-  #investmentBreakdownTable {
-    font-size: .68rem;
-  }
-
-  #investmentEditTable th,
-  #investmentEditTable td,
-  #investmentBreakdownTable th,
-  #investmentBreakdownTable td {
-    padding-inline: 3px;
-  }
 }
 
 .settings-card {
