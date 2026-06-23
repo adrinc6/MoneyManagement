@@ -325,6 +325,8 @@ async function refreshData(options = {}) {
   setRefreshLoading(true);
   const cached = readDataCache();
   const previousFutureTransactions = state.futureTransactions.map(serializeTransaction);
+  const dueFutureMovementsFromCache = cached ? findDueFutureMovements(cached.data?.futureTransactions || []) : [];
+  const shouldMoveDueFutureMovements = Boolean(cached && !force && !updateInvestments && !sendNotifications && dueFutureMovementsFromCache.length);
 
   if (cached && !force) {
     applyDataSnapshot(cached.data);
@@ -332,18 +334,22 @@ async function refreshData(options = {}) {
     renderAll();
 
     const age = Date.now() - cached.savedAt;
-    if (age < DATA_CACHE_TTL_MS) {
+    if (shouldMoveDueFutureMovements) {
+      setNotice(`Hay ${dueFutureMovementsFromCache.length} movimiento(s) futuro(s) vencido(s). Los muevo y vuelvo a descargar datos...`, "warn");
+    } else if (age < DATA_CACHE_TTL_MS) {
       setNotice(`Datos cargados desde cache (${formatCacheAge(age)}).`, "ok");
       setRefreshLoading(false);
       return;
+    } else {
+      setNotice("Mostrando cache mientras se actualiza...", "");
     }
-    setNotice("Mostrando cache mientras se actualiza...", "");
   } else {
     setNotice("Cargando datos...", "");
   }
 
   try {
-    const flushedPending = await flushPendingChangesBeforeDownload();
+    const shouldFlushPending = updateInvestments || sendNotifications;
+    const flushedPending = shouldFlushPending ? await flushPendingChangesBeforeDownload() : [];
     let freshData;
     let movedFutureMovements = [];
     if (ENABLE_TEST_MODE) {
@@ -359,7 +365,7 @@ async function refreshData(options = {}) {
         categories: { types: STATIC_TYPES, concepts: STATIC_CONCEPTS }
       };
     } else {
-      const payload = await fetchAppsScriptData({ updateInvestments, sendNotifications });
+      const payload = await fetchAppsScriptData({ updateInvestments, sendNotifications, moveDueFutureMovements: shouldMoveDueFutureMovements });
       if (!payload.ok) throw new Error(payload.error || "Apps Script devolvio error");
       if (!Object.prototype.hasOwnProperty.call(payload, "banks")) {
         throw new Error("Apps Script no devuelve la hoja Bancos. Pega y despliega el apps-script.gs actualizado");
@@ -820,9 +826,23 @@ function formatCacheAge(ageMs) {
   return `${Math.round(minutes / 60)} h`;
 }
 
+function findDueFutureMovements(futureTransactions = []) {
+  const today = new Date();
+  today.setHours(23, 59, 59, 999);
+  return (futureTransactions || [])
+    .map(normalizeTransaction)
+    .filter(movement => movement && movement.date && movement.date <= today);
+}
+
 async function fetchAppsScriptData(options = {}) {
   if (!state.config.scriptUrl) throw new Error("falta la URL de Apps Script");
-  const action = options.sendNotifications ? "sendDailyNotifications" : "all";
+  const action = options.sendNotifications
+    ? "sendDailyNotifications"
+    : options.updateInvestments
+      ? "updateInvestmentPrices"
+      : options.moveDueFutureMovements
+        ? "all"
+        : "downloadData";
   const updateInvestments = options.updateInvestments ? "&updateInvestments=1" : "";
   const url = `${state.config.scriptUrl}?action=${encodeURIComponent(action)}&token=${encodeURIComponent(state.config.appToken)}&movementSheet=${encodeURIComponent(state.config.movementSheet)}&futureMovementSheet=${encodeURIComponent(state.config.futureMovementSheet || "Movimientos futuros")}&investmentSheet=${encodeURIComponent(state.config.investmentSheet)}&bankSheet=${encodeURIComponent(state.config.bankSheet || "Bancos")}&objectiveSheet=${encodeURIComponent(state.config.objectiveSheet || "Objetivos")}&dataSheet=${encodeURIComponent(state.config.dataSheet)}${updateInvestments}`;
   return jsonp(url);
@@ -3102,7 +3122,7 @@ function previousInvestmentTotal(item) {
   return previous && quantity ? previous * quantity : currentInvestmentTotal(item);
 }
 function dailyInvestmentPct(item) {
-  if (Number.isFinite(Number(item?.variacion)) && Number(item.variacion) !== 0) return Number(item.variacion);
+  if (Number.isFinite(Number(item?.variacion)) && Number(item.variacion) !== 0) return Number(item.variacion) / 100;
   const previous = safeNumber(item?.valorAnterior);
   const current = safeNumber(item?.valor);
   return previous ? (current - previous) / previous : 0;
@@ -3112,7 +3132,12 @@ function recalculateInvestmentTotal(item) {
   const quantity = safeNumber(item.cantidad);
   const value = safeNumber(item.valor);
   item.total = quantity * value;
-  if (safeNumber(item.valorAnterior)) item.variacion = dailyInvestmentPct(item);
+
+  const previous = safeNumber(item.valorAnterior);
+  if (!Number.isFinite(Number(item.variacion)) && previous) {
+    item.variacion = ((value - previous) / previous) * 100;
+  }
+
   return item;
 }
 function emptyBlock(text) { return `<div class="empty">${escapeHtml(text)}</div>`; }
@@ -3169,9 +3194,19 @@ function parseNumber(value) {
 
 function formatDate(date) { return date ? `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}` : ""; }
 function money(value, decimals = 2) { return new Intl.NumberFormat("es-ES", { style: "currency", currency: "EUR", maximumFractionDigits: decimals, minimumFractionDigits: 0 }).format(Number(value) || 0); }
+function pct(value, digits = 1) {
+  const n = Number(value) || 0;
+  return `${(n * 100).toLocaleString("es-ES", {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits
+  })} %`;
+}
 function formatDecimalInput(value, decimals = 2) { return safeNumber(parseNumber(value)).toFixed(decimals); }
 function roundMoney(value) { const parsed = parseNumber(value); return Number.isFinite(parsed) ? Math.round(parsed * 100) / 100 : 0; }
-function pct(value) { return new Intl.NumberFormat("es-ES", { style: "percent", maximumFractionDigits: 1 }).format(Number(value) || 0); }
+function formatPct_(value) {
+  const amount = Number(value || 0) * 100;
+  return `${amount >= 0 ? '+' : ''}${amount.toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} %`;
+}
 function numberFmt(value, decimals = 2) { return new Intl.NumberFormat("es-ES", { maximumFractionDigits: decimals }).format(Number(value) || 0); }
 function quantityFmt(value) {
   const number = Number(value) || 0;

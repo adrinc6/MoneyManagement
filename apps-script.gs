@@ -23,16 +23,21 @@ function doGet(e) {
   let payload;
   try {
     requireToken_(params.token || '');
-    if (action === 'all') {
+    if (action === 'downloadData') {
+      payload = buildAllDataPayload_(movementSheet, futureMovementSheet, investmentSheet, bankSheet, objectiveSheet, dataSheet, []);
+    } else if (action === 'all') {
       const movedFutureMovements = moveDueFutureMovements_(futureMovementSheet, movementSheet, bankSheet);
-      if (String(params.updateInvestments || '') === '1') updateInvestmentQuotesFromYahoo(investmentSheet);
       payload = buildAllDataPayload_(movementSheet, futureMovementSheet, investmentSheet, bankSheet, objectiveSheet, dataSheet, movedFutureMovements);
+    } else if (action === 'updateInvestmentPrices') {
+      updateInvestmentQuotesFromYahoo(investmentSheet);
+      payload = buildAllDataPayload_(movementSheet, futureMovementSheet, investmentSheet, bankSheet, objectiveSheet, dataSheet, []);
+      payload.pricesUpdated = true;
     } else if (action === 'sendDailyNotifications') {
-      const movedFutureMovements = moveDueFutureMovements_(futureMovementSheet, movementSheet, bankSheet);
       updateInvestmentQuotesFromYahoo(investmentSheet);
       sendInvestmentNotificationMessages_(investmentSheet);
-      payload = buildAllDataPayload_(movementSheet, futureMovementSheet, investmentSheet, bankSheet, objectiveSheet, dataSheet, movedFutureMovements);
+      payload = buildAllDataPayload_(movementSheet, futureMovementSheet, investmentSheet, bankSheet, objectiveSheet, dataSheet, []);
       payload.notificationsSent = true;
+      payload.pricesUpdated = true;
     } else {
       payload = { ok: false, error: 'Unknown action' };
     }
@@ -807,7 +812,6 @@ function updateCurrencyHelperRow_(sheet, col, rates) {
 }
 
 function sendDailyMoneyManagementNotifications() {
-  moveDueFutureMovements_(DEFAULT_FUTURE_MOVEMENT_SHEET, DEFAULT_MOVEMENT_SHEET, DEFAULT_BANK_SHEET);
   updateInvestmentQuotesFromYahoo(DEFAULT_INVESTMENT_SHEET);
   sendInvestmentNotificationMessages_(DEFAULT_INVESTMENT_SHEET);
 }
