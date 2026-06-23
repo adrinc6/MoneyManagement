@@ -1344,13 +1344,12 @@ function formatGeneralInvestmentMessage_(summary) {
   const all = summary.all;
   const lines = [
     `💰 <b>MoneyManagement · Resumen diario</b>`,
-    `<b>Total:</b> ${formatMoney_(all.current)} · ${formatSignedMoney_(all.variation)} · ${formatPct_(percentageChange_(all.current, all.previous))}`,
-    '',
-    '<b>Desglose</b>'
+    `<b>Total:</b> ${formatMoney_(all.current)} · ${formatPct_(percentageChange_(all.current, all.previous))} · ${formatSignedMoney_(all.variation)}`,
+    ''
   ];
   ['Bolsa', 'Fondos', 'Cartera'].forEach(type => {
     const bucket = summary[type] || emptyVariationBucket_();
-    lines.push(`${emojiForType_(type)} ${type}: ${formatMoney_(bucket.current)} · ${formatSignedMoney_(bucket.variation)} · ${formatPct_(percentageChange_(bucket.current, bucket.previous))}`);
+    lines.push(`${emojiForType_(type)} ${type}: ${formatMoney_(bucket.current)} · ${formatPct_(percentageChange_(bucket.current, bucket.previous))} · ${formatSignedMoney_(bucket.variation)}`);
   });
   return lines.join('\n');
 }
@@ -1358,13 +1357,12 @@ function formatGeneralInvestmentMessage_(summary) {
 function formatTypeInvestmentMessage_(summary, type) {
   const bucket = summary[type] || emptyVariationBucket_();
   const lines = [
-    `${emojiForType_(type)} <b>${type}</b>`,
-    `<b>Conjunto:</b> ${formatMoney_(bucket.current)} · ${formatSignedMoney_(bucket.variation)} · ${formatPct_(percentageChange_(bucket.current, bucket.previous))}`
+    `${emojiForType_(type)} <b>${type}</b>: ${formatMoney_(bucket.current)} · ${formatPct_(percentageChange_(bucket.current, bucket.previous))} · ${formatSignedMoney_(bucket.variation)}`
   ];
   if (bucket.positions.length) {
-    lines.push('', '<b>Posiciones</b>');
+    lines.push('');
     bucket.positions.forEach(position => {
-      lines.push(`${position.variation >= 0 ? '🟢' : '🔴'} ${escapeTelegramHtml_(position.name)}: ${formatMoney_(position.price)} · ${formatPct_(position.pct)} (${formatMoney_(position.current)})`);
+      lines.push(`${position.variation >= 0 ? '🟢' : '🔴'} ${escapeTelegramHtml_(position.name)}: ${formatMoney_(position.current)} · ${formatPct_(position.pct)} · ${formatMoney_(position.variation)}`);
     });
   } else {
     lines.push('', 'Sin posiciones.');

@@ -266,37 +266,53 @@ function refreshActiveViewData() {
 
 async function updateInvestmentPricesFromHeader() {
   const btn = document.getElementById("investmentUpdatePricesBtn");
-  markButtonSaving(btn, "Precios");
+  btn?.classList.add("saving");
+  btn.disabled = true;
+
   const ok = await refreshData({
     force: true,
     updateInvestments: true,
     scope: "investments",
     successMessage: "Precios actualizados y caché de inversiones renovada."
   });
-  if (ok) markButtonSaved(btn, "Listo");
-  else restoreButton(btn);
+
+  btn?.classList.remove("saving");
+  btn?.classList.toggle("saved", ok);
+  btn.disabled = false;
+
+  if (ok) {
+    window.setTimeout(() => btn?.classList.remove("saved"), 2200);
+  }
 }
 
 async function sendInvestmentNotificationsFromHeader() {
   const btn = document.getElementById("investmentSendNotificationsBtn");
-  markButtonSaving(btn, "Enviando");
+  btn?.classList.add("saving");
+  btn.disabled = true;
+
   setRefreshLoading(true);
   setSyncStatus("Enviando notificaciones", "");
+
   try {
     const payload = await fetchAppsScriptData({ action: "sendDailyNotifications" });
     assertPayloadOk(payload);
     setNotice("Notificaciones enviadas con los datos actuales de Google Sheets.", "ok");
     setSyncStatus("Notificaciones enviadas", "ok");
-    markButtonSaved(btn, "Enviado");
+
+    btn?.classList.remove("saving");
+    btn?.classList.add("saved");
+    window.setTimeout(() => btn?.classList.remove("saved"), 2200);
+
     window.setTimeout(() => setSyncStatus("", ""), 2500);
     return true;
   } catch (error) {
     console.error(error);
     setNotice(lineMessage("No se pudieron enviar las notificaciones.", error.message), "warn");
     setSyncStatus("Error al notificar", "warn");
-    restoreButton(btn);
+    btn?.classList.remove("saving", "saved");
     return false;
   } finally {
+    btn.disabled = false;
     setRefreshLoading(false);
     processOpQueue();
   }

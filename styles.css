@@ -487,6 +487,10 @@ input[readonly] {
   cursor: wait;
   opacity: .92;
 }
+#investmentUpdatePricesBtn.saving svg,
+#investmentSendNotificationsBtn.saving svg {
+  animation: none;
+}
 .btn.danger.saving {
   background: var(--bad-soft);
   border-color: var(--bad);
