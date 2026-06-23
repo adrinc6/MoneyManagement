@@ -324,6 +324,7 @@ function moveDueFutureMovements_(futureSheetName, movementSheetName, bankSheetNa
   const today = new Date();
   today.setHours(23, 59, 59, 999);
   const moved = [];
+  const rowsToDelete = [];
   for (let r = values.length - 1; r >= 1; r--) {
     const row = values[r];
     const date = new Date(row[0]);
@@ -332,8 +333,9 @@ function moveDueFutureMovements_(futureSheetName, movementSheetName, bankSheetNa
     addMovement_(movement, movementSheetName);
     if (row[8]) adjustBank_(bankSheetName, row[8], movement.importe);
     moved.push({ ...movement, cuenta: row[8] || '' });
-    futureSheet.deleteRow(r + 1);
+    rowsToDelete.push(r + 1);
   }
+  rowsToDelete.sort((a, b) => b - a).forEach(rowNumber => futureSheet.deleteRow(rowNumber));
   return moved.reverse();
 }
 
