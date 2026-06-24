@@ -2108,8 +2108,24 @@ TABLAS DE INVERSIONES: ajuste mínimo sin scroll horizontal
 #ajustes .table-wrap,
 #ajustes .pending-ops-wrap,
 #ajustes .sync-log-wrap {
-  max-height: none;
-  overflow-y: visible;
+  max-height: 240px;
+  overflow: auto;
+}
+
+#ajustes .sync-log-wrap {
+  max-height: 260px;
+}
+
+#ajustes table {
+  table-layout: fixed;
+  font-size: .74rem;
+}
+
+#ajustes th,
+#ajustes td {
+  padding: 6px 6px;
+  line-height: 1.2;
+  vertical-align: middle;
 }
 #ajustes .settings-subtitle:first-child {
   margin-top: 0;
@@ -2247,4 +2263,54 @@ TABLAS DE INVERSIONES: ajuste mínimo sin scroll horizontal
   min-height: 38px;
   height: 38px;
   padding: 0;
+}
+
+/* Ajustes: tablas/logs compactos y estables entre pestañas */
+#ajustes #cacheSectionsTable,
+#ajustes #syncLogsTable,
+#ajustes #pendingOpsTable,
+#ajustes #sentOpsTable {
+  table-layout: fixed;
+  font-size: .68rem;
+  line-height: 1.12;
+}
+
+#ajustes #cacheSectionsTable th,
+#ajustes #cacheSectionsTable td,
+#ajustes #syncLogsTable th,
+#ajustes #syncLogsTable td,
+#ajustes #pendingOpsTable th,
+#ajustes #pendingOpsTable td,
+#ajustes #sentOpsTable th,
+#ajustes #sentOpsTable td {
+  padding: 4px 5px;
+  line-height: 1.12;
+  height: auto;
+  max-height: 28px;
+  font-size: inherit;
+  vertical-align: middle;
+}
+
+#ajustes #syncLogsTable small {
+  margin-top: 1px;
+  font-size: .6rem;
+  line-height: 1.08;
+}
+
+#ajustes .table-section-row td,
+#ajustes .sent-row td {
+  font-size: .68rem;
+}
+
+#ajustes .mini-edit-btn {
+  min-height: 24px;
+  padding: 3px 6px;
+  font-size: .64rem;
+  line-height: 1;
+}
+
+
+#investmentDetailForm #deleteInvestmentBtn,
+#investmentDetailForm button[type="submit"] {
+  width: 100%;
 }

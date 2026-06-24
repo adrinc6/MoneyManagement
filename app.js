@@ -174,8 +174,11 @@ function wireUi() {
   document.getElementById("movementDeleteAccountForm")?.addEventListener("submit", confirmMovementDeleteAccount);
   document.getElementById("closeMovementDeleteAccountBtn")?.addEventListener("click", closeMovementAccountPrompt);
   document.getElementById("closeInvestmentDetailBtn").addEventListener("click", () => document.getElementById("investmentDetailDialog").close());
+  document.getElementById("deleteInvestmentBtn")?.addEventListener("click", deleteInvestmentDetail);
   document.getElementById("investmentDetailForm").addEventListener("submit", saveInvestmentDetail);
   document.getElementById("editInvestmentQuantity")?.addEventListener("input", syncInvestmentDetailComputedTotal);
+  document.getElementById("editInvestmentName")?.addEventListener("input", syncInvestmentDetailInputLocks);
+  document.getElementById("editInvestmentData")?.addEventListener("input", syncInvestmentDetailInputLocks);
   document.getElementById("closeMovementPopupBtn")?.addEventListener("click", () => document.getElementById("movementPopup").close());
   document.getElementById("monthSituationMode").addEventListener("click", event => {
     const btn = event.target.closest("[data-situation-mode]");
@@ -1453,7 +1456,7 @@ function queuePayloadSections(payload = {}) {
     return sheetName === (state.config.futureMovementSheet || "Movimientos futuros") ? ["futureTransactions"] : ["transactions", "investmentTotals"];
   }
   if (["transferBank", "saveBanks", "addTransfersBatch"].includes(action)) return action === "addTransfersBatch" ? ["futureTransactions", "banks"] : ["banks"];
-  if (["saveInvestments", "updateInvestment"].includes(action)) return ["investments", "investmentTotals"];
+  if (["saveInvestments", "updateInvestment", "deleteInvestment"].includes(action)) return ["investments", "investmentTotals"];
   if (action === "saveInvestmentGoals") return ["investmentGoals"];
   return [];
 }
@@ -1503,6 +1506,11 @@ async function processOpQueue() {
     const synced = queuePayloadSections(item.payload);
     markCacheSectionsSynced(synced);
     writeDataCache({ syncedSections: synced });
+    if (item.payload?.action === "updateInvestment" && item.payload?.newInvestment) {
+      await refreshData({ force: true, scope: "investments", successMessage: "Inversión creada, precios actualizados y datos descargados desde Sheets." });
+    } else if (item.payload?.action === "deleteInvestment") {
+      await refreshData({ force: true, scope: "investments", successMessage: "Inversión eliminada y datos descargados desde Sheets." });
+    }
     setSyncStatus("Cambio enviado\nCaché sincronizada", "ok");
     window.setTimeout(() => {
       if (!state.opQueueRunning) setSyncStatus("", "");
@@ -1606,6 +1614,8 @@ async function fetchAppsScriptData(options = {}) {
   if (options.renames) params.set("renames", JSON.stringify(options.renames));
   if (options.sheetName) params.set("sheetName", options.sheetName);
   if (options.clientOpId) params.set("clientOpId", options.clientOpId);
+  if (options.newInvestment) params.set("newInvestment", "1");
+  if (options.rowNumber) params.set("rowNumber", String(options.rowNumber));
   if (options.sinceRev) params.set("sinceRev", options.sinceRev);
   if (options.movementKind) params.set("movementKind", options.movementKind);
   if (Number.isFinite(Number(options.offset))) params.set("offset", String(Number(options.offset)));
@@ -2574,7 +2584,7 @@ function renderInvestmentBreakdownCharts(summary) {
 }
 
 function addInvestmentRow() {
-  state.investments.push({ rowNumber: null, divisa: "EUR", data: "", nombre: "", shortName: "", tipo: investmentTypes()[0] || "Cartera", cantidad: 0, valor: 0, total: 0, valorAnterior: 0, variacion: 0 });
+  state.investments.push({ rowNumber: null, isDraftNew: true, divisa: "EUR", data: "", nombre: "", shortName: "", tipo: investmentTypes()[0] || "Cartera", cantidad: 0, valor: 0, total: 0, valorAnterior: 0, variacion: 0 });
   openInvestmentDetail(state.investments.length - 1);
 }
 
@@ -2751,14 +2761,38 @@ function openInvestmentDetail(index) {
   document.getElementById("editInvestmentName").value = item.nombre;
   document.getElementById("editInvestmentShortName").value = item.shortName || "";
   document.getElementById("editInvestmentType").value = item.tipo || investmentTypes()[0];
-  const isCash = isCashInvestmentPosition(item);
-  document.getElementById("editInvestmentQuantity").value = Number.isFinite(safeNumber(item.cantidad)) ? safeNumber(item.cantidad) : "";
-  document.getElementById("editInvestmentQuantity").readOnly = isCash;
-  document.getElementById("editInvestmentValue").value = Number.isFinite(safeNumber(item.valor)) ? safeNumber(item.valor) : "";
+  const quantityInput = document.getElementById("editInvestmentQuantity");
+  const priceInput = document.getElementById("editInvestmentValue");
   const totalInput = document.getElementById("editInvestmentTotal");
+  quantityInput.value = Number.isFinite(safeNumber(item.cantidad)) ? safeNumber(item.cantidad) : "";
+  priceInput.value = Number.isFinite(safeNumber(item.valor)) ? safeNumber(item.valor) : "";
   totalInput.value = round2(currentInvestmentTotal(item));
-  totalInput.readOnly = !isCash;
+  syncInvestmentDetailInputLocks();
   document.getElementById("investmentDetailDialog").showModal();
+}
+
+function investmentDetailLooksCash() {
+  const data = document.getElementById("editInvestmentData")?.value.trim() || "";
+  const name = document.getElementById("editInvestmentName")?.value.trim() || "";
+  const shortName = document.getElementById("editInvestmentShortName")?.value.trim() || "";
+  return isCashInvestmentPosition({ data, nombre: name, shortName });
+}
+
+function syncInvestmentDetailInputLocks() {
+  const isCash = investmentDetailLooksCash();
+  const quantityInput = document.getElementById("editInvestmentQuantity");
+  const priceInput = document.getElementById("editInvestmentValue");
+  const totalInput = document.getElementById("editInvestmentTotal");
+  if (!quantityInput || !priceInput || !totalInput) return;
+  quantityInput.readOnly = isCash;
+  priceInput.readOnly = true;
+  totalInput.readOnly = !isCash;
+  if (isCash) {
+    quantityInput.value = "";
+    priceInput.value = "";
+  } else {
+    syncInvestmentDetailComputedTotal();
+  }
 }
 
 function syncInvestmentDetailComputedTotal() {
@@ -2779,16 +2813,20 @@ async function saveInvestmentDetail(event) {
     return;
   }
   const previousItem = { ...item };
+  const detailData = document.getElementById("editInvestmentData").value.trim();
+  const detailName = document.getElementById("editInvestmentName").value.trim();
+  const detailShortName = document.getElementById("editInvestmentShortName").value.trim();
+  const isNewInvestment = Boolean(item.isDraftNew || !item.rowNumber);
   const detailIsCash = isCashInvestmentPosition({
-    data: document.getElementById("editInvestmentData").value.trim(),
-    nombre: document.getElementById("editInvestmentName").value.trim(),
-    shortName: document.getElementById("editInvestmentShortName").value.trim()
+    data: detailData,
+    nombre: detailName,
+    shortName: detailShortName
   });
   Object.assign(item, {
     divisa: document.getElementById("editInvestmentCurrency").value.trim().toUpperCase() || "EUR",
-    data: document.getElementById("editInvestmentData").value.trim(),
-    nombre: document.getElementById("editInvestmentName").value.trim(),
-    shortName: document.getElementById("editInvestmentShortName").value.trim(),
+    data: detailData,
+    nombre: detailName,
+    shortName: detailShortName,
     tipo: document.getElementById("editInvestmentType").value,
     cantidad: detailIsCash ? NaN : Number(document.getElementById("editInvestmentQuantity").value || 0)
   });
@@ -2799,6 +2837,7 @@ async function saveInvestmentDetail(event) {
     item.total = roundMoney(safeNumber(item.cantidad) * safeNumber(item.valor));
   }
   recalculateInvestmentTotal(item);
+  item.isDraftNew = false;
   recalculateInvestmentTotalsLocalFromPositions();
   writeDataCache();
 
@@ -2811,7 +2850,8 @@ async function saveInvestmentDetail(event) {
       action: "updateInvestment",
       sheetName: state.config.investmentSheet,
       investment: { ...item },
-      previousInvestment: previousItem
+      previousInvestment: previousItem,
+      newInvestment: isNewInvestment
     });
     setNotice("Cambio aplicado en caché y enviado a Sheets.", "ok");
     setSyncStatus("Subiendo cambio", "");
@@ -2820,6 +2860,43 @@ async function saveInvestmentDetail(event) {
     setNotice(lineMessage("Cambio local.", "Para guardar en Sheets necesitas Apps Script."), "warn");
   }
   markButtonSaved(btn);
+  renderInvestments();
+}
+
+async function deleteInvestmentDetail(event) {
+  const btn = event.currentTarget;
+  markButtonSaving(btn);
+  const index = Number(document.getElementById("editInvestmentIndex").value);
+  const item = state.investments[index];
+  if (!item) {
+    restoreButton(btn);
+    return;
+  }
+  const previousItem = { ...item };
+  state.investments.splice(index, 1);
+  recalculateInvestmentTotalsLocalFromPositions();
+  writeDataCache();
+
+  document.getElementById("investmentDetailDialog").close();
+  syncOptions();
+  renderDataScope("investments");
+
+  if (state.config.scriptUrl && previousItem.rowNumber) {
+    queueOp({
+      action: "deleteInvestment",
+      sheetName: state.config.investmentSheet,
+      investment: previousItem,
+      rowNumber: previousItem.rowNumber
+    });
+    setNotice("Posición eliminada en caché y enviada a Sheets.", "ok");
+    setSyncStatus("Eliminando posición", "");
+  } else if (state.config.scriptUrl) {
+    setNotice("Posición nueva eliminada localmente.", "ok");
+  } else {
+    rememberPendingSnapshot("investments");
+    setNotice(lineMessage("Eliminada solo en pantalla.", "Para borrar en Sheets necesitas Apps Script."), "warn");
+  }
+  markButtonSaved(btn, "Eliminado");
   renderInvestments();
 }
 
@@ -3476,7 +3553,7 @@ function isInvestmentPositionType(value) {
 function isCashInvestmentPosition(item) {
   const name = removeAccents(String(item?.nombre || item?.name || item?.NAME || '')).toLowerCase();
   const ticker = String(item?.data || item?.DATA || '').trim();
-  return name.includes('efectivo') || ticker === '---' || ticker === '';
+  return name.includes('efectivo') || ticker === '---';
 }
 
 function normalizeInvestment(row) {

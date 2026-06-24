@@ -89,10 +89,21 @@ function doGet(e) {
       const investment = params.investment ? JSON.parse(params.investment) : {};
       const previousInvestment = params.previousInvestment ? JSON.parse(params.previousInvestment) : null;
       updateInvestment_(investment, targetSheet, previousInvestment);
+      if (params.newInvestment === '1' && !isCashInvestment_(investment)) {
+        updateInvestmentQuotesFromYahoo(targetSheet);
+      }
       syncInvestmentTotalsSheet_(investmentTotalsSheet, dataSheet, targetSheet, movementSheet);
       bumpSections_('investments', 'investmentTotals');
       payload = buildInvestmentDataPayload_(targetSheet, objectiveSheet, movementSheet, futureMovementSheet, bankSheet, dataSheet, investmentTotalsSheet);
       payload.investmentUpdated = true;
+    } else if (action === 'deleteInvestment') {
+      const targetSheet = params.sheetName || investmentSheet;
+      const investment = params.investment ? JSON.parse(params.investment) : {};
+      deleteInvestment_(investment, targetSheet, params.rowNumber || 0);
+      syncInvestmentTotalsSheet_(investmentTotalsSheet, dataSheet, targetSheet, movementSheet);
+      bumpSections_('investments', 'investmentTotals');
+      payload = buildInvestmentDataPayload_(targetSheet, objectiveSheet, movementSheet, futureMovementSheet, bankSheet, dataSheet, investmentTotalsSheet);
+      payload.investmentDeleted = true;
     } else if (action === 'saveInvestmentCategories') {
       const targetSheet = params.sheetName || investmentSheet;
       const investmentTypes = params.investmentTypes ? JSON.parse(params.investmentTypes) : [];
@@ -290,7 +301,7 @@ function sectionsForPayload_(payload) {
     const sheet = String(payload.sheetName || '');
     return sheet === DEFAULT_FUTURE_MOVEMENT_SHEET ? ['futureTransactions'] : ['transactions', 'investmentTotals'];
   }
-  if (action === 'updateInvestment' || action === 'saveInvestments') return ['investments', 'investmentTotals'];
+  if (action === 'updateInvestment' || action === 'saveInvestments' || action === 'deleteInvestment') return ['investments', 'investmentTotals'];
   if (action === 'saveInvestmentGoals') return ['investmentGoals'];
   if (action === 'saveBanks' || action === 'transferBank') return ['banks'];
   return [];
@@ -499,8 +510,16 @@ function doPost(e) {
     }
     if (payload.action === 'updateInvestment') {
       updateInvestment_(payload.investment || {}, payload.sheetName || DEFAULT_INVESTMENT_SHEET, payload.previousInvestment || null);
+      if (payload.newInvestment && !isCashInvestment_(payload.investment || {})) {
+        updateInvestmentQuotesFromYahoo(payload.sheetName || DEFAULT_INVESTMENT_SHEET);
+      }
       syncInvestmentTotalsSheet_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.dataSheet || 'Datos', payload.sheetName || DEFAULT_INVESTMENT_SHEET, payload.movementSheet || DEFAULT_MOVEMENT_SHEET);
-      return finishPost_(pendingId, payload, { ok: true });
+      return finishPost_(pendingId, payload, { ok: true, pricesUpdated: Boolean(payload.newInvestment) });
+    }
+    if (payload.action === 'deleteInvestment') {
+      deleteInvestment_(payload.investment || {}, payload.sheetName || DEFAULT_INVESTMENT_SHEET, payload.rowNumber || 0);
+      syncInvestmentTotalsSheet_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.dataSheet || 'Datos', payload.sheetName || DEFAULT_INVESTMENT_SHEET, payload.movementSheet || DEFAULT_MOVEMENT_SHEET);
+      return finishPost_(pendingId, payload, { ok: true, investmentDeleted: true });
     }
     if (payload.action === 'saveInvestments') {
       saveInvestments_(payload.investments || [], payload.sheetName || DEFAULT_INVESTMENT_SHEET);
@@ -1026,6 +1045,7 @@ function saveInvestments_(investments, sheetName) {
   });
 }
 
+
 function updateInvestment_(investment, sheetName, previousInvestment) {
   if (!investment) throw new Error('Missing investment');
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -1033,13 +1053,24 @@ function updateInvestment_(investment, sheetName, previousInvestment) {
   if (!sheet) throw new Error(`Sheet not found: ${sheetName}`);
 
   const rowNumber = Number(investment.rowNumber || previousInvestment && previousInvestment.rowNumber || 0);
-  const targetRow = rowNumber >= 2 && rowNumber <= sheet.getLastRow()
+  let targetRow = rowNumber >= 2 && rowNumber <= sheet.getLastRow()
     ? rowNumber
     : findInvestmentRow_(sheet, investment, previousInvestment);
-  if (targetRow < 2 || targetRow > sheet.getLastRow()) throw new Error('Investment not found');
+  const isNewInvestment = targetRow < 2 || targetRow > sheet.getLastRow();
 
   if (!isInvestmentPositionType_(investment.tipo)) throw new Error('Investment type not editable');
+  if (isNewInvestment) {
+    const row = new Array(Math.max(sheet.getLastColumn(), 9)).fill('');
+    sheet.appendRow(row);
+    targetRow = sheet.getLastRow();
+  }
+
   writeInvestmentEditableFields_(sheet, targetRow, investment);
+  if (isNewInvestment && !isCashInvestment_(investment)) {
+    // Para una posición nueva solo escribimos campos base + Yahoo PRICE/LAST PRICE.
+    // VALUE / VARIATION se dejan a las fórmulas de la hoja.
+    updateInvestmentQuoteRowFromYahoo_(sheet, targetRow);
+  }
 }
 
 function writeInvestmentEditableFields_(sheet, row, item) {
@@ -1057,7 +1088,7 @@ function writeInvestmentEditableFields_(sheet, row, item) {
 function isCashInvestment_(item) {
   const name = String(item && (item.nombre || item.name || item.NAME) || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
   const ticker = String(item && (item.data || item.DATA) || '').trim();
-  return name.indexOf('efectivo') !== -1 || ticker === '---' || ticker === '';
+  return name.indexOf('efectivo') !== -1 || ticker === '---';
 }
 
 function saveCashInvestmentValue_(sheet, row, item) {
@@ -1081,6 +1112,18 @@ function recalculateInvestmentTotalInRow_(sheet, row) {
     const previous = parseNumber_(sheet.getRange(row, col.valorAnterior).getValue());
     if (Number.isFinite(previous) && previous) writeInvestmentVariation_(sheet, row, col.variacion, percentageChange_(price, previous));
   }
+}
+
+function deleteInvestment_(investment, sheetName, rowNumber) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(sheetName);
+  if (!sheet) throw new Error(`Sheet not found: ${sheetName}`);
+  let targetRow = Number(rowNumber || investment && investment.rowNumber || 0);
+  if (targetRow < 2 || targetRow > sheet.getLastRow()) {
+    targetRow = findInvestmentRow_(sheet, investment || {}, null);
+  }
+  if (targetRow < 2 || targetRow > sheet.getLastRow()) throw new Error('Investment not found');
+  sheet.deleteRow(targetRow);
 }
 
 function findInvestmentRow_(sheet, investment, previousInvestment) {
@@ -1114,6 +1157,26 @@ function updateInvestmentPricesFromYahoo(sheetName) {
 
 function updateInvestmentPreviousPricesFromYahoo(sheetName) {
   return updateInvestmentQuotesFromYahooOptimized_(sheetName || DEFAULT_INVESTMENT_SHEET).previous;
+}
+
+function updateInvestmentQuoteRowFromYahoo_(sheet, rowNumber) {
+  const col = investmentColumnMap_(sheet);
+  const ticker = String(sheet.getRange(rowNumber, col.data).getValue() || '').trim();
+  const type = String(sheet.getRange(rowNumber, col.tipo).getValue() || '').trim();
+  const name = String(sheet.getRange(rowNumber, col.nombre).getValue() || '').trim();
+  if (!ticker || ticker === '---' || !isInvestmentPositionType_(type) || isCashInvestment_({ data: ticker, nombre: name })) return null;
+
+  const rates = getCurrencyRates_();
+  const alias = yahooTickerAlias_(ticker);
+  const quote = getYahooQuotes_([alias])[alias];
+  if (!quote) return null;
+  const sourceCurrency = normalizeInvestmentCurrency_(sheet.getRange(rowNumber, col.divisa || 1).getValue() || quote.currency || 'EUR');
+  const priceEur = convertQuotePriceToEur_(quote.regularMarketPrice, sourceCurrency, rates);
+  const previousEur = convertQuotePriceToEur_(quote.previousClose, sourceCurrency, rates);
+  if (Number.isFinite(priceEur) && col.valor) sheet.getRange(rowNumber, col.valor).setValue(priceEur);
+  if (Number.isFinite(previousEur) && col.valorAnterior) sheet.getRange(rowNumber, col.valorAnterior).setValue(previousEur);
+  updateCurrencyHelperRow_(sheet, col, rates);
+  return { row: rowNumber, ticker, price: priceEur, previousClose: previousEur, currency: sourceCurrency, yahooCurrency: quote.currency };
 }
 
 function updateInvestmentQuotesFromYahooOptimized_(sheetName) {
@@ -1426,13 +1489,13 @@ function addVariationRow_(bucket, position) {
 function formatGeneralInvestmentMessage_(summary) {
   const all = summary.all;
   const lines = [
-    `💰 <b>MoneyManagement · Resumen diario</b>`,
-    `<b>Total:</b> ${formatMoney_(all.current)} · ${formatPct_(percentageChange_(all.current, all.previous))} · ${formatSignedMoney_(all.variation)}`,
+    `💰 <b>MoneyManagement - Resumen diario</b>`,
+    `<b>Total:</b> ${formatMoney_(all.current)} | ${formatPct_(percentageChange_(all.current, all.previous))} | ${formatSignedMoney_(all.variation)}`,
     ''
   ];
   (summary.order || []).forEach(type => {
     const bucket = summary[type] || emptyVariationBucket_();
-    lines.push(`${emojiForType_(type)} ${type}: ${formatMoney_(bucket.current)} · ${formatPct_(percentageChange_(bucket.current, bucket.previous))} · ${formatSignedMoney_(bucket.variation)}`);
+    lines.push(`${emojiForType_(type)} ${type}: ${formatMoney_(bucket.current)} | ${formatPct_(percentageChange_(bucket.current, bucket.previous))} | ${formatSignedMoney_(bucket.variation)}`);
   });
   return lines.join('\n');
 }
@@ -1440,12 +1503,12 @@ function formatGeneralInvestmentMessage_(summary) {
 function formatTypeInvestmentMessage_(summary, type) {
   const bucket = summary[type] || emptyVariationBucket_();
   const lines = [
-    `${emojiForType_(type)} <b>${type}</b>: ${formatMoney_(bucket.current)} · ${formatPct_(percentageChange_(bucket.current, bucket.previous))} · ${formatSignedMoney_(bucket.variation)}`
+    `${emojiForType_(type)} <b>${type}</b>: ${formatMoney_(bucket.current)} | ${formatPct_(percentageChange_(bucket.current, bucket.previous))} | ${formatSignedMoney_(bucket.variation)}`
   ];
   if (bucket.positions.length) {
     lines.push('');
     bucket.positions.forEach(position => {
-      lines.push(`${position.variation >= 0 ? '🟢' : '🔴'} ${escapeTelegramHtml_(position.name)}: ${formatMoney_(position.current)} · ${formatPct_(position.pct)} · ${formatMoney_(position.variation)}`);
+      lines.push(`${position.variation >= 0 ? '🟢' : '🔴'} ${escapeTelegramHtml_(position.name)}: ${formatMoney_(position.current)} | ${formatPct_(position.pct)} | ${formatMoney_(position.variation)}`);
     });
   } else {
     lines.push('', 'Sin posiciones.');
@@ -1472,7 +1535,7 @@ function emojiForType_(type) {
 }
 
 function formatMoney_(value) {
-  return `${Number(value || 0).toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €`;
+  return `${Number(value || 0).toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}€`;
 }
 
 function formatSignedMoney_(value) {
@@ -1482,7 +1545,7 @@ function formatSignedMoney_(value) {
 
 function formatPct_(value) {
   const amount = Number(value || 0);
-  return `${amount >= 0 ? '+' : ''}${amount.toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} %`;
+  return `${amount >= 0 ? '+' : ''}${amount.toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`;
 }
 
 function saveInvestmentGoals_(goals, sheetName) {
