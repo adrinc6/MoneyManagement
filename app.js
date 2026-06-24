@@ -264,11 +264,22 @@ function syncRefreshButtonLabel(viewId = activeViewId()) {
 
 function refreshActiveViewData() {
   const viewId = activeViewId();
-  const scope = refreshScopeForView(viewId);
+  const isFullManualDownload = viewId === "registrar" || viewId === "ajustes";
+  const scope = isFullManualDownload ? "all" : refreshScopeForView(viewId);
+  const successByScope = {
+    all: "Descarga completa realizada.",
+    movements: "Movimientos descargados desde Sheets.",
+    investments: "Inversiones descargadas desde Sheets.",
+    summary: "Resumen descargado desde Sheets."
+  };
+
   return refreshData({
     force: true,
+    manualRefresh: true,
+    skipManifest: true,
+    disableIncremental: true,
     scope,
-    successMessage: "Actualización completada."
+    successMessage: successByScope[scope] || "Actualización completada."
   });
 }
 
@@ -647,6 +658,9 @@ async function refreshData(options = {}) {
   const isFullDownload = scope === "all";
   const showProgress = Boolean(options.showProgress || force || updateInvestments || sendNotifications);
   const requestedSections = cacheSectionsForScope(scope);
+  const manualRefresh = Boolean(options.manualRefresh);
+  const forceRequestedSections = force || manualRefresh;
+  const skipIncrementalDownloads = Boolean(options.disableIncremental || manualRefresh || options.skipManifest);
   setRefreshLoading(true);
   syncStatusStep(showProgress, refreshStartStatus({ scope, updateInvestments, sendNotifications }), "");
 
@@ -675,13 +689,21 @@ async function refreshData(options = {}) {
     ? "Enviando notificaciones..."
     : updateInvestments
       ? "Actualizando precios y solo inversiones..."
-      : scope === "movements"
-        ? "Actualizando solo movimientos..."
-        : scope === "investments"
-          ? "Actualizando solo inversiones..."
-          : scope === "summary"
-            ? "Actualizando resumen por secciones..."
-            : "Actualizando datos por secciones...";
+      : manualRefresh && scope === "all"
+        ? "Descargando todo desde Sheets..."
+        : manualRefresh && scope === "movements"
+          ? "Descargando solo movimientos desde Sheets..."
+          : manualRefresh && scope === "investments"
+            ? "Descargando solo inversiones desde Sheets..."
+            : manualRefresh && scope === "summary"
+              ? "Descargando datos de resumen desde Sheets..."
+              : scope === "movements"
+                ? "Actualizando solo movimientos..."
+                : scope === "investments"
+                  ? "Actualizando solo inversiones..."
+                  : scope === "summary"
+                    ? "Actualizando resumen por secciones..."
+                    : "Actualizando datos por secciones...";
   if (force || !cached || shouldMoveDueFutureMovements) setNotice(loadingText, "");
   logSyncEvent(refreshStartStatus({ scope, updateInvestments, sendNotifications }).replace(/\n/g, " · "), "");
 
@@ -703,7 +725,7 @@ async function refreshData(options = {}) {
     let manifest = null;
     let syncedSections = [];
 
-    if (!ENABLE_TEST_MODE && state.config.scriptUrl) {
+    if (!ENABLE_TEST_MODE && state.config.scriptUrl && !options.skipManifest && !manualRefresh) {
       try {
         manifest = await fetchDataManifest();
         logSyncEvent("Manifiesto leído.", "ok");
@@ -715,7 +737,9 @@ async function refreshData(options = {}) {
 
     let neededSections = updateInvestments || sendNotifications
       ? ["investments", "investmentGoals"]
-      : sectionsNeedingRefresh(requestedSections, cached, manifest, force);
+      : forceRequestedSections
+        ? requestedSections
+        : sectionsNeedingRefresh(requestedSections, cached, manifest, force);
 
     if (shouldMoveDueFutureMovements) {
       neededSections = unique([...neededSections, "transactions", "futureTransactions", "banks"]);
@@ -786,12 +810,12 @@ async function refreshData(options = {}) {
           syncStatusStep(showProgress, "Descargando movimientos", "");
           const movementDownloads = [];
           if (neededSections.includes("transactions") || shouldMoveDueFutureMovements) {
-            movementDownloads.push(downloadMovementSectionOptimized("realized", "transactions", "movimientos", cached, manifest, { showProgress, disableIncremental: shouldMoveDueFutureMovements }));
+            movementDownloads.push(downloadMovementSectionOptimized("realized", "transactions", "movimientos", cached, manifest, { showProgress, disableIncremental: skipIncrementalDownloads || shouldMoveDueFutureMovements }));
           } else {
             movementDownloads.push(Promise.resolve(null));
           }
           if (neededSections.includes("futureTransactions") || shouldMoveDueFutureMovements) {
-            movementDownloads.push(downloadMovementSectionOptimized("future", "futureTransactions", "movimientos futuros", cached, manifest, { showProgress, disableIncremental: shouldMoveDueFutureMovements }));
+            movementDownloads.push(downloadMovementSectionOptimized("future", "futureTransactions", "movimientos futuros", cached, manifest, { showProgress, disableIncremental: skipIncrementalDownloads || shouldMoveDueFutureMovements }));
           } else {
             movementDownloads.push(Promise.resolve(null));
           }

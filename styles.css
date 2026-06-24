@@ -2110,6 +2110,7 @@ TABLAS DE INVERSIONES: ajuste mínimo sin scroll horizontal
 #ajustes .sync-log-wrap {
   max-height: 240px;
   overflow: auto;
+  display: auto;
 }
 
 #ajustes .sync-log-wrap {
@@ -2270,7 +2271,9 @@ TABLAS DE INVERSIONES: ajuste mínimo sin scroll horizontal
 #ajustes #syncLogsTable,
 #ajustes #pendingOpsTable,
 #ajustes #sentOpsTable {
-  table-layout: fixed;
+  width: max-content;
+  min-width: 100%;
+  table-layout: auto;
   font-size: .68rem;
   line-height: 1.12;
 }
@@ -2286,9 +2289,14 @@ TABLAS DE INVERSIONES: ajuste mínimo sin scroll horizontal
   padding: 4px 5px;
   line-height: 1.12;
   height: auto;
-  max-height: 28px;
   font-size: inherit;
   vertical-align: middle;
+  white-space: nowrap;
+}
+
+#ajustes .pending-ops-wrap,
+#ajustes .sync-log-wrap {
+  overflow-x: auto;
 }
 
 #ajustes #syncLogsTable small {
@@ -2308,7 +2316,6 @@ TABLAS DE INVERSIONES: ajuste mínimo sin scroll horizontal
   font-size: .64rem;
   line-height: 1;
 }
-
 
 #investmentDetailForm #deleteInvestmentBtn,
 #investmentDetailForm button[type="submit"] {
