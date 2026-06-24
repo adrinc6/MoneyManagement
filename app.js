@@ -6,6 +6,7 @@ const DEFAULT_CONFIG = {
   movementSheet: "Control Finanzas",
   futureMovementSheet: "Movimientos futuros",
   investmentSheet: "Inversiones",
+  investmentTotalsSheet: "Inversión Totales",
   bankSheet: "Bancos",
   objectiveSheet: "Objetivos",
   dataSheet: "Datos",
@@ -15,6 +16,7 @@ const DEFAULT_CONFIG = {
 const STATIC_TYPES = ["Gasto", "Ingreso", "Inversión", "Transferencia"];
 const STATIC_CONCEPTS = ["Comida", "Cuidado personal", "Deporte", "Fiesta", "Inversión", "Ocio", "Otros", "Piso", "Supermercado", "Universidad", "Viajes"];
 const INVESTMENT_TYPES = ["Bolsa", "Fondos", "Cartera"];
+const INVESTMENT_CATEGORY_CACHE_KEY = "moneyInvestmentCategoriesDraft";
 const PIE_CHART_COLORS = [
   "#2563eb", // azul
   "#dc2626", // rojo
@@ -55,7 +57,7 @@ const SYSTEM_GOAL_LABELS = {
 };
 const DATA_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const DATA_CACHE_VERSION = 2;
-const CACHE_SECTION_KEYS = ["transactions", "futureTransactions", "investments", "banks", "investmentGoals", "categories"];
+const CACHE_SECTION_KEYS = ["transactions", "futureTransactions", "investments", "investmentTotals", "banks", "investmentGoals", "categories"];
 const MOVEMENT_PAGE_SIZE = 500;
 
 const TEST_TRANSACTIONS = ENABLE_TEST_MODE ? [
@@ -69,9 +71,9 @@ const TEST_TRANSACTIONS = ENABLE_TEST_MODE ? [
 ].map(row => normalizeTransaction({ fecha: row[0], tipo: row[1], concepto: row[2], descripcion: row[3], importe: row[4] })) : [];
 
 const TEST_INVESTMENTS = ENABLE_TEST_MODE ? [
-  { rowNumber: 10, data: "IWDA", nombre: "ETF MSCI World", tipo: "Cartera", cantidad: 23, valor: 89.4, total: 2056.2 },
-  { rowNumber: 11, data: "EUNL", nombre: "ETF Core", tipo: "Bolsa", cantidad: 8, valor: 102.2, total: 817.6 },
-  { rowNumber: 12, data: "Fondo Global", nombre: "Fondo indexado", tipo: "Fondos", cantidad: 1, valor: 3240, total: 3240 }
+  { rowNumber: 10, data: "IWDA", nombre: "ETF MSCI World", shortName: "IWDA", tipo: "Cartera", cantidad: 23, valor: 89.4, total: 2056.2 },
+  { rowNumber: 11, data: "EUNL", nombre: "ETF Core", shortName: "EUNL", tipo: "Bolsa", cantidad: 8, valor: 102.2, total: 817.6 },
+  { rowNumber: 12, data: "Fondo Global", nombre: "Fondo indexado", shortName: "Fondo", tipo: "Fondos", cantidad: 1, valor: 3240, total: 3240 }
 ] : [];
 
 const state = {
@@ -79,8 +81,9 @@ const state = {
   transactions: [],
   futureTransactions: [],
   investments: [],
+  investmentTotals: [],
   banks: [],
-  categories: { types: STATIC_TYPES, concepts: STATIC_CONCEPTS },
+  categories: { types: STATIC_TYPES, concepts: STATIC_CONCEPTS, investmentTypes: INVESTMENT_TYPES },
   charts: {},
   filtered: [],
   movementDrill: { level: "entries", year: String(new Date().getFullYear()), month: currentMonthKey() },
@@ -163,6 +166,7 @@ function wireUi() {
   document.getElementById("addInvestmentRowBtn").addEventListener("click", addInvestmentRow);
   document.getElementById("saveInvestmentsBtn")?.classList.add("hidden");
   document.getElementById("saveInvestmentsBtn")?.addEventListener("click", saveInvestments);
+  ensureInvestmentCategoryDialog();
   document.getElementById("formDescription").addEventListener("input", suggestTypeConceptFromDescription);
   document.getElementById("closeMovementDetailBtn").addEventListener("click", () => document.getElementById("movementDetailDialog").close());
   document.getElementById("movementDetailForm").addEventListener("submit", saveMovementDetail);
@@ -329,6 +333,7 @@ function loadConfig() {
       movementSheet: raw.movementSheet || DEFAULT_CONFIG.movementSheet,
       futureMovementSheet: raw.futureMovementSheet || DEFAULT_CONFIG.futureMovementSheet,
       investmentSheet: raw.investmentSheet || DEFAULT_CONFIG.investmentSheet,
+      investmentTotalsSheet: raw.investmentTotalsSheet || DEFAULT_CONFIG.investmentTotalsSheet,
       bankSheet: raw.bankSheet || DEFAULT_CONFIG.bankSheet,
       objectiveSheet: raw.objectiveSheet || DEFAULT_CONFIG.objectiveSheet,
       dataSheet: raw.dataSheet || DEFAULT_CONFIG.dataSheet,
@@ -359,6 +364,7 @@ async function saveConfigFromForm() {
     movementSheet: document.getElementById("configMovementSheet").value.trim() || "Control Finanzas",
     futureMovementSheet: document.getElementById("configFutureMovementSheet").value.trim() || "Movimientos futuros",
     investmentSheet: document.getElementById("configInvestmentSheet").value.trim() || "Inversiones",
+    investmentTotalsSheet: state.config.investmentTotalsSheet || "Inversión Totales",
     bankSheet: document.getElementById("configBankSheet").value.trim() || "Bancos",
     objectiveSheet: state.config.objectiveSheet || "Objetivos",
     dataSheet: document.getElementById("configDataSheet").value.trim() || "Datos",
@@ -402,15 +408,15 @@ function syncStatusStep(showProgress, message, type = "") {
 
 function cacheSectionsForScope(scope = "all") {
   if (scope === "movements") return ["transactions", "futureTransactions", "banks"];
-  if (scope === "investments") return ["investments", "investmentGoals"];
-  if (scope === "summary") return ["transactions", "futureTransactions", "investments", "banks", "investmentGoals"];
+  if (scope === "investments") return ["investments", "investmentTotals", "investmentGoals", "categories"];
+  if (scope === "summary") return ["transactions", "futureTransactions", "investments", "investmentTotals", "banks", "investmentGoals", "categories"];
   if (scope === "banks") return ["banks"];
   return [...CACHE_SECTION_KEYS];
 }
 
 function coreSectionsForScope(scope = "all") {
   const sections = cacheSectionsForScope(scope);
-  return sections.filter(section => ["investments", "banks", "investmentGoals", "categories"].includes(section));
+  return sections.filter(section => ["investments", "investmentTotals", "banks", "investmentGoals", "categories"].includes(section));
 }
 
 function movementSectionsForScope(scope = "all") {
@@ -623,6 +629,7 @@ function syncedSectionsFromData(data = {}) {
   if (Object.prototype.hasOwnProperty.call(data, "transactions")) sections.push("transactions");
   if (Object.prototype.hasOwnProperty.call(data, "futureTransactions")) sections.push("futureTransactions");
   if (Object.prototype.hasOwnProperty.call(data, "investments")) sections.push("investments");
+  if (Object.prototype.hasOwnProperty.call(data, "investmentTotals")) sections.push("investmentTotals");
   if (Object.prototype.hasOwnProperty.call(data, "banks")) sections.push("banks");
   if (Object.prototype.hasOwnProperty.call(data, "investmentGoals")) sections.push("investmentGoals");
   if (Object.prototype.hasOwnProperty.call(data, "categories")) sections.push("categories");
@@ -719,11 +726,12 @@ async function refreshData(options = {}) {
         futureTransactions: [],
         investments: [...TEST_INVESTMENTS],
         investmentGoals: state.investmentGoals,
+        investmentTotals: [],
         banks: [
           { rowNumber: 2, cuenta: "Santander-Cuenta", dinero: 2400 },
           { rowNumber: 3, cuenta: "Revolut-Ahorro", dinero: 1300 }
         ],
-        categories: { types: STATIC_TYPES, concepts: STATIC_CONCEPTS }
+        categories: { types: STATIC_TYPES, concepts: STATIC_CONCEPTS, investmentTypes: INVESTMENT_TYPES }
       };
       syncedSections = [...CACHE_SECTION_KEYS];
     } else if (sendNotifications) {
@@ -739,7 +747,7 @@ async function refreshData(options = {}) {
       return true;
     } else {
       const needsMovements = neededSections.some(section => ["transactions", "futureTransactions"].includes(section));
-      const needsCore = neededSections.some(section => ["investments", "banks", "investmentGoals", "categories"].includes(section));
+      const needsCore = neededSections.some(section => ["investments", "investmentTotals", "banks", "investmentGoals", "categories"].includes(section));
       const onlyInvestments = neededSections.every(section => ["investments", "investmentGoals"].includes(section));
 
       if (updateInvestments || (onlyInvestments && !needsMovements)) {
@@ -749,7 +757,8 @@ async function refreshData(options = {}) {
         freshData = {
           ...freshData,
           investments: payload.investments || [],
-          investmentGoals: payload.investmentGoals ?? state.investmentGoals
+          investmentGoals: payload.investmentGoals ?? state.investmentGoals,
+          investmentTotals: payload.investmentTotals || state.investmentTotals
         };
         manifest = payload.manifest || manifest;
       } else {
@@ -765,6 +774,7 @@ async function refreshData(options = {}) {
             investments: core.investments || state.investments,
             banks: core.banks || state.banks,
             investmentGoals: core.investmentGoals ?? state.investmentGoals,
+            investmentTotals: core.investmentTotals || state.investmentTotals,
             categories: core.categories || state.categories
           };
           manifest = core.manifest || manifest;
@@ -806,7 +816,7 @@ async function refreshData(options = {}) {
 
     if (pendingOpsCount() === 0) {
       if (isFullDownload && syncedSections.length === CACHE_SECTION_KEYS.length) clearPendingCache();
-      else if (syncedSections.includes("investments")) dropPendingSections("investments", "investmentGoals");
+      else if (syncedSections.includes("investments")) dropPendingSections("investments", "investmentTotals", "investmentGoals");
       else if (syncedSections.includes("transactions")) dropPendingSections("transactions");
     }
 
@@ -1038,6 +1048,7 @@ function applyDataSnapshot(data) {
   state.transactions = (data.transactions || []).map(normalizeTransaction).filter(Boolean);
   state.futureTransactions = (data.futureTransactions || []).map(normalizeTransaction).filter(Boolean);
   state.investments = (data.investments || []).map(normalizeInvestment).filter(Boolean).map(recalculateInvestmentTotal);
+  state.investmentTotals = (data.investmentTotals || []).map(normalizeInvestmentTotal).filter(Boolean);
   state.banks = (data.banks || []).map(normalizeBank).filter(Boolean);
   state.investmentGoals = normalizeInvestmentGoals(data.investmentGoals ?? state.investmentGoals);
   state.categories = normalizeCategories(data.categories);
@@ -1053,6 +1064,9 @@ function mergeDataSnapshot(data = {}) {
   if (Object.prototype.hasOwnProperty.call(data, "investments")) {
     state.investments = (data.investments || []).map(normalizeInvestment).filter(Boolean).map(recalculateInvestmentTotal);
   }
+  if (Object.prototype.hasOwnProperty.call(data, "investmentTotals")) {
+    state.investmentTotals = (data.investmentTotals || []).map(normalizeInvestmentTotal).filter(Boolean);
+  }
   if (Object.prototype.hasOwnProperty.call(data, "banks")) {
     state.banks = (data.banks || []).map(normalizeBank).filter(Boolean);
   }
@@ -1065,8 +1079,8 @@ function mergeDataSnapshot(data = {}) {
 }
 
 function dataCacheConfigKey() {
-  const { scriptUrl, appToken, movementSheet, futureMovementSheet, investmentSheet, bankSheet, objectiveSheet, dataSheet } = state.config;
-  return JSON.stringify({ scriptUrl, appToken, movementSheet, futureMovementSheet, investmentSheet, bankSheet, objectiveSheet, dataSheet });
+  const { scriptUrl, appToken, movementSheet, futureMovementSheet, investmentSheet, investmentTotalsSheet, bankSheet, objectiveSheet, dataSheet } = state.config;
+  return JSON.stringify({ scriptUrl, appToken, movementSheet, futureMovementSheet, investmentSheet, investmentTotalsSheet, bankSheet, objectiveSheet, dataSheet });
 }
 
 function readDataCache() {
@@ -1099,6 +1113,7 @@ function writeDataCache(options = {}) {
         transactions: state.transactions.map(serializeTransaction),
         futureTransactions: state.futureTransactions.map(serializeTransaction),
         investments: state.investments,
+        investmentTotals: state.investmentTotals,
         banks: state.banks,
         investmentGoals: state.investmentGoals,
         categories: state.categories
@@ -1429,16 +1444,16 @@ function queuePayloadSections(payload = {}) {
     const sheetName = String(payload.sheetName || "");
     return sheetName === (state.config.futureMovementSheet || "Movimientos futuros") || action === "addFutureMovement"
       ? ["futureTransactions"]
-      : ["transactions"];
+      : ["transactions", "investmentTotals"];
   }
   if (action === "addFutureMovement") return ["futureTransactions"];
-  if (action === "addMovementsBatch") return ["transactions", "futureTransactions", "banks"];
+  if (action === "addMovementsBatch") return ["transactions", "futureTransactions", "banks", "investmentTotals"];
   if (action === "deleteMovementsBatch") {
     const sheetName = String(payload.sheetName || "");
-    return sheetName === (state.config.futureMovementSheet || "Movimientos futuros") ? ["futureTransactions"] : ["transactions"];
+    return sheetName === (state.config.futureMovementSheet || "Movimientos futuros") ? ["futureTransactions"] : ["transactions", "investmentTotals"];
   }
   if (["transferBank", "saveBanks", "addTransfersBatch"].includes(action)) return action === "addTransfersBatch" ? ["futureTransactions", "banks"] : ["banks"];
-  if (["saveInvestments", "updateInvestment"].includes(action)) return ["investments"];
+  if (["saveInvestments", "updateInvestment"].includes(action)) return ["investments", "investmentTotals"];
   if (action === "saveInvestmentGoals") return ["investmentGoals"];
   return [];
 }
@@ -1578,6 +1593,7 @@ async function fetchAppsScriptData(options = {}) {
     movementSheet: state.config.movementSheet,
     futureMovementSheet: state.config.futureMovementSheet || "Movimientos futuros",
     investmentSheet: state.config.investmentSheet,
+    investmentTotalsSheet: state.config.investmentTotalsSheet || "Inversión Totales",
     bankSheet: state.config.bankSheet || "Bancos",
     objectiveSheet: state.config.objectiveSheet || "Objetivos",
     dataSheet: state.config.dataSheet
@@ -1585,6 +1601,9 @@ async function fetchAppsScriptData(options = {}) {
   if (options.updateInvestments) params.set("updateInvestments", "1");
   if (options.investment) params.set("investment", JSON.stringify(options.investment));
   if (options.previousInvestment) params.set("previousInvestment", JSON.stringify(options.previousInvestment));
+  if (options.investmentTypes) params.set("investmentTypes", JSON.stringify(options.investmentTypes));
+  if (options.investmentTotalsSheet) params.set("investmentTotalsSheet", options.investmentTotalsSheet);
+  if (options.renames) params.set("renames", JSON.stringify(options.renames));
   if (options.sheetName) params.set("sheetName", options.sheetName);
   if (options.clientOpId) params.set("clientOpId", options.clientOpId);
   if (options.sinceRev) params.set("sinceRev", options.sinceRev);
@@ -1628,7 +1647,7 @@ function syncOptions() {
   fillSelect("formConcept", concepts, "Seleccione");
   fillSelect("editMovementType", types, "Seleccione");
   fillSelect("editMovementConcept", concepts, "Seleccione");
-  fillSelect("editInvestmentType", INVESTMENT_TYPES);
+  fillSelect("editInvestmentType", investmentTypes());
 
   const accounts = unique([
     ...state.banks.map(b => b.cuenta),
@@ -1891,10 +1910,10 @@ function renderMoneySummary(summary) {
   const accountsAdjustment = summary.computedBank - summary.bankAccountsTotal;
   const checkTone = Math.abs(accountsAdjustment) < 0.01 ? "positive" : "negative";
   const checkText = Math.abs(accountsAdjustment) < 0.01 ? "" : `${accountsAdjustment > 0 ? "Añadir" : "Restar"} ${money(Math.abs(accountsAdjustment))} en cuentas`;
-  const parts = INVESTMENT_TYPES.map(type => {
+  const parts = investmentTypes().map(type => {
     const invested = summary.investedByType[type] || 0;
     const current = summary.valueByType[type] || 0;
-    return `<div class="money-item"><span>${type}</span><strong>${money(invested)}</strong><small class="muted">Actual: ${money(current)}</small></div>`;
+    return `<div class="money-item"><span>${type}</span><strong>${money(invested)}</strong><small class="muted">Actual: ${money(current)} · ${pct(gainPct(current, invested))}</small></div>`;
   }).join("");
   document.getElementById("moneySummary").innerHTML = `
     <div class="money-grid">
@@ -1921,19 +1940,19 @@ function renderMoneySummary(summary) {
 function openMoneyDetail(mode) {
   const summary = calculateSummary(getSelectedSummaryMonth());
   const isBank = mode === "bank";
-  const parts = INVESTMENT_TYPES.map(type => {
+  const parts = investmentTypes().map(type => {
     const invested = summary.investedByType[type] || 0;
     const current = summary.valueByType[type] || 0;
-    return `<div class="money-item"><span>${type}</span><strong>${money(invested)}</strong><small class="muted">Actual: ${money(current)} · ${pctGain(current, invested)}</small></div>`;
+    const gain = current - invested;
+    return `<div class="money-item"><span>${type}</span><strong>${money(invested)}</strong><small class="${gain >= 0 ? "positive" : "negative"}">Actual: ${money(current)} · ${pct(gainPct(current, invested))}</small></div>`;
   }).join("");
 
   document.getElementById("moneyDialogTitle").textContent = isBank ? "Banco" : "Invertido";
   document.getElementById("bankMoneyDetail").classList.toggle("hidden", !isBank);
   document.getElementById("investedMoneyDetail").classList.toggle("hidden", isBank);
   document.getElementById("moneyDialogSummary").innerHTML = isBank ? "" : `
-    <div class="money-grid">
-      <div class="money-item"><span>Invertido</span><strong>${money(summary.investedTotal)}</strong><small class="muted">Coste histórico</small></div>
-      <div class="money-item"><span>Actual</span><strong>${money(summary.valueTotal)}</strong><small class="${summary.profitLoss >= 0 ? "positive" : "negative"}">${money(summary.profitLoss)} · ${pct(summary.profitLossPct)}</small></div>
+    <div class="money-grid investment-money-grid">
+      <div class="money-item"><span>Invertido</span><strong>${money(summary.investedTotal)}</strong><small class="${summary.profitLoss >= 0 ? "positive" : "negative"}">Actual: ${money(summary.valueTotal)} · ${pct(summary.profitLossPct)}</small></div>
       ${parts}
     </div>
   `;
@@ -1971,14 +1990,20 @@ function calculateSummary(month) {
   const valueByType = {};
   const dailyByType = {};
   const dailyPreviousByType = {};
-  INVESTMENT_TYPES.forEach(type => {
+  const totalsByType = investmentTotalsByType();
+  investmentTypes().forEach(type => {
+    const totalRow = totalsByType.get(normalizeType(type));
+    if (totalRow) {
+      investedByType[type] = safeNumber(totalRow.cost);
+      valueByType[type] = safeNumber(totalRow.value);
+      dailyPreviousByType[type] = safeNumber(totalRow.lastValue);
+      dailyByType[type] = Number.isFinite(totalRow.daily) ? safeNumber(totalRow.daily) : valueByType[type] - dailyPreviousByType[type];
+      return;
+    }
     const positions = state.investments.filter(i => normalizeType(i.tipo) === normalizeType(type));
-    // Cost = dinero realmente invertido/aportado, igual que en Resumen.
-    // Se toma de movimientos de tipo Inversión cuya descripción sea Bolsa/Fondos/Cartera.
     investedByType[type] = Math.abs(sum(untilToday
       .filter(t => isInvestment(t) && normalizeType(t.descripcion) === normalizeType(type))
       .map(t => t.amount)));
-    // Value y diario vienen de la hoja Inversiones ya descargada.
     valueByType[type] = sum(positions.map(i => currentInvestmentTotal(i)));
     dailyPreviousByType[type] = sum(positions.map(i => previousInvestmentTotal(i)));
     dailyByType[type] = valueByType[type] - dailyPreviousByType[type];
@@ -2079,7 +2104,7 @@ function renderMoneyCharts(summary) {
     ].filter(row => row.value > 0);
     title = "Dinero vs invertido";
   } else {
-    rows = INVESTMENT_TYPES.map((type, idx) => ({ label: type, value: summary.investedByType[type] || 0, color: chartColor(PIE_CHART_COLORS, idx + 2) })).filter(row => row.value > 0);
+    rows = investmentTypes().map((type, idx) => ({ label: type, value: summary.investedByType[type] || 0, color: chartColor(PIE_CHART_COLORS, idx + 2) })).filter(row => row.value > 0);
     title = "Tipos de inversión";
   }
   const total = sum(rows.map(row => row.value));
@@ -2313,6 +2338,7 @@ async function deleteSelectedMovements() {
       const totalAmount = sum(movements.map(movement => Number(movement.amount || 0)));
       const accountDelta = -totalAmount;
       if (account) applyBankDelta(account, accountDelta);
+      if (state.movementMode !== "future") movements.forEach(movement => applyInvestmentCostDeltaLocal(movement, -1));
       const selected = new Set(movements);
       const target = state.movementMode === "future" ? state.futureTransactions : state.transactions;
       for (let i = target.length - 1; i >= 0; i--) {
@@ -2450,7 +2476,7 @@ function setInvestmentPanelFromClick(event) {
 }
 
 function renderInvestmentEditTable() {
-  const rows = INVESTMENT_TYPES.flatMap(type => {
+  const rows = investmentTypes().flatMap(type => {
     const positions = state.investments
       .filter(i => normalizeType(i.tipo) === normalizeType(type))
       .sort((a, b) => currentInvestmentTotal(b) - currentInvestmentTotal(a));
@@ -2537,7 +2563,7 @@ function renderInvestmentBreakdownCharts(summary) {
   if (selectedMode === "gains") {
     return renderInvestmentGainBreakdown(summary);
   }
-  const rows = INVESTMENT_TYPES
+  const rows = investmentTypes()
     .map((type, idx) => ({ label: type, value: summary.investedByType[type] || 0, color: chartColor(PIE_CHART_COLORS, idx + 2) }))
     .filter(row => row.value > 0);
   renderColorRowsTable("investmentOverviewTable", rows, ["", "Detalle", "Invertido", ""]);
@@ -2548,7 +2574,7 @@ function renderInvestmentBreakdownCharts(summary) {
 }
 
 function addInvestmentRow() {
-  state.investments.push({ rowNumber: null, divisa: "EUR", data: "", nombre: "", tipo: "Cartera", cantidad: 0, valor: 0, total: 0, valorAnterior: 0, variacion: 0 });
+  state.investments.push({ rowNumber: null, divisa: "EUR", data: "", nombre: "", shortName: "", tipo: investmentTypes()[0] || "Cartera", cantidad: 0, valor: 0, total: 0, valorAnterior: 0, variacion: 0 });
   openInvestmentDetail(state.investments.length - 1);
 }
 
@@ -2631,6 +2657,7 @@ async function saveMovementDetail(event) {
   const saveWithAccount = account => {
     const accountDelta = roundMoney(movement.amount - previous.amount);
     if (account && accountDelta) applyBankDelta(account, accountDelta);
+    if (state.movementMode !== "future") applyInvestmentMovementMirror(previous, movement);
     list[index] = movement;
     writeDataCache();
     if (state.config.scriptUrl) {
@@ -2678,6 +2705,7 @@ async function deleteMovementDetail() {
   const accountDelta = -Number(movement.amount || 0);
   const finalizeDelete = account => {
     if (account) applyBankDelta(account, accountDelta);
+    if (state.movementMode !== "future") applyInvestmentCostDeltaLocal(movement, -1);
     list.splice(index, 1);
     writeDataCache();
     if (state.config.scriptUrl) {
@@ -2721,13 +2749,14 @@ function openInvestmentDetail(index) {
   document.getElementById("editInvestmentCurrency").value = item.divisa || "EUR";
   document.getElementById("editInvestmentData").value = item.data;
   document.getElementById("editInvestmentName").value = item.nombre;
-  document.getElementById("editInvestmentType").value = item.tipo || INVESTMENT_TYPES[0];
+  document.getElementById("editInvestmentShortName").value = item.shortName || "";
+  document.getElementById("editInvestmentType").value = item.tipo || investmentTypes()[0];
   const isCash = isCashInvestmentPosition(item);
   document.getElementById("editInvestmentQuantity").value = Number.isFinite(safeNumber(item.cantidad)) ? safeNumber(item.cantidad) : "";
   document.getElementById("editInvestmentQuantity").readOnly = isCash;
   document.getElementById("editInvestmentValue").value = Number.isFinite(safeNumber(item.valor)) ? safeNumber(item.valor) : "";
   const totalInput = document.getElementById("editInvestmentTotal");
-  totalInput.value = safeNumber(currentInvestmentTotal(item));
+  totalInput.value = round2(currentInvestmentTotal(item));
   totalInput.readOnly = !isCash;
   document.getElementById("investmentDetailDialog").showModal();
 }
@@ -2736,7 +2765,7 @@ function syncInvestmentDetailComputedTotal() {
   const quantity = Number(document.getElementById("editInvestmentQuantity")?.value || 0);
   const value = Number(document.getElementById("editInvestmentValue")?.value || 0);
   const totalInput = document.getElementById("editInvestmentTotal");
-  if (totalInput && totalInput.readOnly) totalInput.value = safeNumber(quantity * value);
+  if (totalInput && totalInput.readOnly) totalInput.value = round2(quantity * value);
 }
 
 async function saveInvestmentDetail(event) {
@@ -2752,69 +2781,40 @@ async function saveInvestmentDetail(event) {
   const previousItem = { ...item };
   const detailIsCash = isCashInvestmentPosition({
     data: document.getElementById("editInvestmentData").value.trim(),
-    nombre: document.getElementById("editInvestmentName").value.trim()
+    nombre: document.getElementById("editInvestmentName").value.trim(),
+    shortName: document.getElementById("editInvestmentShortName").value.trim()
   });
   Object.assign(item, {
     divisa: document.getElementById("editInvestmentCurrency").value.trim().toUpperCase() || "EUR",
     data: document.getElementById("editInvestmentData").value.trim(),
     nombre: document.getElementById("editInvestmentName").value.trim(),
+    shortName: document.getElementById("editInvestmentShortName").value.trim(),
     tipo: document.getElementById("editInvestmentType").value,
     cantidad: detailIsCash ? NaN : Number(document.getElementById("editInvestmentQuantity").value || 0)
   });
   if (detailIsCash) {
     item.total = Number(document.getElementById("editInvestmentTotal").value || 0);
     item.valorAnterior = item.total;
+  } else {
+    item.total = roundMoney(safeNumber(item.cantidad) * safeNumber(item.valor));
   }
   recalculateInvestmentTotal(item);
-  const isAppsScript = state.config.scriptUrl;
+  recalculateInvestmentTotalsLocalFromPositions();
   writeDataCache();
 
-  // UX: al aplicar una posición cerramos el popup inmediatamente.
-  // La sincronización sigue por detrás en esta misma acción: subir cambio y releer la tabla.
   document.getElementById("investmentDetailDialog").close();
-  renderInvestments();
+  syncOptions();
+  renderDataScope("investments");
 
-  if (isAppsScript) {
-    try {
-      setNotice("Subiendo cambio a Google Sheets...", "");
-      setSyncStatus("Subiendo cambio", "");
-
-      // Flujo único para editar posiciones:
-      // 1) subir SOLO el cambio de la posición;
-      // 2) dejar que Google Sheets recalcule VALUE/VARIATION con sus fórmulas;
-      // 3) descargar SOLO la tabla de Inversiones ya recalculada.
-      // No se pasa updateInvestments:true: Yahoo solo se ejecuta desde el botón Precios.
-      const payload = await fetchAppsScriptData({
-        action: "updateInvestment",
-        sheetName: state.config.investmentSheet,
-        investment: { ...item },
-        previousInvestment: previousItem
-      });
-      assertPayloadOk(payload);
-
-      setSyncStatus("Actualizando tabla", "");
-      mergeDataSnapshot({
-        investments: payload.investments || state.investments,
-        investmentGoals: payload.investmentGoals ?? state.investmentGoals
-      });
-      markCacheSectionsSynced(["investments", "investmentGoals"], payload.manifest || null);
-      syncOptions();
-      renderDataScope("investments");
-      writeDataCache({ syncedSections: ["investments", "investmentGoals"], manifest: payload.manifest || null });
-
-      setNotice("Cambio guardado y tabla actualizada.", "ok");
-      setSyncStatus("Tabla actualizada", "ok");
-      window.setTimeout(() => setSyncStatus("", ""), 2200);
-    } catch (error) {
-      queueOp({
-        action: "updateInvestment",
-        sheetName: state.config.investmentSheet,
-        investment: { ...item },
-        previousInvestment: previousItem
-      });
-      setNotice(lineMessage("No se pudo confirmar ahora; queda pendiente.", error.message), "warn");
-      setSyncStatus("Cambio pendiente", "warn");
-    }
+  if (state.config.scriptUrl) {
+    queueOp({
+      action: "updateInvestment",
+      sheetName: state.config.investmentSheet,
+      investment: { ...item },
+      previousInvestment: previousItem
+    });
+    setNotice("Cambio aplicado en caché y enviado a Sheets.", "ok");
+    setSyncStatus("Subiendo cambio", "");
   } else {
     rememberPendingSnapshot("investments");
     setNotice(lineMessage("Cambio local.", "Para guardar en Sheets necesitas Apps Script."), "warn");
@@ -2876,7 +2876,10 @@ async function submitMovement(event) {
       const futureMovs = movements.filter(m => m.date > today);
       const accountBefore = getBankAmount(account);
       const totalBefore = sum(state.banks.map(b => b.dinero));
-      realized.forEach(m => applyBankDelta(account, m.amount));
+      realized.forEach(m => {
+        applyBankDelta(account, m.amount);
+        applyInvestmentCostDeltaLocal(m, 1);
+      });
       const totalAfter = sum(state.banks.map(b => b.dinero));
       state.transactions.push(...realized);
       state.futureTransactions.push(...futureMovs);
@@ -2904,7 +2907,10 @@ async function submitMovement(event) {
       const account = document.getElementById("formAccount").value;
       const bankBefore = getBankAmount(account);
       const totalBefore = sum(state.banks.map(b => b.dinero));
-      if (!future) applyBankDelta(account, movement.amount);
+      if (!future) {
+        applyBankDelta(account, movement.amount);
+        applyInvestmentCostDeltaLocal(movement, 1);
+      }
       (future ? state.futureTransactions : state.transactions).push(movement);
       writeDataCache();
       queueOp({
@@ -3398,7 +3404,15 @@ async function postAppsScript(payload) {
     method: "POST",
     mode: "no-cors",
     headers: { "Content-Type": "text/plain;charset=utf-8" },
-    body: JSON.stringify({ token: state.config.appToken, ...finalPayload })
+    body: JSON.stringify({
+      token: state.config.appToken,
+      dataSheet: state.config.dataSheet || "Datos",
+      investmentSheet: state.config.investmentSheet || "Inversiones",
+      investmentTotalsSheet: state.config.investmentTotalsSheet || "Inversión Totales",
+      movementSheet: state.config.movementSheet || "Control Finanzas",
+      futureMovementSheet: state.config.futureMovementSheet || "Movimientos futuros",
+      ...finalPayload
+    })
   });
   await confirmClientOp(finalPayload.clientOpId);
 }
@@ -3456,7 +3470,7 @@ function parseTransferAccountText(value) {
 
 function isInvestmentPositionType(value) {
   const normalized = normalizeType(value);
-  return INVESTMENT_TYPES.some(type => normalizeType(type) === normalized);
+  return investmentTypes().some(type => normalizeType(type) === normalized);
 }
 
 function isCashInvestmentPosition(item) {
@@ -3466,15 +3480,17 @@ function isCashInvestmentPosition(item) {
 }
 
 function normalizeInvestment(row) {
+  const isArrayRow = Array.isArray(row);
   const divisa = String(row.divisa || row.DIVISA || row.currency || row.CURRENCY || row[0] || 'EUR').trim().toUpperCase() || 'EUR';
   const data = String(row.data || row.DATA || row.ticker || row.TICKER || row[1] || '').trim();
   const nombre = String(row.nombre || row.NOMBRE || row.name || row.NAME || row[2] || data).trim();
-  const tipo = prettyType(String(row.tipo || row.TIPO || row.type || row.TYPE || row[3] || '').trim());
-  const cantidad = parseNumber(row.cantidad ?? row.CANTIDAD ?? row.shares ?? row.SHARES ?? row[4]);
-  const valor = parseNumber(row.valor ?? row.VALOR ?? row.price ?? row.PRICE ?? row[5]);
-  const total = parseNumber(row.total ?? row.value ?? row.VALUE ?? row['VALOR TOTAL (€)'] ?? row['VALOR TOTAL'] ?? row[6]);
-  const valorAnterior = parseNumber(row.valorAnterior ?? row.lastPrice ?? row['LAST PRICE'] ?? row['VALOR ANTERIOR'] ?? row[7]);
-  const variacion = normalizePercentPoints(parseNumber(row.variacion ?? row.variation ?? row.VARIATION ?? row['% VARIACIÓN'] ?? row['% VARIACION'] ?? row[8]));
+  const shortName = String(row.shortName || row.shortname || row.short_name || row.SHORT_NAME || row['SHORT NAME'] || row['Short Name'] || (isArrayRow ? row[3] : '') || '').trim();
+  const tipo = prettyType(String(row.tipo || row.TIPO || row.type || row.TYPE || (isArrayRow ? row[4] : row[3]) || '').trim());
+  const cantidad = parseNumber(row.cantidad ?? row.CANTIDAD ?? row.shares ?? row.SHARES ?? (isArrayRow ? row[5] : row[4]));
+  const valor = parseNumber(row.valor ?? row.VALOR ?? row.price ?? row.PRICE ?? (isArrayRow ? row[6] : row[5]));
+  const total = parseNumber(row.total ?? row.value ?? row.VALUE ?? row['VALOR TOTAL (€)'] ?? row['VALOR TOTAL'] ?? (isArrayRow ? row[7] : row[6]));
+  const valorAnterior = parseNumber(row.valorAnterior ?? row.lastPrice ?? row['LAST PRICE'] ?? row['VALOR ANTERIOR'] ?? (isArrayRow ? row[8] : row[7]));
+  const variacion = normalizePercentPoints(parseNumber(row.variacion ?? row.variation ?? row.VARIATION ?? row['% VARIACIÓN'] ?? row['% VARIACION'] ?? (isArrayRow ? row[9] : row[8])));
   const candidate = { data, nombre };
   const isCash = isCashInvestmentPosition(candidate);
   if (!nombre || !isInvestmentPositionType(tipo) || (!isCash && !data)) return null;
@@ -3484,6 +3500,7 @@ function normalizeInvestment(row) {
     divisa,
     data,
     nombre,
+    shortName,
     tipo,
     cantidad,
     valor,
@@ -3491,6 +3508,107 @@ function normalizeInvestment(row) {
     valorAnterior,
     variacion
   };
+}
+
+
+function normalizeInvestmentTotal(row) {
+  const tipo = prettyType(String(row.tipo || row.TIPO || row.type || row.TYPE || row[0] || '').trim());
+  if (!tipo) return null;
+  return {
+    rowNumber: Number(row.rowNumber || row.row || 0) || null,
+    tipo,
+    cost: parseNumber(row.cost ?? row.COST ?? row.invested ?? row[1]),
+    value: parseNumber(row.value ?? row.VALUE ?? row.current ?? row[2]),
+    lastValue: parseNumber(row.lastValue ?? row['LAST VALUE'] ?? row.previous ?? row[3]),
+    daily: parseNumber(row.daily ?? row.DAILY ?? row[4]),
+    dailyPct: normalizePercentPoints(parseNumber(row.dailyPct ?? row['%D'] ?? row[5])),
+    gain: parseNumber(row.gain ?? row.GAIN ?? row[6]),
+    gainPct: normalizePercentPoints(parseNumber(row.gainPct ?? row['%GAIN'] ?? row[7])),
+    order: Number(row.order || row.ORDEN || row[8] || 0) || 0
+  };
+}
+
+function investmentTotalsByType() {
+  const map = new Map();
+  (state.investmentTotals || []).forEach(item => {
+    if (!item || !item.tipo) return;
+    map.set(normalizeType(item.tipo), item);
+  });
+  return map;
+}
+
+function localInvestmentCategoryForMovement(movement) {
+  if (!movement || !isInvestment(movement)) return '';
+  const candidates = [movement.concepto, movement.descripcion].map(v => String(v || '').trim()).filter(Boolean);
+  for (const candidate of candidates) {
+    const match = investmentTypes().find(type => normalizeType(type) === normalizeType(candidate));
+    if (match) return match;
+  }
+  return candidates[0] || '';
+}
+
+function applyInvestmentCostDeltaLocal(movement, sign = 1) {
+  const category = localInvestmentCategoryForMovement(movement);
+  if (!category) return;
+  const amount = Math.abs(Number(movement.amount || movement.importe || 0));
+  if (!Number.isFinite(amount) || amount <= 0) return;
+  const existing = (state.investmentTotals || []).find(item => normalizeType(item.tipo) === normalizeType(category));
+  if (existing) {
+    existing.cost = Math.max(0, roundMoney(safeNumber(existing.cost) + sign * amount));
+    existing.gain = roundMoney(safeNumber(existing.value) - safeNumber(existing.cost));
+    existing.gainPct = existing.cost ? existing.gain / existing.cost : 0;
+  } else if (sign > 0) {
+    state.investmentTotals.push({ tipo: category, cost: roundMoney(amount), value: 0, lastValue: 0, daily: 0, dailyPct: 0, gain: -roundMoney(amount), gainPct: -1, order: state.investmentTotals.length + 1 });
+  }
+}
+
+function applyInvestmentMovementMirror(previousMovement, nextMovement) {
+  if (previousMovement && isInvestment(previousMovement)) applyInvestmentCostDeltaLocal(previousMovement, -1);
+  if (nextMovement && isInvestment(nextMovement)) applyInvestmentCostDeltaLocal(nextMovement, 1);
+}
+
+function recalculateInvestmentTotalsLocalFromPositions() {
+  const previousTotals = new Map((state.investmentTotals || []).map(item => [normalizeType(item.tipo), item]));
+  const typeOrder = investmentTypes();
+  const next = typeOrder.map((type, index) => {
+    const prior = previousTotals.get(normalizeType(type)) || {};
+    return {
+      rowNumber: prior.rowNumber || null,
+      tipo: type,
+      cost: safeNumber(prior.cost),
+      value: 0,
+      lastValue: 0,
+      daily: 0,
+      dailyPct: 0,
+      gain: 0,
+      gainPct: 0,
+      order: Number(prior.order || index + 1)
+    };
+  });
+  const byType = new Map(next.map(item => [normalizeType(item.tipo), item]));
+  (state.investments || []).forEach(item => {
+    const key = normalizeType(item.tipo);
+    if (!key) return;
+    if (!byType.has(key)) {
+      const type = prettyType(item.tipo);
+      const created = { rowNumber: null, tipo: type, cost: 0, value: 0, lastValue: 0, daily: 0, dailyPct: 0, gain: 0, gainPct: 0, order: next.length + 1 };
+      next.push(created);
+      byType.set(key, created);
+    }
+    const total = byType.get(key);
+    total.value += safeNumber(currentInvestmentTotal(item));
+    total.lastValue += safeNumber(previousInvestmentTotal(item));
+  });
+  next.forEach(total => {
+    total.value = roundMoney(total.value);
+    total.lastValue = roundMoney(total.lastValue);
+    total.daily = roundMoney(total.value - total.lastValue);
+    total.dailyPct = total.lastValue ? total.daily / total.lastValue : 0;
+    total.gain = roundMoney(total.value - safeNumber(total.cost));
+    total.gainPct = total.cost ? total.gain / total.cost : 0;
+  });
+  state.investmentTotals = next;
+  state.categories = normalizeCategories({ ...state.categories, investmentTypes: next.map(item => item.tipo) });
 }
 
 function normalizeBank(row) {
@@ -3501,10 +3619,27 @@ function normalizeBank(row) {
 }
 
 function normalizeCategories(categories) {
+  const sourceInvestmentTypes = categories && (categories.investmentTypes || categories.investments || categories.inversiones || categories.tiposInversion);
+  const cleanInvestmentTypes = (sourceInvestmentTypes || []).map(prettyType).filter(Boolean);
   return {
     types: unique([...(categories && categories.types || []), ...STATIC_TYPES]).map(prettyType),
-    concepts: unique([...(categories && categories.concepts || []), ...STATIC_CONCEPTS]).map(prettyType)
+    concepts: unique([...(categories && categories.concepts || []), ...STATIC_CONCEPTS]).map(prettyType),
+    investmentTypes: unique(cleanInvestmentTypes.length ? cleanInvestmentTypes : INVESTMENT_TYPES).map(prettyType).filter(Boolean)
   };
+}
+
+function investmentTypes() {
+  const configured = [...(state.categories?.investmentTypes || [])].map(prettyType).filter(Boolean);
+  const totals = [...(state.investmentTotals || [])]
+    .slice()
+    .sort((a, b) => safeNumber(a.order) - safeNumber(b.order))
+    .map(i => prettyType(i.tipo))
+    .filter(Boolean);
+  const current = state.investments.map(i => i.tipo).map(prettyType).filter(Boolean);
+  const base = configured.length || totals.length || current.length ? [] : INVESTMENT_TYPES;
+  return unique([...configured, ...totals, ...current, ...base])
+    .map(prettyType)
+    .filter(Boolean);
 }
 
 function renderTable(id, headers, rows) {
@@ -3586,8 +3721,181 @@ function openInvestmentOverview(type) {
   renderInvestments();
 }
 
+
+function ensureInvestmentCategoryEditButton() {
+  const table = document.getElementById("investmentBreakdownTable");
+  const panel = table?.closest("article.panel");
+  const header = panel?.querySelector(".panel-header");
+  if (!header || document.getElementById("editInvestmentCategoriesBtn")) return;
+  const btn = document.createElement("button");
+  btn.id = "editInvestmentCategoriesBtn";
+  btn.className = "btn mini-edit-btn";
+  btn.type = "button";
+  btn.innerHTML = '<i data-lucide="edit-3"></i>';
+  btn.addEventListener("click", openInvestmentCategoryDialog);
+  header.appendChild(btn);
+}
+
+function ensureInvestmentCategoryDialog() {
+  if (document.getElementById("investmentCategoriesDialog")) return;
+  const dialog = document.createElement("dialog");
+  dialog.id = "investmentCategoriesDialog";
+  dialog.innerHTML = `
+    <form id="investmentCategoriesForm" method="dialog" class="dialog-card investment-category-dialog">
+      <div class="dialog-head">
+        <h2>Categorías de inversión</h2>
+        <button class="icon-btn" id="closeInvestmentCategoriesBtn" type="button" aria-label="Cerrar"><i data-lucide="x"></i></button>
+      </div>
+      <div class="investment-category-body">
+        <p class="dialog-subtitle">Ordena, renombra o añade categorías.</p>
+      <div id="investmentCategoryRows" class="investment-category-rows"></div>
+      <button class="btn investment-category-add" id="addInvestmentCategoryBtn" type="button"><i data-lucide="plus"></i> Añadir categoría</button>
+      </div>
+      <div class="investment-category-actions">
+        <button class="btn primary full" type="submit"><i data-lucide="save"></i> Guardar categorías</button>
+      </div>
+    </form>`;
+  document.body.appendChild(dialog);
+  document.getElementById("closeInvestmentCategoriesBtn").addEventListener("click", () => dialog.close());
+  document.getElementById("addInvestmentCategoryBtn").addEventListener("click", () => addInvestmentCategoryRow(""));
+  document.getElementById("investmentCategoriesForm").addEventListener("submit", saveInvestmentCategoriesFromDialog);
+}
+
+
+function investmentCategoryHasData(type) {
+  const key = normalizeType(type);
+  const hasPositions = state.investments.some(item => normalizeType(item.tipo) === key);
+  const total = (state.investmentTotals || []).find(item => normalizeType(item.tipo) === key);
+  const hasCost = total && Math.abs(safeNumber(total.cost)) > 0.009;
+  const hasValue = total && Math.abs(safeNumber(total.value)) > 0.009;
+  return hasPositions || hasCost || hasValue;
+}
+
+function openInvestmentCategoryDialog() {
+  ensureInvestmentCategoryDialog();
+  const rows = document.getElementById("investmentCategoryRows");
+  rows.innerHTML = "";
+  investmentTypes().forEach(type => addInvestmentCategoryRow(type));
+  updateInvestmentCategoryMoveButtons();
+  document.getElementById("investmentCategoriesDialog").showModal();
+  lucide.createIcons();
+}
+
+function updateInvestmentCategoryMoveButtons() {
+  const rows = [...document.querySelectorAll("#investmentCategoryRows .investment-category-row")];
+  rows.forEach((row, index) => {
+    const up = row.querySelector('[data-category-move="up"]');
+    const down = row.querySelector('[data-category-move="down"]');
+    if (up) {
+      up.disabled = index === 0;
+      up.classList.toggle("invisible", index === 0);
+    }
+    if (down) {
+      down.disabled = index === rows.length - 1;
+      down.classList.toggle("invisible", index === rows.length - 1);
+    }
+  });
+}
+
+function addInvestmentCategoryRow(value = "") {
+  const rows = document.getElementById("investmentCategoryRows");
+  const row = document.createElement("div");
+  row.className = "investment-category-row";
+  row.innerHTML = `
+    <div class="category-order-actions">
+      <button class="icon-btn" type="button" data-category-move="up" aria-label="Subir"><i data-lucide="chevron-up"></i></button>
+      <button class="icon-btn" type="button" data-category-move="down" aria-label="Bajar"><i data-lucide="chevron-down"></i></button>
+    </div>
+    <input data-original-category="${escapeAttr(value)}" value="${escapeAttr(value)}" placeholder="Nueva categoría" />
+    <button class="icon-btn danger" type="button" data-category-remove aria-label="Quitar"><i data-lucide="trash-2"></i></button>`;
+  row.querySelector('[data-category-move="up"]').addEventListener("click", () => {
+    if (row.previousElementSibling) rows.insertBefore(row, row.previousElementSibling);
+    updateInvestmentCategoryMoveButtons();
+  });
+  row.querySelector('[data-category-move="down"]').addEventListener("click", () => {
+    if (row.nextElementSibling) rows.insertBefore(row.nextElementSibling, row);
+    updateInvestmentCategoryMoveButtons();
+  });
+  row.querySelector('[data-category-remove]').addEventListener("click", () => {
+    const input = row.querySelector('input');
+    const current = prettyType(input?.value || input?.dataset.originalCategory || '');
+    const original = prettyType(input?.dataset.originalCategory || '');
+    if ((original && investmentCategoryHasData(original)) || (current && investmentCategoryHasData(current))) {
+      setNotice(`No se puede borrar ${current || original}: tiene posiciones o coste. Mueve/renombra primero sus inversiones.`, 'warn');
+      return;
+    }
+    row.remove();
+    updateInvestmentCategoryMoveButtons();
+  });
+  rows.appendChild(row);
+  updateInvestmentCategoryMoveButtons();
+  lucide.createIcons();
+}
+
+async function saveInvestmentCategoriesFromDialog(event) {
+  event.preventDefault();
+  const btn = event.submitter;
+  markButtonSaving(btn);
+  const entries = [...document.querySelectorAll("#investmentCategoryRows input")]
+    .map(input => ({ original: input.dataset.originalCategory || "", next: prettyType(input.value || "") }))
+    .filter(entry => entry.next);
+  const nextTypes = unique(entries.map(entry => entry.next));
+  const renames = {};
+  entries.forEach(entry => {
+    if (entry.original && normalizeType(entry.original) !== normalizeType(entry.next)) renames[entry.original] = entry.next;
+  });
+  if (!nextTypes.length) {
+    restoreButton(btn);
+    setNotice("Debe haber al menos una categoría de inversión.", "warn");
+    return;
+  }
+  state.categories = normalizeCategories({ ...state.categories, investmentTypes: nextTypes });
+  state.investments = state.investments.map(item => {
+    const renamed = Object.entries(renames).find(([from]) => normalizeType(from) === normalizeType(item.tipo));
+    return renamed ? { ...item, tipo: renamed[1] } : item;
+  });
+  state.investmentTotals = (state.investmentTotals || []).map(item => {
+    const renamed = Object.entries(renames).find(([from]) => normalizeType(from) === normalizeType(item.tipo));
+    return renamed ? { ...item, tipo: renamed[1] } : item;
+  });
+  const renameInvestmentMovement = movement => {
+    const renamed = Object.entries(renames).find(([from]) => isInvestment(movement) && normalizeType(from) === normalizeType(movement.descripcion));
+    return renamed ? { ...movement, descripcion: renamed[1] } : movement;
+  };
+  state.transactions = state.transactions.map(renameInvestmentMovement);
+  state.futureTransactions = state.futureTransactions.map(renameInvestmentMovement);
+  renderInvestments();
+  document.getElementById("investmentCategoriesDialog").close();
+  setSyncStatus("Guardando categorías", "");
+  try {
+    recalculateInvestmentTotalsLocalFromPositions();
+    syncOptions();
+    renderInvestments();
+    writeDataCache();
+    if (state.config.scriptUrl) {
+      queueOp({
+        action: "saveInvestmentCategories",
+        investmentTypes: nextTypes,
+        renames,
+        sheetName: state.config.investmentSheet,
+        investmentTotalsSheet: state.config.investmentTotalsSheet || "Inversión Totales"
+      });
+      setSyncStatus("Guardando categorías", "");
+      setNotice("Categorías aplicadas en caché y enviadas a Sheets.", "ok");
+    } else {
+      localStorage.setItem(INVESTMENT_CATEGORY_CACHE_KEY, JSON.stringify(nextTypes));
+      setSyncStatus("Categorías guardadas en este navegador", "ok");
+    }
+    markButtonSaved(btn);
+  } catch (error) {
+    restoreButton(btn);
+    setSyncStatus("Error al guardar categorías", "warn");
+    setNotice(lineMessage("No se pudieron guardar las categorías.", error.message), "warn");
+  }
+}
+
 function renderInvestmentBreakdownTable(summary) {
-  const rows = INVESTMENT_TYPES.map(type => {
+  const rows = investmentTypes().map(type => {
     const invested = summary.investedByType[type] || 0;
     const current = summary.valueByType[type] || 0;
     const dailyPrevious = summary.dailyPreviousByType[type] || 0;
@@ -3611,7 +3919,7 @@ function renderInvestmentPositionCharts(type) {
 function renderInvestmentGainBreakdown(summary) {
   const investedRows = [];
   const gainRows = [];
-  INVESTMENT_TYPES.forEach((type, idx) => {
+  investmentTypes().forEach((type, idx) => {
     const invested = summary.investedByType[type] || 0;
     const current = summary.valueByType[type] || 0;
     const gain = Math.max(current - invested, 0);
@@ -3803,6 +4111,7 @@ function renderSummary() {
 }
 
 function renderInvestments() {
+  ensureInvestmentCategoryEditButton();
   const summary = calculateSummary(getSelectedSummaryMonth());
   const panel = state.summaryModes.investmentPanel;
   const showingGoals = panel === "goals";
@@ -4139,6 +4448,10 @@ function quantityFmt(value) {
   const number = Number(value) || 0;
   const decimals = Math.abs(number) > 0 && Math.abs(number) < 0.01 ? 6 : 4;
   return new Intl.NumberFormat("es-ES", { maximumFractionDigits: decimals }).format(number);
+}
+function round2(value) {
+  const n = safeNumber(value);
+  return Number.isFinite(n) ? Number(n.toFixed(2)) : "";
 }
 function safeNumber(value) { return Number.isFinite(value) ? value : 0; }
 function escapeHtml(value) { return String(value ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" }[c])); }
