@@ -78,6 +78,14 @@ function doGet(e) {
         recordMovedFutureChanges_(movedFutureMovements, moveStamp, previousRevs);
       }
       payload = buildAllDataPayload_(movementSheet, futureMovementSheet, investmentSheet, bankSheet, objectiveSheet, dataSheet, movedFutureMovements);
+    } else if (action === 'updateInvestment') {
+      const targetSheet = params.sheetName || investmentSheet;
+      const investment = params.investment ? JSON.parse(params.investment) : {};
+      const previousInvestment = params.previousInvestment ? JSON.parse(params.previousInvestment) : null;
+      updateInvestment_(investment, targetSheet, previousInvestment);
+      bumpSections_('investments');
+      payload = buildInvestmentDataPayload_(targetSheet, objectiveSheet, movementSheet, futureMovementSheet, bankSheet, dataSheet);
+      payload.investmentUpdated = true;
     } else if (action === 'updateInvestmentPrices') {
       const priceUpdateResult = updateInvestmentQuotesFromYahoo(investmentSheet);
       bumpSections_('investments');
@@ -954,19 +962,21 @@ function saveInvestments_(investments, sheetName) {
   investments.forEach(item => {
     if (!item || !item.data || !item.nombre || !item.tipo || !isInvestmentPositionType_(item.tipo)) return;
     const rowNumber = Number(item.rowNumber || 0);
-    const values = [[
+    const isCash = isCashInvestment_(item);
+    const baseValues = [
       normalizeInvestmentCurrency_(item.divisa || 'EUR'),
       item.data || '',
       item.nombre || '',
-      item.tipo || '',
-      Number(item.cantidad || 0)
-    ]];
-    if (rowNumber >= 2 && rowNumber <= sheet.getMaxRows()) {
-      sheet.getRange(rowNumber, 1, 1, 5).setValues(values);
-      recalculateInvestmentTotalInRow_(sheet, rowNumber);
+      item.tipo || ''
+    ];
+    const targetRow = rowNumber >= 2 && rowNumber <= sheet.getMaxRows() ? rowNumber : 0;
+    if (targetRow) {
+      sheet.getRange(targetRow, 1, 1, 4).setValues([baseValues]);
+      if (!isCash) sheet.getRange(targetRow, 5).setValue(Number(item.cantidad || 0));
+      saveCashInvestmentValue_(sheet, targetRow, item);
     } else {
-      sheet.appendRow(values[0]);
-      recalculateInvestmentTotalInRow_(sheet, sheet.getLastRow());
+      sheet.appendRow([].concat(baseValues, [isCash ? '' : Number(item.cantidad || 0)]));
+      saveCashInvestmentValue_(sheet, sheet.getLastRow(), item);
     }
   });
 }
@@ -984,14 +994,30 @@ function updateInvestment_(investment, sheetName, previousInvestment) {
   if (targetRow < 2 || targetRow > sheet.getLastRow()) throw new Error('Investment not found');
 
   if (!isInvestmentPositionType_(investment.tipo)) throw new Error('Investment type not editable');
-  sheet.getRange(targetRow, 1, 1, 5).setValues([[
+  const isCash = isCashInvestment_(investment);
+  sheet.getRange(targetRow, 1, 1, 4).setValues([[
     normalizeInvestmentCurrency_(investment.divisa || 'EUR'),
     investment.data || '',
     investment.nombre || '',
-    investment.tipo || '',
-    Number(investment.cantidad || 0)
+    investment.tipo || ''
   ]]);
-  recalculateInvestmentTotalInRow_(sheet, targetRow);
+  if (!isCash) sheet.getRange(targetRow, 5).setValue(Number(investment.cantidad || 0));
+  saveCashInvestmentValue_(sheet, targetRow, investment);
+}
+
+function isCashInvestment_(item) {
+  const name = String(item && (item.nombre || item.name || item.NAME) || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  const ticker = String(item && (item.data || item.DATA) || '').trim();
+  return name.indexOf('efectivo') !== -1 || ticker === '---' || ticker === '';
+}
+
+function saveCashInvestmentValue_(sheet, row, item) {
+  if (!isCashInvestment_(item)) return;
+  const col = investmentColumnMap_(sheet);
+  const cash = parseNumber_(item.total ?? item.value ?? item.VALUE ?? item.valorTotal);
+  if (!Number.isFinite(cash)) return;
+  if (col.total) sheet.getRange(row, col.total).setValue(cash);
+  if (col.valorAnterior) sheet.getRange(row, col.valorAnterior).setValue(cash);
 }
 
 function recalculateInvestmentTotalInRow_(sheet, row) {
@@ -1048,41 +1074,43 @@ function updateInvestmentQuotesFromYahooOptimized_(sheetName) {
   const lastRow = sheet.getLastRow();
   const rowCount = Math.max(0, lastRow - 1);
   if (!rowCount) return { prices: [], previous: [] };
-  const width = Math.max(sheet.getLastColumn(), col.variacion || 1, col.valorAnterior || 1, col.total || 1);
+
+  const width = Math.max(sheet.getLastColumn(), col.valorAnterior || 1, col.valor || 1);
   const values = sheet.getRange(2, 1, rowCount, width).getValues();
-  const tickers = Array.from(new Set(values
-    .filter(row => String(row[col.data - 1] || '').trim() && isInvestmentPositionType_(row[col.tipo - 1]))
-    .map(row => yahooTickerAlias_(String(row[col.data - 1] || '').trim()))));
+  const rowsToUpdate = values
+    .map((row, index) => ({ row, rowNumber: index + 2 }))
+    .filter(({ row }) => {
+      const ticker = String(row[col.data - 1] || '').trim();
+      const type = String(row[col.tipo - 1] || '').trim();
+      const name = String(row[col.nombre - 1] || '').trim();
+      return ticker && ticker !== '---' && isInvestmentPositionType_(type) && !isCashInvestment_({ data: ticker, nombre: name });
+    });
+
+  const tickers = Array.from(new Set(rowsToUpdate.map(({ row }) => yahooTickerAlias_(String(row[col.data - 1] || '').trim()))));
   const quotes = getYahooQuotes_(tickers);
   const prices = [];
   const previous = [];
 
-  values.forEach((row, index) => {
+  rowsToUpdate.forEach(({ row, rowNumber }) => {
     const ticker = String(row[col.data - 1] || '').trim();
-    const type = String(row[col.tipo - 1] || '').trim();
-    const quantity = parseNumber_(row[col.cantidad - 1]);
-    if (!ticker || !isInvestmentPositionType_(type)) return;
     const quote = quotes[yahooTickerAlias_(ticker)];
     if (!quote) return;
     const sourceCurrency = normalizeInvestmentCurrency_(row[(col.divisa || 1) - 1] || quote.currency || 'EUR');
     const priceEur = convertQuotePriceToEur_(quote.regularMarketPrice, sourceCurrency, rates);
     const previousEur = convertQuotePriceToEur_(quote.previousClose, sourceCurrency, rates);
+
     if (Number.isFinite(priceEur)) {
-      row[col.valor - 1] = priceEur;
-      if (col.total && Number.isFinite(quantity)) row[col.total - 1] = quantity * priceEur;
-      prices.push({ row: index + 2, ticker, price: priceEur, currency: sourceCurrency, yahooCurrency: quote.currency });
+      // Yahoo solo actualiza PRICE. No se escribe VALUE: esa columna queda para fórmulas de Sheets.
+      sheet.getRange(rowNumber, col.valor).setValue(priceEur);
+      prices.push({ row: rowNumber, ticker, price: priceEur, currency: sourceCurrency, yahooCurrency: quote.currency });
     }
     if (Number.isFinite(previousEur) && col.valorAnterior) {
-      row[col.valorAnterior - 1] = previousEur;
-      previous.push({ row: index + 2, ticker, previousClose: previousEur, currency: sourceCurrency, yahooCurrency: quote.currency });
-    }
-    if (col.variacion && Number.isFinite(priceEur) && Number.isFinite(previousEur) && previousEur) {
-      row[col.variacion - 1] = percentageChange_(priceEur, previousEur);
+      // Yahoo solo actualiza LAST PRICE. No se recalculan VALUE/VARIATION aquí.
+      sheet.getRange(rowNumber, col.valorAnterior).setValue(previousEur);
+      previous.push({ row: rowNumber, ticker, previousClose: previousEur, currency: sourceCurrency, yahooCurrency: quote.currency });
     }
   });
 
-  sheet.getRange(2, 1, rowCount, width).setValues(values);
-  if (col.variacion) sheet.getRange(2, col.variacion, rowCount, 1).setNumberFormat('0.00');
   updateCurrencyHelperRow_(sheet, col, rates);
   return { prices, previous };
 }
@@ -1107,14 +1135,14 @@ function investmentColumnMap_(sheet) {
     data: find(['data', 'ticker', 'isin']),
     nombre: find(['nombre', 'name']),
     tipo: find(['tipo', 'type']),
-    cantidad: find(['cantidad', 'qty', 'quantity']),
+    cantidad: find(['shares', 'cantidad', 'qty', 'quantity']),
     valor: find(['valor', 'precio', 'price']),
-    total: find(['valor total eur', 'valor total €', 'valor total', 'total']),
-    valorAnterior: find(['valor anterior', 'precio anterior', 'previous close']),
-    variacion: find(['% variacion', 'variacion', '% variación'])
+    total: find(['valor total eur', 'valor total €', 'valor total', 'total', 'value']),
+    valorAnterior: find(['valor anterior', 'precio anterior', 'previous close', 'last price']),
+    variacion: find(['% variacion', 'variacion', '% variación', 'variation'])
   };
   ['divisa', 'data', 'tipo', 'cantidad', 'valor', 'valorAnterior'].forEach(key => {
-    if (!map[key]) throw new Error(`Falta columna en Inversiones: ${key}`);
+    if (!map[key]) throw new Error(`Falta columna en Inversiones: ${key === 'cantidad' ? 'SHARES' : key}`);
   });
   return map;
 }

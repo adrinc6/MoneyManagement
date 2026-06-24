@@ -161,7 +161,8 @@ function wireUi() {
   document.getElementById("movementBulkEditBtn").addEventListener("click", toggleMovementBulkEdit);
   document.getElementById("movementBulkDeleteBtn").addEventListener("click", deleteSelectedMovements);
   document.getElementById("addInvestmentRowBtn").addEventListener("click", addInvestmentRow);
-  document.getElementById("saveInvestmentsBtn").addEventListener("click", saveInvestments);
+  document.getElementById("saveInvestmentsBtn")?.classList.add("hidden");
+  document.getElementById("saveInvestmentsBtn")?.addEventListener("click", saveInvestments);
   document.getElementById("formDescription").addEventListener("input", suggestTypeConceptFromDescription);
   document.getElementById("closeMovementDetailBtn").addEventListener("click", () => document.getElementById("movementDetailDialog").close());
   document.getElementById("movementDetailForm").addEventListener("submit", saveMovementDetail);
@@ -1582,6 +1583,9 @@ async function fetchAppsScriptData(options = {}) {
     dataSheet: state.config.dataSheet
   });
   if (options.updateInvestments) params.set("updateInvestments", "1");
+  if (options.investment) params.set("investment", JSON.stringify(options.investment));
+  if (options.previousInvestment) params.set("previousInvestment", JSON.stringify(options.previousInvestment));
+  if (options.sheetName) params.set("sheetName", options.sheetName);
   if (options.clientOpId) params.set("clientOpId", options.clientOpId);
   if (options.sinceRev) params.set("sinceRev", options.sinceRev);
   if (options.movementKind) params.set("movementKind", options.movementKind);
@@ -1969,7 +1973,12 @@ function calculateSummary(month) {
   const dailyPreviousByType = {};
   INVESTMENT_TYPES.forEach(type => {
     const positions = state.investments.filter(i => normalizeType(i.tipo) === normalizeType(type));
-    investedByType[type] = Math.abs(sum(untilToday.filter(t => isInvestment(t) && normalizeType(t.descripcion) === normalizeType(type)).map(t => t.amount)));
+    // Cost = dinero realmente invertido/aportado, igual que en Resumen.
+    // Se toma de movimientos de tipo Inversión cuya descripción sea Bolsa/Fondos/Cartera.
+    investedByType[type] = Math.abs(sum(untilToday
+      .filter(t => isInvestment(t) && normalizeType(t.descripcion) === normalizeType(type))
+      .map(t => t.amount)));
+    // Value y diario vienen de la hoja Inversiones ya descargada.
     valueByType[type] = sum(positions.map(i => currentInvestmentTotal(i)));
     dailyPreviousByType[type] = sum(positions.map(i => previousInvestmentTotal(i)));
     dailyByType[type] = valueByType[type] - dailyPreviousByType[type];
@@ -2450,8 +2459,8 @@ function renderInvestmentEditTable() {
       const idx = state.investments.indexOf(i);
       return `<tr class="clickable-row" data-investment-index="${idx}">
         <td class="investment-name col-detail" title="${escapeAttr(i.nombre)}">${escapeHtml(i.nombre)}</td>
-        <td class="amount col-qty">${quantityFmt(i.cantidad)}</td>
-        <td class="amount col-money">${money(i.valor, 2)}</td>
+        <td class="amount col-qty">${isCashInvestmentPosition(i) ? '—' : quantityFmt(i.cantidad)}</td>
+        <td class="amount col-money">${isCashInvestmentPosition(i) ? '—' : money(i.valor, 2)}</td>
         <td class="amount col-money">${money(currentInvestmentTotal(i), 2)}</td>
         <td class="amount col-pct">${pctCell(dailyInvestmentPct(i))}</td>
       </tr>`;
@@ -2555,12 +2564,14 @@ async function saveInvestments() {
   markButtonSaving(btn);
   try {
     writeDataCache();
-    queueOp({ action: "saveInvestments", sheetName: state.config.investmentSheet, investments: state.investments });
+    await postAppsScript({ action: "saveInvestments", sheetName: state.config.investmentSheet, investments: state.investments });
+    await refreshData({ force: true, scope: "investments", successMessage: "Inversiones guardadas y tabla recargada desde Sheets." });
     markButtonSaved(btn);
-    setNotice("Cambios de inversiones enviados.", "ok");
+    setNotice("Inversiones guardadas y recargadas desde Sheets.", "ok");
   } catch (error) {
+    queueOp({ action: "saveInvestments", sheetName: state.config.investmentSheet, investments: state.investments });
     restoreButton(btn);
-    setNotice(`No se pudieron guardar inversiones: ${error.message}`, "warn");
+    setNotice(lineMessage("No se pudieron confirmar ahora; quedan pendientes.", error.message), "warn");
   } finally {
     renderInvestments();
   }
@@ -2710,9 +2721,13 @@ function openInvestmentDetail(index) {
   document.getElementById("editInvestmentData").value = item.data;
   document.getElementById("editInvestmentName").value = item.nombre;
   document.getElementById("editInvestmentType").value = item.tipo || INVESTMENT_TYPES[0];
-  document.getElementById("editInvestmentQuantity").value = safeNumber(item.cantidad);
-  document.getElementById("editInvestmentValue").value = safeNumber(item.valor);
-  document.getElementById("editInvestmentTotal").value = safeNumber(currentInvestmentTotal(item));
+  const isCash = isCashInvestmentPosition(item);
+  document.getElementById("editInvestmentQuantity").value = Number.isFinite(safeNumber(item.cantidad)) ? safeNumber(item.cantidad) : "";
+  document.getElementById("editInvestmentQuantity").readOnly = isCash;
+  document.getElementById("editInvestmentValue").value = Number.isFinite(safeNumber(item.valor)) ? safeNumber(item.valor) : "";
+  const totalInput = document.getElementById("editInvestmentTotal");
+  totalInput.value = safeNumber(currentInvestmentTotal(item));
+  totalInput.readOnly = !isCash;
   document.getElementById("investmentDetailDialog").showModal();
 }
 
@@ -2720,10 +2735,10 @@ function syncInvestmentDetailComputedTotal() {
   const quantity = Number(document.getElementById("editInvestmentQuantity")?.value || 0);
   const value = Number(document.getElementById("editInvestmentValue")?.value || 0);
   const totalInput = document.getElementById("editInvestmentTotal");
-  if (totalInput) totalInput.value = safeNumber(quantity * value);
+  if (totalInput && totalInput.readOnly) totalInput.value = safeNumber(quantity * value);
 }
 
-function saveInvestmentDetail(event) {
+async function saveInvestmentDetail(event) {
   event.preventDefault();
   const btn = event.submitter;
   markButtonSaving(btn);
@@ -2734,30 +2749,76 @@ function saveInvestmentDetail(event) {
     return;
   }
   const previousItem = { ...item };
+  const detailIsCash = isCashInvestmentPosition({
+    data: document.getElementById("editInvestmentData").value.trim(),
+    nombre: document.getElementById("editInvestmentName").value.trim()
+  });
   Object.assign(item, {
     divisa: document.getElementById("editInvestmentCurrency").value.trim().toUpperCase() || "EUR",
     data: document.getElementById("editInvestmentData").value.trim(),
     nombre: document.getElementById("editInvestmentName").value.trim(),
     tipo: document.getElementById("editInvestmentType").value,
-    cantidad: Number(document.getElementById("editInvestmentQuantity").value || 0)
+    cantidad: detailIsCash ? NaN : Number(document.getElementById("editInvestmentQuantity").value || 0)
   });
+  if (detailIsCash) {
+    item.total = Number(document.getElementById("editInvestmentTotal").value || 0);
+    item.valorAnterior = item.total;
+  }
   recalculateInvestmentTotal(item);
   const isAppsScript = state.config.scriptUrl;
   writeDataCache();
+
+  // UX: al aplicar una posición cerramos el popup inmediatamente.
+  // La sincronización sigue por detrás en esta misma acción: subir cambio y releer la tabla.
+  document.getElementById("investmentDetailDialog").close();
+  renderInvestments();
+
   if (isAppsScript) {
-    queueOp({
-      action: "updateInvestment",
-      sheetName: state.config.investmentSheet,
-      investment: { ...item },
-      previousInvestment: previousItem
-    });
-    setNotice("Cambio de inversión enviado a Sheets.", "ok");
+    try {
+      setNotice("Subiendo cambio a Google Sheets...", "");
+      setSyncStatus("Subiendo cambio", "");
+
+      // Flujo único para editar posiciones:
+      // 1) subir SOLO el cambio de la posición;
+      // 2) dejar que Google Sheets recalcule VALUE/VARIATION con sus fórmulas;
+      // 3) descargar SOLO la tabla de Inversiones ya recalculada.
+      // No se pasa updateInvestments:true: Yahoo solo se ejecuta desde el botón Precios.
+      const payload = await fetchAppsScriptData({
+        action: "updateInvestment",
+        sheetName: state.config.investmentSheet,
+        investment: { ...item },
+        previousInvestment: previousItem
+      });
+      assertPayloadOk(payload);
+
+      setSyncStatus("Actualizando tabla", "");
+      mergeDataSnapshot({
+        investments: payload.investments || state.investments,
+        investmentGoals: payload.investmentGoals ?? state.investmentGoals
+      });
+      markCacheSectionsSynced(["investments", "investmentGoals"], payload.manifest || null);
+      syncOptions();
+      renderDataScope("investments");
+      writeDataCache({ syncedSections: ["investments", "investmentGoals"], manifest: payload.manifest || null });
+
+      setNotice("Cambio guardado y tabla actualizada.", "ok");
+      setSyncStatus("Tabla actualizada", "ok");
+      window.setTimeout(() => setSyncStatus("", ""), 2200);
+    } catch (error) {
+      queueOp({
+        action: "updateInvestment",
+        sheetName: state.config.investmentSheet,
+        investment: { ...item },
+        previousInvestment: previousItem
+      });
+      setNotice(lineMessage("No se pudo confirmar ahora; queda pendiente.", error.message), "warn");
+      setSyncStatus("Cambio pendiente", "warn");
+    }
   } else {
     rememberPendingSnapshot("investments");
     setNotice(lineMessage("Cambio local.", "Para guardar en Sheets necesitas Apps Script."), "warn");
   }
   markButtonSaved(btn);
-  document.getElementById("investmentDetailDialog").close();
   renderInvestments();
 }
 
@@ -3397,18 +3458,26 @@ function isInvestmentPositionType(value) {
   return INVESTMENT_TYPES.some(type => normalizeType(type) === normalized);
 }
 
+function isCashInvestmentPosition(item) {
+  const name = removeAccents(String(item?.nombre || item?.name || item?.NAME || '')).toLowerCase();
+  const ticker = String(item?.data || item?.DATA || '').trim();
+  return name.includes('efectivo') || ticker === '---' || ticker === '';
+}
+
 function normalizeInvestment(row) {
-  const divisa = String(row.divisa || row.DIVISA || row[0] || "EUR").trim().toUpperCase() || "EUR";
-  const data = String(row.data || row.DATA || row[1] || "").trim();
-  const nombre = String(row.nombre || row.NOMBRE || row[2] || data).trim();
-  const tipo = prettyType(String(row.tipo || row.TIPO || row[3] || "").trim());
-  const cantidad = parseNumber(row.cantidad ?? row.CANTIDAD ?? row[4]);
-  const valor = parseNumber(row.valor ?? row.VALOR ?? row[5]);
-  let total = parseNumber(row.total ?? row["VALOR TOTAL (€)"] ?? row["VALOR TOTAL"] ?? row[6]);
-  const valorAnterior = parseNumber(row.valorAnterior ?? row["VALOR ANTERIOR"] ?? row[7]);
-  const variacion = normalizePercentPoints(parseNumber(row.variacion ?? row["% VARIACIÓN"] ?? row["% VARIACION"] ?? row[8]));
-  if (Number.isNaN(total) && Number.isFinite(cantidad) && Number.isFinite(valor)) total = cantidad * valor;
-  if (!data || !nombre || !isInvestmentPositionType(tipo) || Number.isNaN(total) || total < 0) return null;
+  const divisa = String(row.divisa || row.DIVISA || row.currency || row.CURRENCY || row[0] || 'EUR').trim().toUpperCase() || 'EUR';
+  const data = String(row.data || row.DATA || row.ticker || row.TICKER || row[1] || '').trim();
+  const nombre = String(row.nombre || row.NOMBRE || row.name || row.NAME || row[2] || data).trim();
+  const tipo = prettyType(String(row.tipo || row.TIPO || row.type || row.TYPE || row[3] || '').trim());
+  const cantidad = parseNumber(row.cantidad ?? row.CANTIDAD ?? row.shares ?? row.SHARES ?? row[4]);
+  const valor = parseNumber(row.valor ?? row.VALOR ?? row.price ?? row.PRICE ?? row[5]);
+  const total = parseNumber(row.total ?? row.value ?? row.VALUE ?? row['VALOR TOTAL (€)'] ?? row['VALOR TOTAL'] ?? row[6]);
+  const valorAnterior = parseNumber(row.valorAnterior ?? row.lastPrice ?? row['LAST PRICE'] ?? row['VALOR ANTERIOR'] ?? row[7]);
+  const variacion = normalizePercentPoints(parseNumber(row.variacion ?? row.variation ?? row.VARIATION ?? row['% VARIACIÓN'] ?? row['% VARIACION'] ?? row[8]));
+  const candidate = { data, nombre };
+  const isCash = isCashInvestmentPosition(candidate);
+  if (!nombre || !isInvestmentPositionType(tipo) || (!isCash && !data)) return null;
+  if (!Number.isFinite(total) && !Number.isFinite(cantidad)) return null;
   return {
     rowNumber: Number(row.rowNumber || row.row || 0) || null,
     divisa,
@@ -3769,9 +3838,10 @@ function renderInvestments() {
     fitInvestmentTables();
   }
   const hideLowerSections = showingGoals || showingEvolution;
-  document.querySelectorAll("#inversiones > article.panel, #saveInvestmentsBtn").forEach(el => {
+  document.querySelectorAll("#inversiones > article.panel").forEach(el => {
     el.classList.toggle("hidden", hideLowerSections);
   });
+  document.getElementById("saveInvestmentsBtn")?.classList.add("hidden");
 }
 
 function loadEvolutionRange() {
@@ -3961,7 +4031,7 @@ function pctCell(value) {
 }
 function currentInvestmentTotal(item) {
   const total = safeNumber(item?.total);
-  if (total) return total;
+  if (Number.isFinite(total)) return total;
   return safeNumber(item?.cantidad) * safeNumber(item?.valor);
 }
 function previousInvestmentTotal(item) {
@@ -3971,23 +4041,21 @@ function previousInvestmentTotal(item) {
 }
 function dailyInvestmentPct(item) {
   const storedPercent = normalizePercentPoints(item?.variacion);
-  if (Number.isFinite(storedPercent) && storedPercent !== 0) return storedPercent / 100;
-  const previous = safeNumber(item?.valorAnterior);
-  const current = safeNumber(item?.valor);
-  return previous ? (current - previous) / previous : 0;
+  if (Number.isFinite(storedPercent)) return storedPercent / 100;
+  const previousTotal = previousInvestmentTotal(item);
+  const currentTotal = currentInvestmentTotal(item);
+  return previousTotal ? (currentTotal - previousTotal) / previousTotal : 0;
 }
 function recalculateInvestmentTotal(item) {
+  // Sheets es la fuente de VALUE/LAST PRICE/VARIATION.
+  // En la app solo recalculamos localmente si es una fila nueva sin VALUE.
   if (!item) return item;
-  const quantity = safeNumber(item.cantidad);
-  const value = safeNumber(item.valor);
-  item.total = quantity * value;
-  item.variacion = normalizePercentPoints(item.variacion);
-
-  const previous = safeNumber(item.valorAnterior);
-  if (!Number.isFinite(Number(item.variacion)) && previous) {
-    item.variacion = ((value - previous) / previous) * 100;
+  if (!Number.isFinite(safeNumber(item.total))) {
+    const quantity = safeNumber(item.cantidad);
+    const value = safeNumber(item.valor);
+    if (Number.isFinite(quantity) && Number.isFinite(value)) item.total = quantity * value;
   }
-
+  item.variacion = normalizePercentPoints(item.variacion);
   return item;
 }
 function emptyBlock(text) { return `<div class="empty">${escapeHtml(text)}</div>`; }
