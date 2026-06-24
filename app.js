@@ -2446,6 +2446,7 @@ function setInvestmentPanelFromClick(event) {
   if (!btn) return;
   state.summaryModes.investmentPanel = btn.dataset.investmentPanel;
   renderInvestments();
+  requestAnimationFrame(() => fitInvestmentTables?.());
 }
 
 function renderInvestmentEditTable() {
