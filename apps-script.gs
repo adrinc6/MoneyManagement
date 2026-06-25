@@ -6,7 +6,7 @@ var DEFAULT_FUTURE_MOVEMENT_SHEET = 'Movimientos futuros';
 var DEFAULT_OBJECTIVE_SHEET = 'Objetivos';
 var DEFAULT_INVESTMENT_TOTALS_SHEET = 'Inversión Totales';
 var DEFAULT_PENDING_SHEET = 'Pendientes';
-var MANIFEST_REV_PREFIX = 'moneyManifestRev:';
+var SECTION_REV_PREFIX = 'moneySectionRev:';
 var PROCESSED_CLIENT_OPS_KEY = 'moneyProcessedClientOps';
 var MOVEMENT_CHANGELOG_KEY = 'moneyMovementChangelog';
 var MOVEMENT_CHANGELOG_LIMIT = 1200;
@@ -30,9 +30,7 @@ function doGet(e) {
   let payload;
   try {
     requireToken_(params.token || '');
-    if (action === 'manifest') {
-      payload = buildManifestPayload_(movementSheet, futureMovementSheet, investmentSheet, bankSheet, objectiveSheet, dataSheet, investmentTotalsSheet);
-    } else if (action === 'checkClientOp') {
+    if (action === 'checkClientOp') {
       payload = buildClientOpStatusPayload_(params.clientOpId || '');
     } else if (action === 'downloadData') {
       payload = buildAllDataPayload_(movementSheet, futureMovementSheet, investmentSheet, bankSheet, objectiveSheet, dataSheet, [], investmentTotalsSheet);
@@ -147,8 +145,7 @@ function buildAllDataPayload_(movementSheet, futureMovementSheet, investmentShee
     investmentTotals,
     banks: readBanks_(bankSheet),
     investmentGoals: readInvestmentGoals_(objectiveSheet),
-    categories: readAppCategories_(dataSheet, investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, investmentSheet),
-    manifest: buildManifestPayload_(movementSheet, futureMovementSheet, investmentSheet, bankSheet, objectiveSheet, dataSheet, investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET).manifest
+    categories: readAppCategories_(dataSheet, investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, investmentSheet)
   };
 }
 
@@ -161,8 +158,7 @@ function buildCoreDataPayload_(investmentSheet, bankSheet, objectiveSheet, dataS
     investmentTotals,
     banks: readBanks_(bankSheet),
     investmentGoals: readInvestmentGoals_(objectiveSheet),
-    categories: readAppCategories_(dataSheet, investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, investmentSheet),
-    manifest: buildManifestPayload_(movementSheet || DEFAULT_MOVEMENT_SHEET, futureMovementSheet || DEFAULT_FUTURE_MOVEMENT_SHEET, investmentSheet, bankSheet, objectiveSheet, dataSheet, investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET).manifest
+    categories: readAppCategories_(dataSheet, investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, investmentSheet)
   };
 }
 
@@ -173,8 +169,7 @@ function buildInvestmentDataPayload_(investmentSheet, objectiveSheet, movementSh
     investments: readInvestments_(investmentSheet),
     investmentTotals,
     investmentGoals: readInvestmentGoals_(objectiveSheet),
-    categories: readAppCategories_(dataSheet || 'Datos', investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, investmentSheet),
-    manifest: buildManifestPayload_(movementSheet || DEFAULT_MOVEMENT_SHEET, futureMovementSheet || DEFAULT_FUTURE_MOVEMENT_SHEET, investmentSheet, bankSheet || DEFAULT_BANK_SHEET, objectiveSheet, dataSheet || 'Datos', investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET).manifest
+    categories: readAppCategories_(dataSheet || 'Datos', investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, investmentSheet)
   };
 }
 
@@ -194,9 +189,8 @@ function buildMovementPagePayload_(sheetName, payloadKey, offset, limit) {
 
 function buildMovementChangesPayload_(section, sinceRev, movementSheet, futureMovementSheet, investmentSheet, bankSheet, objectiveSheet, dataSheet) {
   const currentRev = getSectionRevision_(section);
-  const manifest = buildManifestPayload_(movementSheet || DEFAULT_MOVEMENT_SHEET, futureMovementSheet || DEFAULT_FUTURE_MOVEMENT_SHEET, investmentSheet || DEFAULT_INVESTMENT_SHEET, bankSheet || DEFAULT_BANK_SHEET, objectiveSheet || DEFAULT_OBJECTIVE_SHEET, dataSheet || 'Datos').manifest;
   if (!sinceRev || String(sinceRev) === String(currentRev)) {
-    return { ok: true, incremental: true, section, sinceRev: sinceRev || '', currentRev, changes: [], manifest };
+    return { ok: true, incremental: true, section, sinceRev: sinceRev || '', currentRev, changes: [] };
   }
   const log = readMovementChangeLog_().filter(item => item && item.section === section);
   let changes = [];
@@ -208,33 +202,9 @@ function buildMovementChangesPayload_(section, sinceRev, movementSheet, futureMo
     if (startIndex !== -1) changes = log.slice(startIndex + 1);
   }
   if (!changes.length) {
-    return { ok: true, incremental: false, reason: 'La base local ya no está en el changelog.', section, sinceRev, currentRev, changes: [], manifest };
+    return { ok: true, incremental: false, reason: 'La base local ya no está en el changelog.', section, sinceRev, currentRev, changes: [] };
   }
-  return { ok: true, incremental: true, section, sinceRev, currentRev, changes, manifest };
-}
-
-function buildManifestPayload_(movementSheet, futureMovementSheet, investmentSheet, bankSheet, objectiveSheet, dataSheet, investmentTotalsSheet) {
-  return {
-    ok: true,
-    manifest: {
-      version: 3,
-      generatedAt: new Date().toISOString(),
-      sections: {
-        transactions: sectionManifest_('transactions', movementSheet),
-        futureTransactions: sectionManifest_('futureTransactions', futureMovementSheet),
-        investments: sectionManifest_('investments', investmentSheet),
-        banks: sectionManifest_('banks', bankSheet),
-        investmentGoals: sectionManifest_('investmentGoals', objectiveSheet),
-        categories: sectionManifest_('categories', dataSheet),
-        investmentTotals: sectionManifest_('investmentTotals', investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET)
-      }
-    }
-  };
-}
-
-
-function manifestRevKey_(section) {
-  return 'moneyManifestRev:' + String(section || '');
+  return { ok: true, incremental: true, section, sinceRev, currentRev, changes };
 }
 
 function processedClientOpsKey_() {
@@ -245,39 +215,16 @@ function movementSidHeader_() {
   return 'SID';
 }
 
-function sectionManifest_(section, sheetName) {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
-  const rev = getSectionRevision_(section);
-  const count = sheet ? Math.max(0, sheet.getLastRow() - 1) : 0;
-  const schemaHash = sheet ? fastHash_(sheet.getRange(1, 1, 1, Math.max(1, sheet.getLastColumn())).getDisplayValues()[0].join('|')) : '';
-  const lastRowHash = sheet && sheet.getLastRow() >= 2
-    ? fastHash_(sheet.getRange(sheet.getLastRow(), 1, 1, Math.max(1, sheet.getLastColumn())).getDisplayValues()[0].join('|'))
-    : '';
-  return { rev, count, lastUpdatedAt: revisionToIso_(rev), schemaHash, lastRowHash };
-}
-
-function revisionToIso_(rev) {
-  const ms = Number(String(rev || '').split('-')[0]);
-  if (!Number.isFinite(ms) || ms <= 0) return '';
-  return new Date(ms).toISOString();
-}
-
-function fastHash_(text) {
-  const value = String(text || '');
-  let hash = 0;
-  for (let i = 0; i < value.length; i++) {
-    hash = ((hash << 5) - hash) + value.charCodeAt(i);
-    hash |= 0;
-  }
-  return String(hash);
+function sectionRevKey_(section) {
+  return SECTION_REV_PREFIX + String(section || '');
 }
 
 function getSectionRevision_(section) {
   const props = PropertiesService.getDocumentProperties();
-  let rev = props.getProperty(manifestRevKey_(section));
+  let rev = props.getProperty(sectionRevKey_(section));
   if (!rev) {
     rev = String(Date.now());
-    props.setProperty(manifestRevKey_(section), rev);
+    props.setProperty(sectionRevKey_(section), rev);
   }
   return rev;
 }
@@ -287,7 +234,7 @@ function bumpSections_() {
   if (!sections.length) return '';
   const props = PropertiesService.getDocumentProperties();
   const stamp = `${Date.now()}-${Utilities.getUuid().slice(0, 8)}`;
-  sections.forEach(section => props.setProperty(manifestRevKey_(section), stamp));
+  sections.forEach(section => props.setProperty(sectionRevKey_(section), stamp));
   return stamp;
 }
 
