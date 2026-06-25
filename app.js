@@ -109,7 +109,7 @@ document.addEventListener("DOMContentLoaded", () => {
   renderSyncSettingsPanel();
   renderSettingsPanelTabs();
   syncRefreshButtonLabel("registrar");
-  refreshData({ scope: "all" });
+  refreshData({ scope: "all", cacheOnly: true });
 });
 
 function wireUi() {
@@ -713,6 +713,20 @@ async function refreshData(options = {}) {
   const previousFutureTransactions = state.futureTransactions.map(serializeTransaction);
   const dueFutureMovementsFromCache = findDueFutureMovements(cached?.data?.futureTransactions || state.futureTransactions || []);
   const shouldMoveDueFutureMovements = Boolean(scope !== "investments" && scope !== "banks" && dueFutureMovementsFromCache.length);
+
+  if (cached && options.cacheOnly && !force && !updateInvestments && !sendNotifications && !shouldMoveDueFutureMovements) {
+    setNotice(
+      cacheIsStale(cached)
+        ? staleCacheMessage(cached)
+        : `Datos cargados desde caché (${formatCacheAge(cacheAgeMs(cached))}).`,
+      cacheIsStale(cached) ? "warn" : "ok"
+    );
+    syncStatusStep(showProgress, cacheIsStale(cached) ? "Caché local antigua" : "Caché local cargada", cacheIsStale(cached) ? "warn" : "ok");
+    logSyncEvent("Inicio desde caché local; sin comprobar manifiesto ni descargar Sheets.", cacheIsStale(cached) ? "warn" : "ok");
+    renderSyncSettingsPanel();
+    setRefreshLoading(false);
+    return true;
+  }
 
   if (cached && !state.config.scriptUrl && !force && !shouldMoveDueFutureMovements) {
     setNotice(
