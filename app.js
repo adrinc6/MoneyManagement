@@ -109,7 +109,7 @@ document.addEventListener("DOMContentLoaded", () => {
   renderSyncSettingsPanel();
   renderSettingsPanelTabs();
   syncRefreshButtonLabel("registrar");
-  refreshData({ scope: "all" });
+  refreshData({ scope: "all", cacheOnly: true });
 });
 
 function wireUi() {
@@ -714,6 +714,20 @@ async function refreshData(options = {}) {
   const dueFutureMovementsFromCache = findDueFutureMovements(cached?.data?.futureTransactions || state.futureTransactions || []);
   const shouldMoveDueFutureMovements = Boolean(scope !== "investments" && scope !== "banks" && dueFutureMovementsFromCache.length);
 
+  if (cached && options.cacheOnly && !force && !updateInvestments && !sendNotifications && !shouldMoveDueFutureMovements) {
+    setNotice(
+      cacheIsStale(cached)
+        ? staleCacheMessage(cached)
+        : `Datos cargados desde caché (${formatCacheAge(cacheAgeMs(cached))}).`,
+      cacheIsStale(cached) ? "warn" : "ok"
+    );
+    syncStatusStep(showProgress, cacheIsStale(cached) ? "Caché local antigua" : "Caché local cargada", cacheIsStale(cached) ? "warn" : "ok");
+    logSyncEvent("Inicio desde caché local; sin comprobar manifiesto ni descargar Sheets.", cacheIsStale(cached) ? "warn" : "ok");
+    renderSyncSettingsPanel();
+    setRefreshLoading(false);
+    return true;
+  }
+
   if (cached && !state.config.scriptUrl && !force && !shouldMoveDueFutureMovements) {
     setNotice(
       cacheIsStale(cached)
@@ -798,6 +812,21 @@ async function refreshData(options = {}) {
     if (shouldMoveDueFutureMovements) {
       neededSections = unique([...neededSections, "transactions", "futureTransactions", "banks"]);
       setNotice(`Hay ${dueFutureMovementsFromCache.length} movimiento(s) futuro(s) vencido(s). Los muevo y actualizo lo necesario...`, "warn");
+    }
+
+    if (cached && neededSections.length && !forceRequestedSections && !updateInvestments && !sendNotifications && !shouldMoveDueFutureMovements) {
+      const changedLabels = neededSections.map(formatCacheSectionName).join(", ");
+      syncOptions();
+      renderDataScope(scope);
+      setNotice(lineMessage(
+        `Sheets indica cambios en: ${changedLabels}.`,
+        "Mantengo la caché local intacta; usa la descarga completa de Ajustes solo si quieres reemplazarla desde Sheets."
+      ), "warn");
+      syncStatusStep(showProgress, "Diferencias detectadas\nCaché local conservada", "warn");
+      logSyncEvent(`Diferencias detectadas sin descarga automática: ${changedLabels}.`, "warn");
+      renderSyncSettingsPanel();
+      if (showProgress) window.setTimeout(() => setSyncStatus("", ""), 2500);
+      return true;
     }
 
     if (ENABLE_TEST_MODE) {
