@@ -13,7 +13,7 @@ var MOVEMENT_CHANGELOG_LIMIT = 1200;
 var MOVEMENT_SID_HEADER = 'SID';
 var TELEGRAM_BOT_TOKEN = '';
 var TELEGRAM_CHAT_ID = '';
-var DAILY_NOTIFICATION_HOUR = 23;
+var DAILY_NOTIFICATION_HOUR = 22;
 
 function doGet(e) {
   const params = e && e.parameter ? e.parameter : {};

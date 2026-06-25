@@ -55,7 +55,7 @@ const SYSTEM_GOAL_LABELS = {
   yearly: "Inversión anual",
   total: "Inversión total"
 };
-const DATA_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const DATA_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const DATA_CACHE_VERSION = 2;
 const CACHE_SECTION_KEYS = ["transactions", "futureTransactions", "investments", "investmentTotals", "banks", "investmentGoals", "categories"];
 const MOVEMENT_PAGE_SIZE = 500;
@@ -257,29 +257,43 @@ function syncRefreshButtonLabel(viewId = activeViewId()) {
   const btn = document.getElementById("refreshBtn");
   if (!btn) return;
   const scope = refreshScopeForView(viewId);
-  const label = refreshLabelForScope(scope, viewId);
+  const isFullDownload = viewId === "ajustes";
+  const label = isFullDownload ? "Forzar descarga completa ALL desde Sheets" : refreshLabelForScope(scope, viewId);
   btn.title = label;
   btn.setAttribute("aria-label", label);
+  btn.classList.toggle("refresh-all", isFullDownload);
+  btn.querySelector(".refresh-all-label")?.classList.toggle("hidden", !isFullDownload);
 }
 
 function refreshActiveViewData() {
   const viewId = activeViewId();
-  const isFullManualDownload = viewId === "registrar" || viewId === "ajustes";
-  const scope = isFullManualDownload ? "all" : refreshScopeForView(viewId);
+  if (viewId === "ajustes") return forceFullRefreshFromSettings();
+
+  const scope = refreshScopeForView(viewId);
   const successByScope = {
-    all: "Descarga completa realizada.",
-    movements: "Movimientos descargados desde Sheets.",
-    investments: "Inversiones descargadas desde Sheets.",
-    summary: "Resumen descargado desde Sheets."
+    all: "Comprobación completa realizada.",
+    movements: "Movimientos comprobados y actualizados si había cambios.",
+    investments: "Inversiones comprobadas y actualizadas si había cambios.",
+    summary: "Resumen comprobado y actualizado si había cambios."
   };
 
+  return refreshData({
+    showProgress: true,
+    userRefresh: true,
+    scope,
+    successMessage: successByScope[scope] || "Comprobación completada."
+  });
+}
+
+function forceFullRefreshFromSettings() {
   return refreshData({
     force: true,
     manualRefresh: true,
     skipManifest: true,
     disableIncremental: true,
-    scope,
-    successMessage: successByScope[scope] || "Actualización completada."
+    scope: "all",
+    showProgress: true,
+    successMessage: "Descarga completa ALL realizada desde Sheets."
   });
 }
 
@@ -528,12 +542,32 @@ function cachedSectionIsDirty(cached, section) {
   return Boolean(cached?.meta?.sections?.[section]?.dirty || state.cacheMeta?.sections?.[section]?.dirty);
 }
 
+function cacheAgeMs(cached) {
+  return Date.now() - Number(cached?.savedAt || cached?.meta?.savedAt || 0);
+}
+
+function cacheIsStale(cached) {
+  return Boolean(cached && cacheAgeMs(cached) >= DATA_CACHE_TTL_MS);
+}
+
+function hasAnyLoadedData() {
+  return Boolean(
+    state.transactions.length ||
+    state.futureTransactions.length ||
+    state.investments.length ||
+    state.investmentTotals.length ||
+    state.banks.length
+  );
+}
+
+function staleCacheMessage(cached) {
+  return `Datos locales cargados (${formatCacheAge(cacheAgeMs(cached))}). La caché supera 7 días; pulsa Actualizar para comprobar cambios.`;
+}
+
 function sectionsNeedingRefresh(requiredSections, cached, manifest, force = false) {
   if (!cached) return requiredSections;
-  if (!manifest || !manifest.sections) {
-    const age = Date.now() - Number(cached.savedAt || cached.meta?.savedAt || 0);
-    return (!force && age < DATA_CACHE_TTL_MS) ? [] : requiredSections.filter(section => !cachedSectionIsDirty(cached, section));
-  }
+  if (force) return requiredSections.filter(section => !cachedSectionIsDirty(cached, section));
+  if (!manifest || !manifest.sections) return [];
   return requiredSections.filter(section => {
     if (cachedSectionIsDirty(cached, section)) return false;
     const localRev = String(cached.meta?.sections?.[section]?.rev || "");
@@ -659,6 +693,7 @@ async function refreshData(options = {}) {
   const showProgress = Boolean(options.showProgress || force || updateInvestments || sendNotifications);
   const requestedSections = cacheSectionsForScope(scope);
   const manualRefresh = Boolean(options.manualRefresh);
+  const userRefresh = Boolean(options.userRefresh);
   const forceRequestedSections = force || manualRefresh;
   const skipIncrementalDownloads = Boolean(options.disableIncremental || manualRefresh || options.skipManifest);
   setRefreshLoading(true);
@@ -670,19 +705,24 @@ async function refreshData(options = {}) {
     applyDataSnapshot(cached.data);
     syncOptions();
     renderDataScope(scope);
+    if (cacheIsStale(cached) && !force && !updateInvestments && !sendNotifications) {
+      setNotice(staleCacheMessage(cached), "warn");
+    }
   }
 
   const previousFutureTransactions = state.futureTransactions.map(serializeTransaction);
   const dueFutureMovementsFromCache = findDueFutureMovements(cached?.data?.futureTransactions || state.futureTransactions || []);
   const shouldMoveDueFutureMovements = Boolean(scope !== "investments" && scope !== "banks" && dueFutureMovementsFromCache.length);
 
-  if (cached && !state.config.scriptUrl && !force) {
-    const age = Date.now() - Number(cached.savedAt || cached.meta?.savedAt || 0);
-    if (age < DATA_CACHE_TTL_MS && !shouldMoveDueFutureMovements) {
-      setNotice(`Datos cargados desde caché (${formatCacheAge(age)}).`, "ok");
-      setRefreshLoading(false);
-      return true;
-    }
+  if (cached && !state.config.scriptUrl && !force && !shouldMoveDueFutureMovements) {
+    setNotice(
+      cacheIsStale(cached)
+        ? staleCacheMessage(cached)
+        : `Datos cargados desde caché (${formatCacheAge(cacheAgeMs(cached))}).`,
+      cacheIsStale(cached) ? "warn" : "ok"
+    );
+    setRefreshLoading(false);
+    return true;
   }
 
   const loadingText = sendNotifications
@@ -697,6 +737,14 @@ async function refreshData(options = {}) {
             ? "Descargando solo inversiones desde Sheets..."
             : manualRefresh && scope === "summary"
               ? "Descargando datos de resumen desde Sheets..."
+              : userRefresh && scope === "all"
+                ? "Comprobando cambios rápidos..."
+                : userRefresh && scope === "movements"
+                  ? "Comprobando movimientos..."
+                  : userRefresh && scope === "investments"
+                    ? "Comprobando inversiones..."
+                    : userRefresh && scope === "summary"
+                      ? "Comprobando resumen..."
               : scope === "movements"
                 ? "Actualizando solo movimientos..."
                 : scope === "investments"
@@ -704,7 +752,7 @@ async function refreshData(options = {}) {
                   : scope === "summary"
                     ? "Actualizando resumen por secciones..."
                     : "Actualizando datos por secciones...";
-  if (force || !cached || shouldMoveDueFutureMovements) setNotice(loadingText, "");
+  if (force || userRefresh || !cached || shouldMoveDueFutureMovements) setNotice(loadingText, "");
   logSyncEvent(refreshStartStatus({ scope, updateInvestments, sendNotifications }).replace(/\n/g, " · "), "");
 
   if (!ENABLE_TEST_MODE && !state.config.scriptUrl) {
@@ -732,6 +780,12 @@ async function refreshData(options = {}) {
       } catch (error) {
         console.warn("No se pudo leer el manifiesto", error);
         logSyncEvent("No se pudo leer el manifiesto.", "warn", error.message || String(error));
+        if (cached) {
+          setNotice(lineMessage(
+            cacheIsStale(cached) ? staleCacheMessage(cached) : `Datos cargados desde caché (${formatCacheAge(cacheAgeMs(cached))}).`,
+            "No se pudo hacer la comprobación rápida con Sheets."
+          ), "warn");
+        }
       }
     }
 
@@ -766,9 +820,22 @@ async function refreshData(options = {}) {
       const payload = await fetchAppsScriptData({ action: "sendDailyNotifications" });
       assertPayloadOk(payload);
     } else if (!neededSections.length && cached) {
-      setNotice(options.successMessage || `Caché al día: no había secciones nuevas que descargar.`, "ok");
-      syncStatusStep(showProgress, "Caché al día", "ok");
-      logSyncEvent("Caché al día; sin descargas.", "ok");
+      if (manifest?.sections) {
+        markCacheSectionsSynced(requestedSections, manifest);
+        syncOptions();
+        renderDataScope(scope);
+        writeDataCache({ syncedSections: requestedSections, manifest });
+        setNotice(options.successMessage || `Caché al día: comprobación rápida correcta, sin descargas.`, "ok");
+        syncStatusStep(showProgress, "Caché al día", "ok");
+        logSyncEvent("Caché al día; manifest verificado sin descargas.", "ok");
+      } else {
+        setNotice(lineMessage(
+          cacheIsStale(cached) ? staleCacheMessage(cached) : `Datos cargados desde caché (${formatCacheAge(cacheAgeMs(cached))}).`,
+          "No se pudo comprobar el manifest; no se descargó nada."
+        ), cacheIsStale(cached) ? "warn" : "ok");
+        syncStatusStep(showProgress, cacheIsStale(cached) ? "Caché antigua" : "Usando caché", cacheIsStale(cached) ? "warn" : "ok");
+        logSyncEvent("Sin manifest; se mantiene caché local sin descargar.", cacheIsStale(cached) ? "warn" : "ok");
+      }
       renderSyncSettingsPanel();
       if (showProgress) window.setTimeout(() => setSyncStatus("", ""), 1800);
       return true;
@@ -883,23 +950,23 @@ async function refreshData(options = {}) {
     return true;
   } catch (error) {
     console.error(error);
-    if (cached) {
-      setNotice(lineMessage("No se pudo actualizar; sigo usando caché.", error.message), "warn");
-      syncStatusStep(showProgress, "Usando caché", "warn");
-      logSyncEvent("No se pudo actualizar; usando caché.", "warn", error.message || String(error));
+    if (cached || hasAnyLoadedData()) {
+      setNotice(lineMessage(
+        cached ? "No se pudo actualizar; sigo usando caché." : "No se pudo actualizar; mantengo los datos ya cargados.",
+        error.message
+      ), "warn");
+      syncStatusStep(showProgress, cached ? "Usando caché" : "Datos mantenidos", "warn");
+      logSyncEvent(cached ? "No se pudo actualizar; usando caché." : "No se pudo actualizar; datos existentes mantenidos.", "warn", error.message || String(error));
+      syncOptions();
+      renderDataScope(scope);
       renderSyncSettingsPanel();
       return false;
     }
-    state.transactions = [];
-    state.futureTransactions = [];
-    state.investments = [];
-    state.banks = [];
-    state.categories = { types: STATIC_TYPES, concepts: STATIC_CONCEPTS };
     syncOptions();
     renderAll();
-    setNotice(lineMessage(`No se pudieron cargar datos: ${error.message}`, "Revisa Ajustes."), "warn");
+    setNotice(lineMessage(`No se pudieron cargar datos: ${error.message}`, "No hay caché local disponible. Revisa Ajustes."), "warn");
     syncStatusStep(showProgress, "Error de sincronización", "warn");
-    logSyncEvent("Error de sincronización.", "warn", error.message || String(error));
+    logSyncEvent("Error de sincronización sin caché local.", "warn", error.message || String(error));
     renderSyncSettingsPanel();
     return false;
   } finally {
@@ -1002,9 +1069,10 @@ async function downloadMovementPages(kind, label, options = {}) {
 
 function setRefreshLoading(loading) {
   const btn = document.getElementById("refreshBtn");
-  if (!btn) return;
-  btn.classList.toggle("loading", loading);
-  btn.disabled = loading;
+  if (btn) {
+    btn.classList.toggle("loading", loading);
+    btn.disabled = loading;
+  }
 }
 
 async function refreshDataInPlace() {
