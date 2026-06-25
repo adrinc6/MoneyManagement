@@ -282,6 +282,7 @@ function refreshActiveViewData() {
     disableIncremental: true,
     showProgress: true,
     userRefresh: true,
+    cacheOnly: true,
     scope,
     successMessage: successByScope[scope] || "Vista actualizada desde Sheets."
   });
@@ -792,6 +793,21 @@ async function refreshData(options = {}) {
     if (shouldMoveDueFutureMovements) {
       neededSections = unique([...neededSections, "transactions", "futureTransactions", "banks"]);
       setNotice(`Hay ${dueFutureMovementsFromCache.length} movimiento(s) futuro(s) vencido(s). Los muevo y actualizo lo necesario...`, "warn");
+    }
+
+    if (cached && neededSections.length && !forceRequestedSections && !updateInvestments && !sendNotifications && !shouldMoveDueFutureMovements) {
+      const changedLabels = neededSections.map(formatCacheSectionName).join(", ");
+      syncOptions();
+      renderDataScope(scope);
+      setNotice(lineMessage(
+        `Sheets indica cambios en: ${changedLabels}.`,
+        "Mantengo la caché local intacta; usa la descarga completa de Ajustes solo si quieres reemplazarla desde Sheets."
+      ), "warn");
+      syncStatusStep(showProgress, "Diferencias detectadas\nCaché local conservada", "warn");
+      logSyncEvent(`Diferencias detectadas sin descarga automática: ${changedLabels}.`, "warn");
+      renderSyncSettingsPanel();
+      if (showProgress) window.setTimeout(() => setSyncStatus("", ""), 2500);
+      return true;
     }
 
     if (ENABLE_TEST_MODE) {
