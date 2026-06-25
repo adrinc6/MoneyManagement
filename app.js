@@ -1193,6 +1193,8 @@ function writeDataCache(options = {}) {
   try {
     const syncedSections = Array.isArray(options.syncedSections) ? options.syncedSections : [];
     const dirtySections = Array.isArray(options.dirtySections) ? options.dirtySections : [];
+    const touchedSections = new Set([...syncedSections, ...dirtySections]);
+    const previousCache = readDataCache();
     if (options.manifest && syncedSections.length) applyManifestToCacheMeta(options.manifest, syncedSections);
     if (syncedSections.length && !options.manifest) markCacheSectionsSynced(syncedSections);
     if (dirtySections.length) markCacheSectionsDirty(dirtySections);
@@ -1200,19 +1202,28 @@ function writeDataCache(options = {}) {
     const meta = normalizeCacheMeta({ meta: state.cacheMeta, savedAt: Date.now() });
     meta.savedAt = Date.now();
     state.cacheMeta = meta;
+    const currentData = {
+      transactions: state.transactions.map(serializeTransaction),
+      futureTransactions: state.futureTransactions.map(serializeTransaction),
+      investments: state.investments,
+      investmentTotals: state.investmentTotals,
+      banks: state.banks,
+      investmentGoals: state.investmentGoals,
+      categories: state.categories
+    };
+    const data = { ...currentData };
+    if (previousCache?.data && touchedSections.size) {
+      CACHE_SECTION_KEYS.forEach(section => {
+        if (!touchedSections.has(section) && Object.prototype.hasOwnProperty.call(previousCache.data, section)) {
+          data[section] = previousCache.data[section];
+        }
+      });
+    }
     localStorage.setItem(DATA_CACHE_KEY, JSON.stringify({
       configKey: dataCacheConfigKey(),
       savedAt: meta.savedAt,
       meta,
-      data: {
-        transactions: state.transactions.map(serializeTransaction),
-        futureTransactions: state.futureTransactions.map(serializeTransaction),
-        investments: state.investments,
-        investmentTotals: state.investmentTotals,
-        banks: state.banks,
-        investmentGoals: state.investmentGoals,
-        categories: state.categories
-      }
+      data
     }));
     renderSyncSettingsPanel();
   } catch (error) {
