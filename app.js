@@ -270,18 +270,12 @@ function refreshActiveViewData() {
   if (viewId === "ajustes") return forceFullRefreshFromSettings();
 
   const scope = refreshScopeForView(viewId);
-  const successByScope = {
-    all: "Comprobación completa realizada.",
-    movements: "Movimientos comprobados y actualizados si había cambios.",
-    investments: "Inversiones comprobadas y actualizadas si había cambios.",
-    summary: "Resumen comprobado y actualizado si había cambios."
-  };
-
   return refreshData({
     showProgress: true,
     userRefresh: true,
+    cacheOnly: true,
     scope,
-    successMessage: successByScope[scope] || "Comprobación completada."
+    successMessage: "Caché local recargada. Sheets solo se descarga desde Ajustes."
   });
 }
 
@@ -289,7 +283,6 @@ function forceFullRefreshFromSettings() {
   return refreshData({
     force: true,
     manualRefresh: true,
-    skipManifest: true,
     disableIncremental: true,
     scope: "all",
     showProgress: true,
@@ -476,45 +469,6 @@ function normalizeCacheMeta(cached = {}) {
   return base;
 }
 
-function manifestSectionSignature(info = {}) {
-  return [
-    info.rev || "",
-    Object.prototype.hasOwnProperty.call(info, "count") ? info.count : "",
-    info.lastRowHash || "",
-    info.schemaHash || ""
-  ].join(":");
-}
-
-function manifestSectionRev(info = {}) {
-  return String(info.rev || "");
-}
-
-function cachedSectionRev(cached, section) {
-  const signature = String(cached?.meta?.sections?.[section]?.rev || "");
-  return signature.split(":")[0] || "";
-}
-
-function isMovementSection(section) {
-  return section === "transactions" || section === "futureTransactions";
-}
-
-function applyManifestToCacheMeta(manifest, sections = []) {
-  if (!manifest || !manifest.sections) return;
-  const meta = normalizeCacheMeta({ meta: state.cacheMeta, savedAt: state.cacheMeta?.savedAt });
-  sections.forEach(section => {
-    if (!meta.sections[section]) return;
-    const remote = manifest.sections[section] || {};
-    meta.sections[section] = {
-      ...meta.sections[section],
-      rev: manifestSectionSignature(remote) || meta.sections[section].rev || "",
-      savedAt: Date.now(),
-      dirty: false
-    };
-  });
-  meta.savedAt = Date.now();
-  state.cacheMeta = meta;
-}
-
 function touchCacheSections(sections = [], dirty = false) {
   const meta = normalizeCacheMeta({ meta: state.cacheMeta, savedAt: Date.now() });
   sections.forEach(section => {
@@ -533,9 +487,8 @@ function markCacheSectionsDirty(...sections) {
   touchCacheSections(sections.flat().filter(Boolean), true);
 }
 
-function markCacheSectionsSynced(sections = [], manifest = null) {
-  if (manifest) applyManifestToCacheMeta(manifest, sections);
-  else touchCacheSections(sections, false);
+function markCacheSectionsSynced(sections = []) {
+  touchCacheSections(sections, false);
 }
 
 function cachedSectionIsDirty(cached, section) {
@@ -561,25 +514,7 @@ function hasAnyLoadedData() {
 }
 
 function staleCacheMessage(cached) {
-  return `Datos locales cargados (${formatCacheAge(cacheAgeMs(cached))}). La caché supera 7 días; pulsa Actualizar para comprobar cambios.`;
-}
-
-function sectionsNeedingRefresh(requiredSections, cached, manifest, force = false) {
-  if (!cached) return requiredSections;
-  if (force) return requiredSections.filter(section => !cachedSectionIsDirty(cached, section));
-  if (!manifest || !manifest.sections) return [];
-  return requiredSections.filter(section => {
-    if (cachedSectionIsDirty(cached, section)) return false;
-    const localRev = String(cached.meta?.sections?.[section]?.rev || "");
-    const remoteRev = manifestSectionSignature(manifest.sections?.[section] || {});
-    return localRev !== remoteRev;
-  });
-}
-
-async function fetchDataManifest() {
-  const payload = await fetchAppsScriptData({ action: "manifest" });
-  assertPayloadOk(payload);
-  return payload.manifest || { sections: payload.sections || {} };
+  return `Datos locales cargados (${formatCacheAge(cacheAgeMs(cached))}). La caché supera 7 días; descarga desde Ajustes solo si quieres reemplazarla desde Sheets.`;
 }
 
 function renderCurrentView(viewId = activeViewId()) {
@@ -605,37 +540,7 @@ function renderDataScope(scope = "all") {
   renderCurrentView(activeViewId());
 }
 
-async function downloadMovementSectionOptimized(kind, section, label, cached, manifest, options = {}) {
-  const localRev = cachedSectionRev(cached, section);
-  const remoteInfo = manifest?.sections?.[section] || {};
-  const remoteRev = manifestSectionRev(remoteInfo);
-  const localSignature = String(cached?.meta?.sections?.[section]?.rev || "");
-  const remoteSignature = manifestSectionSignature(remoteInfo);
-  const canTryIncremental = Boolean(cached && localRev && remoteRev && localRev !== remoteRev && localSignature && remoteSignature);
-
-  if (canTryIncremental && !options.disableIncremental) {
-    try {
-      syncStatusStep(options.showProgress, `Descargando ${label}\nCambios incrementales`, "");
-      const payload = await fetchAppsScriptData({
-        action: "downloadMovementChanges",
-        movementKind: kind,
-        sinceRev: localRev
-      });
-      assertPayloadOk(payload);
-      if (payload.incremental) {
-        const baseRows = section === "futureTransactions" ? state.futureTransactions : state.transactions;
-        const rows = applyMovementChanges(baseRows, payload.changes || []);
-        logSyncEvent(`Incremental ${label}: ${(payload.changes || []).length} cambio(s).`, "ok");
-        return rows;
-      }
-      logSyncEvent(`Incremental ${label} no disponible; descarga por páginas.`, "warn", payload.reason || "");
-    } catch (error) {
-      console.warn("No se pudo descargar incremental", section, error);
-      logSyncEvent(`Incremental ${label} falló; descarga por páginas.`, "warn", error.message || String(error));
-    }
-  } else if (localRev && remoteRev && localRev === remoteRev && localSignature !== remoteSignature) {
-    logSyncEvent(`Cambio de estructura en ${label}; descarga por páginas.`, "warn");
-  }
+async function downloadMovementSectionOptimized(kind, section, label, cached, options = {}) {
   return downloadMovementPages(kind, label, { showProgress: options.showProgress });
 }
 
@@ -695,7 +600,6 @@ async function refreshData(options = {}) {
   const manualRefresh = Boolean(options.manualRefresh);
   const userRefresh = Boolean(options.userRefresh);
   const forceRequestedSections = force || manualRefresh;
-  const skipIncrementalDownloads = Boolean(options.disableIncremental || manualRefresh || options.skipManifest);
   setRefreshLoading(true);
   syncStatusStep(showProgress, refreshStartStatus({ scope, updateInvestments, sendNotifications }), "");
 
@@ -718,7 +622,7 @@ async function refreshData(options = {}) {
     setNotice(
       cacheIsStale(cached)
         ? staleCacheMessage(cached)
-        : `Datos cargados desde caché (${formatCacheAge(cacheAgeMs(cached))}).`,
+        : (options.successMessage || `Datos cargados desde caché (${formatCacheAge(cacheAgeMs(cached))}).`),
       cacheIsStale(cached) ? "warn" : "ok"
     );
     syncStatusStep(showProgress, cacheIsStale(cached) ? "Caché local antigua" : "Caché local cargada", cacheIsStale(cached) ? "warn" : "ok");
@@ -784,30 +688,13 @@ async function refreshData(options = {}) {
     const flushedPending = shouldFlushPending ? await flushPendingChangesBeforeDownload() : [];
     let freshData = {};
     let movedFutureMovements = [];
-    let manifest = null;
     let syncedSections = [];
-
-    if (!ENABLE_TEST_MODE && state.config.scriptUrl && !options.skipManifest && !manualRefresh) {
-      try {
-        manifest = await fetchDataManifest();
-        logSyncEvent("Manifiesto leído.", "ok");
-      } catch (error) {
-        console.warn("No se pudo leer el manifiesto", error);
-        logSyncEvent("No se pudo leer el manifiesto.", "warn", error.message || String(error));
-        if (cached) {
-          setNotice(lineMessage(
-            cacheIsStale(cached) ? staleCacheMessage(cached) : `Datos cargados desde caché (${formatCacheAge(cacheAgeMs(cached))}).`,
-            "No se pudo hacer la comprobación rápida con Sheets."
-          ), "warn");
-        }
-      }
-    }
 
     let neededSections = updateInvestments || sendNotifications
       ? ["investments", "investmentGoals"]
-      : forceRequestedSections
-        ? requestedSections
-        : sectionsNeedingRefresh(requestedSections, cached, manifest, force);
+      : !cached || forceRequestedSections
+        ? requestedSections.filter(section => !cachedSectionIsDirty(cached, section))
+        : [];
 
     if (shouldMoveDueFutureMovements) {
       neededSections = unique([...neededSections, "transactions", "futureTransactions", "banks"]);
@@ -849,22 +736,11 @@ async function refreshData(options = {}) {
       const payload = await fetchAppsScriptData({ action: "sendDailyNotifications" });
       assertPayloadOk(payload);
     } else if (!neededSections.length && cached) {
-      if (manifest?.sections) {
-        markCacheSectionsSynced(requestedSections, manifest);
-        syncOptions();
-        renderDataScope(scope);
-        writeDataCache({ syncedSections: requestedSections, manifest });
-        setNotice(options.successMessage || `Caché al día: comprobación rápida correcta, sin descargas.`, "ok");
-        syncStatusStep(showProgress, "Caché al día", "ok");
-        logSyncEvent("Caché al día; manifest verificado sin descargas.", "ok");
-      } else {
-        setNotice(lineMessage(
-          cacheIsStale(cached) ? staleCacheMessage(cached) : `Datos cargados desde caché (${formatCacheAge(cacheAgeMs(cached))}).`,
-          "No se pudo comprobar el manifest; no se descargó nada."
-        ), cacheIsStale(cached) ? "warn" : "ok");
-        syncStatusStep(showProgress, cacheIsStale(cached) ? "Caché antigua" : "Usando caché", cacheIsStale(cached) ? "warn" : "ok");
-        logSyncEvent("Sin manifest; se mantiene caché local sin descargar.", cacheIsStale(cached) ? "warn" : "ok");
-      }
+      syncOptions();
+      renderDataScope(scope);
+      setNotice(options.successMessage || `Datos cargados desde caché (${formatCacheAge(cacheAgeMs(cached))}).`, cacheIsStale(cached) ? "warn" : "ok");
+      syncStatusStep(showProgress, cacheIsStale(cached) ? "Caché antigua" : "Usando caché", cacheIsStale(cached) ? "warn" : "ok");
+      logSyncEvent("Se mantiene caché local; sin manifiesto ni descarga automática.", cacheIsStale(cached) ? "warn" : "ok");
       renderSyncSettingsPanel();
       if (showProgress) window.setTimeout(() => setSyncStatus("", ""), 1800);
       return true;
@@ -883,7 +759,6 @@ async function refreshData(options = {}) {
           investmentGoals: payload.investmentGoals ?? state.investmentGoals,
           investmentTotals: payload.investmentTotals || state.investmentTotals
         };
-        manifest = payload.manifest || manifest;
       } else {
         let core = null;
         if (needsCore || shouldMoveDueFutureMovements) {
@@ -900,18 +775,17 @@ async function refreshData(options = {}) {
             investmentTotals: core.investmentTotals || state.investmentTotals,
             categories: core.categories || state.categories
           };
-          manifest = core.manifest || manifest;
         }
         if (needsMovements || shouldMoveDueFutureMovements) {
           syncStatusStep(showProgress, "Descargando movimientos", "");
           const movementDownloads = [];
           if (neededSections.includes("transactions") || shouldMoveDueFutureMovements) {
-            movementDownloads.push(downloadMovementSectionOptimized("realized", "transactions", "movimientos", cached, manifest, { showProgress, disableIncremental: skipIncrementalDownloads || shouldMoveDueFutureMovements }));
+            movementDownloads.push(downloadMovementSectionOptimized("realized", "transactions", "movimientos", cached, { showProgress, disableIncremental: true }));
           } else {
             movementDownloads.push(Promise.resolve(null));
           }
           if (neededSections.includes("futureTransactions") || shouldMoveDueFutureMovements) {
-            movementDownloads.push(downloadMovementSectionOptimized("future", "futureTransactions", "movimientos futuros", cached, manifest, { showProgress, disableIncremental: skipIncrementalDownloads || shouldMoveDueFutureMovements }));
+            movementDownloads.push(downloadMovementSectionOptimized("future", "futureTransactions", "movimientos futuros", cached, { showProgress, disableIncremental: true }));
           } else {
             movementDownloads.push(Promise.resolve(null));
           }
@@ -953,10 +827,10 @@ async function refreshData(options = {}) {
       );
     }
 
-    markCacheSectionsSynced(syncedSections, manifest);
+    markCacheSectionsSynced(syncedSections);
     syncOptions();
     renderDataScope(scope);
-    writeDataCache({ syncedSections, manifest });
+    writeDataCache({ syncedSections });
     const defaultSuccess = sendNotifications
       ? "Notificaciones enviadas."
       : updateInvestments
@@ -1224,8 +1098,7 @@ function writeDataCache(options = {}) {
     const dirtySections = Array.isArray(options.dirtySections) ? options.dirtySections : [];
     const touchedSections = new Set([...syncedSections, ...dirtySections]);
     const previousCache = readDataCache();
-    if (options.manifest && syncedSections.length) applyManifestToCacheMeta(options.manifest, syncedSections);
-    if (syncedSections.length && !options.manifest) markCacheSectionsSynced(syncedSections);
+    if (syncedSections.length) markCacheSectionsSynced(syncedSections);
     if (dirtySections.length) markCacheSectionsDirty(dirtySections);
     if (!syncedSections.length && !dirtySections.length) touchCacheSections([], false);
     const meta = normalizeCacheMeta({ meta: state.cacheMeta, savedAt: Date.now() });
