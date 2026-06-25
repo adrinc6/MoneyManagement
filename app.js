@@ -268,14 +268,23 @@ function syncRefreshButtonLabel(viewId = activeViewId()) {
 function refreshActiveViewData() {
   const viewId = activeViewId();
   if (viewId === "ajustes") return forceFullRefreshFromSettings();
+  if (viewId === "registrar") return compareLocalWithSheets();
 
   const scope = refreshScopeForView(viewId);
+  const successByScope = {
+    movements: "Movimientos descargados desde Sheets.",
+    investments: "Inversiones descargadas desde Sheets.",
+    summary: "Resumen descargado desde Sheets."
+  };
   return refreshData({
+    force: true,
+    manualRefresh: true,
+    disableIncremental: true,
     showProgress: true,
     userRefresh: true,
     cacheOnly: true,
     scope,
-    successMessage: "Caché local recargada. Sheets solo se descarga desde Ajustes."
+    successMessage: successByScope[scope] || "Vista actualizada desde Sheets."
   });
 }
 
@@ -288,6 +297,91 @@ function forceFullRefreshFromSettings() {
     showProgress: true,
     successMessage: "Descarga completa ALL realizada desde Sheets."
   });
+}
+
+async function compareLocalWithSheets() {
+  setRefreshLoading(true);
+  setSyncStatus("Comparando local con Sheets", "");
+  try {
+    const cached = readDataCache();
+    if (cached) {
+      state.cacheMeta = normalizeCacheMeta(cached);
+      applyDataSnapshot(cached.data);
+      syncOptions();
+      renderDataScope("all");
+    }
+    if (!state.config.scriptUrl) {
+      setNotice("Configura la URL de Apps Script para comparar con Sheets.", "warn");
+      setSyncStatus("Falta URL de Apps Script", "warn");
+      return false;
+    }
+    if (pendingOpsCount() > 0) {
+      setNotice("Hay cambios pendientes de subir; primero reintenta/envía la cola antes de comparar con Sheets.", "warn");
+      setSyncStatus("Cambios pendientes", "warn");
+      logSyncEvent("Comparación rápida omitida: hay cambios pendientes de subir.", "warn");
+      return false;
+    }
+    const remote = await fetchAppsScriptData({ action: "quickStatus" });
+    assertPayloadOk(remote);
+    const local = buildLocalQuickStatus();
+    const differences = quickStatusDifferences(local, remote.status || {});
+    if (differences.length) {
+      setNotice(lineMessage("Se necesita revisar/actualizar:", ...differences), "warn");
+      setSyncStatus("Descuadres detectados", "warn");
+      logSyncEvent(`Comparación rápida con descuadres: ${differences.join(" | ")}`, "warn");
+    } else {
+      setNotice("Comparación rápida correcta: local y Sheets cuadran.", "ok");
+      setSyncStatus("Local y Sheets cuadran", "ok");
+      logSyncEvent("Comparación rápida correcta: local y Sheets cuadran.", "ok");
+    }
+    renderSyncSettingsPanel();
+    window.setTimeout(() => setSyncStatus("", ""), 2500);
+    return true;
+  } catch (error) {
+    console.error(error);
+    setNotice(lineMessage("No se pudo comparar con Sheets.", error.message), "warn");
+    setSyncStatus("Error al comparar", "warn");
+    logSyncEvent("Error en comparación rápida.", "warn", error.message || String(error));
+    return false;
+  } finally {
+    setRefreshLoading(false);
+    processOpQueue();
+  }
+}
+
+function buildLocalQuickStatus() {
+  const investmentTotalsValue = sum((state.investmentTotals || []).map(item => safeNumber(item.value ?? item.total ?? 0)));
+  const investmentsValue = sum((state.investments || []).map(item => safeNumber(item.total ?? currentInvestmentTotal(item))));
+  return {
+    transactionsCount: state.transactions.length,
+    futureTransactionsCount: state.futureTransactions.length,
+    banksCount: state.banks.length,
+    banksTotal: roundMoney(sum(state.banks.map(bank => bank.dinero))),
+    investmentsCount: state.investments.length,
+    investmentTotalsValue: roundMoney(investmentTotalsValue || investmentsValue)
+  };
+}
+
+function quickStatusDifferences(local, remote) {
+  const checks = [
+    ["Movimientos", "transactionsCount", 0],
+    ["Movimientos futuros", "futureTransactionsCount", 0],
+    ["Cuentas", "banksCount", 0],
+    ["Total bancos", "banksTotal", 0.01],
+    ["Inversiones", "investmentsCount", 0],
+    ["Valor inversiones", "investmentTotalsValue", 0.01]
+  ];
+  return checks.flatMap(([label, key, tolerance]) => {
+    const localValue = Number(local[key] || 0);
+    const remoteValue = Number(remote[key] || 0);
+    return Math.abs(localValue - remoteValue) > tolerance
+      ? [`${label}: local ${formatQuickStatusValue(localValue)} · Sheets ${formatQuickStatusValue(remoteValue)}`]
+      : [];
+  });
+}
+
+function formatQuickStatusValue(value) {
+  return Number.isInteger(value) ? String(value) : money(value);
 }
 
 async function updateInvestmentPricesFromHeader() {

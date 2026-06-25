@@ -32,6 +32,8 @@ function doGet(e) {
     requireToken_(params.token || '');
     if (action === 'checkClientOp') {
       payload = buildClientOpStatusPayload_(params.clientOpId || '');
+    } else if (action === 'quickStatus') {
+      payload = buildQuickStatusPayload_(movementSheet, futureMovementSheet, investmentSheet, bankSheet, dataSheet, investmentTotalsSheet);
     } else if (action === 'downloadData') {
       payload = buildAllDataPayload_(movementSheet, futureMovementSheet, investmentSheet, bankSheet, objectiveSheet, dataSheet, [], investmentTotalsSheet);
     } else if (action === 'downloadCoreData') {
@@ -171,6 +173,34 @@ function buildInvestmentDataPayload_(investmentSheet, objectiveSheet, movementSh
     investmentGoals: readInvestmentGoals_(objectiveSheet),
     categories: readAppCategories_(dataSheet || 'Datos', investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, investmentSheet)
   };
+}
+
+function buildQuickStatusPayload_(movementSheet, futureMovementSheet, investmentSheet, bankSheet, dataSheet, investmentTotalsSheet) {
+  const banks = readBanks_(bankSheet);
+  const investments = readInvestments_(investmentSheet);
+  const investmentTotals = syncInvestmentTotalsSheet_(investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, dataSheet || 'Datos', investmentSheet || DEFAULT_INVESTMENT_SHEET, movementSheet || DEFAULT_MOVEMENT_SHEET);
+  const investmentTotalsValue = investmentTotals.reduce(function(acc, item) { return acc + (parseNumber_(item.value) || 0); }, 0);
+  const investmentsValue = investments.reduce(function(acc, item) { return acc + (parseNumber_(item.total) || 0); }, 0);
+  return {
+    ok: true,
+    status: {
+      transactionsCount: sheetDataRowCount_(movementSheet),
+      futureTransactionsCount: sheetDataRowCount_(futureMovementSheet),
+      banksCount: banks.length,
+      banksTotal: roundStatusNumber_(banks.reduce(function(acc, bank) { return acc + (parseNumber_(bank.dinero) || 0); }, 0)),
+      investmentsCount: investments.length,
+      investmentTotalsValue: roundStatusNumber_(investmentTotalsValue || investmentsValue)
+    }
+  };
+}
+
+function sheetDataRowCount_(sheetName) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
+  return sheet ? Math.max(0, sheet.getLastRow() - 1) : 0;
+}
+
+function roundStatusNumber_(value) {
+  return Math.round((Number(value) || 0) * 100) / 100;
 }
 
 function buildMovementPagePayload_(sheetName, payloadKey, offset, limit) {
