@@ -110,6 +110,7 @@ document.addEventListener("DOMContentLoaded", () => {
   renderSettingsPanelTabs();
   syncRefreshButtonLabel("registrar");
   refreshData({ scope: "all", cacheOnly: true });
+  window.setTimeout(() => retryPendingOps(), 0);
 });
 
 function wireUi() {
@@ -780,6 +781,8 @@ async function refreshData(options = {}) {
     const shouldFlushPending = updateInvestments || sendNotifications;
     syncStatusStep(showProgress && shouldFlushPending, "Enviando cambios pendientes", "");
     const flushedPending = shouldFlushPending ? await flushPendingChangesBeforeDownload() : [];
+    const queuedPendingFlushed = await flushOpQueueBeforeDownload({ showProgress });
+    flushedPending.push(...queuedPendingFlushed);
     let freshData = {};
     let movedFutureMovements = [];
     let syncedSections = [];
@@ -1569,6 +1572,24 @@ function sleep(ms) {
   return new Promise(resolve => window.setTimeout(resolve, ms));
 }
 
+function queuedOpLabel(payload = {}) {
+  const actionMap = {
+    addMovement: "Movimiento",
+    addFutureMovement: "Movimiento futuro",
+    addMovementsBatch: "Movimientos periódicos",
+    updateMovement: "Editar movimiento",
+    updateInvestment: "Editar inversión",
+    deleteMovement: "Borrar movimiento",
+    deleteMovementsBatch: "Borrar múltiple",
+    saveBanks: "Guardar cuentas",
+    saveInvestments: "Guardar inversiones",
+    saveInvestmentGoals: "Guardar objetivos",
+    transferBank: "Transferencia",
+    addTransfersBatch: "Transferencias periódicas"
+  };
+  return actionMap[payload.action] || payload.action || "Operación";
+}
+
 function queueOp(payload) {
   const queue = readOpQueue();
   const queuedPayload = withClientOpId(payload || {});
@@ -1584,64 +1605,93 @@ function queueOp(payload) {
 }
 
 async function processOpQueue() {
-  if (state.opQueueRunning) return;
-  if (!state.config.scriptUrl) return;
-  const queue = readOpQueue();
-  const item = queue.find(op => op.status === "queued" || op.status === "retry");
-  if (!item) return;
+  if (state.opQueueRunning) return false;
+  if (!state.config.scriptUrl) return false;
   state.opQueueRunning = true;
-  item.status = "sending";
-  writeOpQueue(queue);
-  setSyncStatus(queueActionStatus(item.payload), "");
+  let processedAny = false;
   try {
-    await postAppsScript(item.payload);
-    logSyncEvent(`Operación confirmada: ${item.payload?.action || "cambio"}.`, "ok");
-    rememberSentOp(item.payload);
-    const next = readOpQueue().filter(op => op.id !== item.id);
-    writeOpQueue(next);
-    if (item.payload?.action === "saveInvestments") dropPendingSections("investments");
-    if (item.payload?.action === "saveBanks") dropPendingSections("banks");
-    if (item.payload?.action === "saveInvestmentGoals") dropPendingSections("investmentGoals");
-    const synced = queuePayloadSections(item.payload);
-    markCacheSectionsSynced(synced);
-    writeDataCache({ syncedSections: synced });
-    if (item.payload?.action === "updateInvestment" && item.payload?.newInvestment) {
-      await refreshData({ force: true, scope: "investments", successMessage: "Inversión creada, precios actualizados y datos descargados desde Sheets." });
-    } else if (item.payload?.action === "deleteInvestment") {
-      await refreshData({ force: true, scope: "investments", successMessage: "Inversión eliminada y datos descargados desde Sheets." });
+    while (true) {
+      const queue = readOpQueue();
+      const item = queue.find(op => op.status === "queued" || op.status === "retry");
+      if (!item) break;
+      processedAny = true;
+      item.status = "sending";
+      writeOpQueue(queue);
+      setSyncStatus(queueActionStatus(item.payload), "");
+      try {
+        await postAppsScript(item.payload);
+        logSyncEvent(`Operación confirmada: ${item.payload?.action || "cambio"}.`, "ok");
+        rememberSentOp(item.payload);
+        const next = readOpQueue().filter(op => op.id !== item.id);
+        writeOpQueue(next);
+        if (item.payload?.action === "saveInvestments") dropPendingSections("investments");
+        if (item.payload?.action === "saveBanks") dropPendingSections("banks");
+        if (item.payload?.action === "saveInvestmentGoals") dropPendingSections("investmentGoals");
+        const synced = queuePayloadSections(item.payload);
+        markCacheSectionsSynced(synced);
+        writeDataCache({ syncedSections: synced });
+        if (item.payload?.action === "updateInvestment" && item.payload?.newInvestment) {
+          await refreshData({ force: true, scope: "investments", successMessage: "Inversión creada, precios actualizados y datos descargados desde Sheets." });
+        } else if (item.payload?.action === "deleteInvestment") {
+          await refreshData({ force: true, scope: "investments", successMessage: "Inversión eliminada y datos descargados desde Sheets." });
+        }
+        setSyncStatus("Cambio enviado\nCaché sincronizada", "ok");
+      } catch (error) {
+        const nextQueue = readOpQueue();
+        const target = nextQueue.find(op => op.id === item.id);
+        if (target) {
+          target.status = "error";
+          target.error = String(error.message || error);
+        }
+        writeOpQueue(nextQueue);
+        logSyncEvent(`Operación pendiente por error: ${item.payload?.action || "cambio"}.`, "warn", error.message || String(error));
+        renderSyncSettingsPanel();
+        break;
+      }
     }
-    setSyncStatus("Cambio enviado\nCaché sincronizada", "ok");
-    window.setTimeout(() => {
-      if (!state.opQueueRunning) setSyncStatus("", "");
-    }, 1800);
+  } finally {
     state.opQueueRunning = false;
-    processOpQueue();
-  } catch (error) {
-    const nextQueue = readOpQueue();
-    const target = nextQueue.find(op => op.id === item.id);
-    if (target) {
-      target.status = "error";
-      target.error = String(error.message || error);
+    renderPendingOpsBadge();
+    if (processedAny) {
+      window.setTimeout(() => {
+        if (!state.opQueueRunning) setSyncStatus("", "");
+      }, 1800);
     }
-    writeOpQueue(nextQueue);
-    logSyncEvent(`Operación pendiente por error: ${item.payload?.action || "cambio"}.`, "warn", error.message || String(error));
-    renderSyncSettingsPanel();
-    state.opQueueRunning = false;
   }
+  return processedAny;
 }
 
 async function retryPendingOps(opId = null) {
   const queue = readOpQueue();
   if (opId) {
     const target = queue.find(op => op.id === opId);
-    if (target) target.status = "retry";
+    if (target && target.status !== "done") target.status = "retry";
   } else {
     queue.forEach(op => {
-      if (op.status === "error") op.status = "retry";
+      if (op.status !== "done") op.status = "retry";
     });
   }
   writeOpQueue(queue);
   await processOpQueue();
+}
+
+async function flushOpQueueBeforeDownload({ showProgress = false } = {}) {
+  const pendingBefore = readOpQueue().filter(op => op.status !== "done");
+  if (!pendingBefore.length) return [];
+  syncStatusStep(showProgress, "Enviando pendientes\nAntes de descargar", "");
+  logSyncEvent(`Enviando ${pendingBefore.length} operación(es) pendiente(s) antes de descargar.`, "");
+  await retryPendingOps();
+  const pendingAfter = readOpQueue().filter(op => op.status !== "done");
+  if (pendingAfter.length) {
+    const detail = pendingAfter.map(op => queuedOpLabel(op.payload)).join(", ");
+    setNotice(lineMessage(
+      "No se descargan datos para evitar desincronización: quedan cambios pendientes de subir.",
+      detail
+    ), "warn");
+    syncStatusStep(showProgress, "Pendientes sin enviar\nDescarga cancelada", "warn");
+    throw new Error(`Quedan cambios pendientes de subir: ${detail}`);
+  }
+  return pendingBefore.map(op => queuedOpLabel(op.payload));
 }
 
 function transactionSignature(row) {
