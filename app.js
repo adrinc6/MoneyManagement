@@ -110,7 +110,7 @@ document.addEventListener("DOMContentLoaded", () => {
   renderSettingsPanelTabs();
   syncRefreshButtonLabel("registrar");
   refreshData({ scope: "all", cacheOnly: true });
-  window.setTimeout(() => retryPendingOps(), 0);
+  window.setTimeout(() => retryPendingOps(null, { recoverSending: true }), 0);
 });
 
 function wireUi() {
@@ -1590,6 +1590,43 @@ function queuedOpLabel(payload = {}) {
   return actionMap[payload.action] || payload.action || "Operación";
 }
 
+async function recoverInterruptedSendingOps() {
+  const queue = readOpQueue();
+  const sending = queue.filter(op => op.status === "sending");
+  if (!sending.length) return;
+  if (state.config.scriptUrl) {
+    for (const op of sending) {
+      const clientOpId = op.payload?.clientOpId;
+      if (!clientOpId) continue;
+      try {
+        const payload = await fetchAppsScriptData({ action: "checkClientOp", clientOpId });
+        if (payload?.ok && payload.completed) {
+          logSyncEvent(`Envío interrumpido ya confirmado: ${op.payload?.action || "cambio"}.`, "ok");
+          rememberSentOp(op.payload);
+          const synced = queuePayloadSections(op.payload);
+          markCacheSectionsSynced(synced);
+          writeDataCache({ syncedSections: synced });
+          writeOpQueue(readOpQueue().filter(item => item.id !== op.id));
+        }
+      } catch (error) {
+        logSyncEvent("No se pudo comprobar un envío interrumpido; se reintentará.", "warn", error.message || String(error));
+      }
+    }
+  }
+  const refreshedQueue = readOpQueue();
+  let changed = false;
+  refreshedQueue.forEach(op => {
+    if (op.status !== "sending") return;
+    op.status = "retry";
+    op.error = op.error || "Envío interrumpido al cerrar la app; se reintentará automáticamente.";
+    changed = true;
+  });
+  if (changed) {
+    writeOpQueue(refreshedQueue);
+    logSyncEvent("Envíos interrumpidos marcados para reintento automático.", "warn");
+  }
+}
+
 function queueOp(payload) {
   const queue = readOpQueue();
   const queuedPayload = withClientOpId(payload || {});
@@ -1661,7 +1698,8 @@ async function processOpQueue() {
   return processedAny;
 }
 
-async function retryPendingOps(opId = null) {
+async function retryPendingOps(opId = null, { recoverSending = true } = {}) {
+  if (recoverSending) await recoverInterruptedSendingOps();
   const queue = readOpQueue();
   if (opId) {
     const target = queue.find(op => op.id === opId);
