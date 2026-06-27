@@ -437,9 +437,15 @@ function doPost(e) {
   try {
     payload = JSON.parse(e.postData.contents || '{}');
     requireToken_(payload.token || '');
+    if (payload.clientOpId && wasClientOpProcessed_(payload.clientOpId)) {
+      return json_({ ok: true, duplicate: true });
+    }
+    if (payload.clientOpId && isClientOpPending_(payload.clientOpId)) {
+      return json_({ ok: true, pending: true });
+    }
     pendingId = appendPendingPost_(payload);
     if (payload.action === 'addMovement') {
-      addMovement_(payload.movement, payload.sheetName || DEFAULT_MOVEMENT_SHEET);
+      addMovement_(Object.assign({}, payload.movement || {}, { cuenta: payload.account || payload.movement && payload.movement.cuenta || '' }), payload.sheetName || DEFAULT_MOVEMENT_SHEET);
       adjustInvestmentCostFromMovement_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.dataSheet || 'Datos', payload.investmentSheet || DEFAULT_INVESTMENT_SHEET, payload.sheetName || DEFAULT_MOVEMENT_SHEET, payload.movement, 1);
       syncInvestmentTotalsSheet_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.dataSheet || 'Datos', payload.investmentSheet || DEFAULT_INVESTMENT_SHEET, payload.sheetName || DEFAULT_MOVEMENT_SHEET);
       if (payload.account) adjustBank_(payload.bankSheet || DEFAULT_BANK_SHEET, payload.account, Number(payload.movement && (payload.movement.amount || payload.movement.importe) || 0));
@@ -783,7 +789,7 @@ function addMovementsBatch_(movements, movementSheet, futureSheet, bankSheet, ac
     const date = new Date(movement.date || movement.fecha);
     if (Number.isNaN(date.getTime())) return;
     if (date <= today) {
-      addMovement_(movement, movementSheet);
+      addMovement_(Object.assign({}, movement || {}, { cuenta: account || movement && movement.cuenta || '' }), movementSheet);
       if (account) adjustBank_(bankSheet, account, Number(movement.amount || movement.importe || 0));
     } else {
       addFutureMovement_(movement, futureSheet, account);

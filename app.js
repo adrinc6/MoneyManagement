@@ -1549,7 +1549,7 @@ function queuePayloadSections(payload = {}) {
     const sheetName = String(payload.sheetName || "");
     return sheetName === (state.config.futureMovementSheet || "Movimientos futuros") || action === "addFutureMovement"
       ? ["futureTransactions"]
-      : ["transactions", "investmentTotals"];
+      : ["transactions", "banks", "investmentTotals"];
   }
   if (action === "addFutureMovement") return ["futureTransactions"];
   if (action === "addMovementsBatch") return ["transactions", "futureTransactions", "banks", "investmentTotals"];
@@ -1846,11 +1846,7 @@ function syncOptions() {
   fillSelect("editMovementConcept", concepts, "Seleccione");
   fillSelect("editInvestmentType", investmentTypes());
 
-  const accounts = unique([
-    ...state.banks.map(b => b.cuenta),
-    ...state.transactions.map(t => t.cuenta),
-    ...state.futureTransactions.map(t => t.cuenta)
-  ]).filter(Boolean);
+  const accounts = state.banks.map(b => b.cuenta).filter(Boolean);
   fillSelect("formAccount", accounts, accounts.length ? null : "Sin cuentas");
   fillSelect("formTransferFrom", accounts, accounts.length ? null : "Origen");
   fillSelect("formTransferTo", accounts, accounts.length ? null : "Destino");
@@ -3135,6 +3131,7 @@ async function submitMovement(event) {
       const movements = movementsFromRecurrenceForm();
       if (!movements.length) throw new Error("selecciona fechas y al menos un día");
       const account = document.getElementById("recurrenceAccount").value;
+      movements.forEach(movement => { movement.cuenta = account; });
       const today = endOfToday();
       const realized = movements.filter(m => m.date <= today);
       const futureMovs = movements.filter(m => m.date > today);
@@ -3169,6 +3166,7 @@ async function submitMovement(event) {
       const movement = movementFromForm();
       const future = movement.date > endOfToday();
       const account = document.getElementById("formAccount").value;
+      movement.cuenta = account;
       const bankBefore = getBankAmount(account);
       const totalBefore = sum(state.banks.map(b => b.dinero));
       if (!future) {
