@@ -926,8 +926,8 @@ function moveDueFutureMovements_(futureSheetName, movementSheetName, bankSheetNa
   const rowsToDelete = [];
   for (let r = values.length - 1; r >= 1; r--) {
     const row = values[r];
-    const date = new Date(row[0]);
-    if (!row[0] || Number.isNaN(date.getTime()) || date > today) continue;
+    const date = parseMovementDate_(row[0]);
+    if (!date || date > today) continue;
     const sidCol = ensureMovementSidColumn_(futureSheet);
     const movement = { sid: sidCol ? String(row[sidCol - 1] || '').trim() : '', fecha: normalizeDate_(date), tipo: row[4], concepto: row[5], descripcion: row[6], importe: parseNumber_(row[7]) };
     if (isTransferType_(movement.tipo)) {
@@ -2310,9 +2310,26 @@ function updateInvestmentCategoryNamesInMovements_(sheetName, renames) {
 }
 
 function normalizeDate_(value) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
+  const date = parseMovementDate_(value);
+  if (!date) return value;
   return Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+}
+
+function parseMovementDate_(value) {
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : new Date(value.getTime());
+  }
+  if (value === null || value === undefined || value === '') return null;
+  const text = String(value).trim();
+  let match = text.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (match) return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  match = text.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
+  if (match) {
+    const year = Number(match[3].length === 2 ? `20${match[3]}` : match[3]);
+    return new Date(year, Number(match[2]) - 1, Number(match[1]));
+  }
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
 function parseNumber_(value) {

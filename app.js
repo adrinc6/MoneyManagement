@@ -128,7 +128,7 @@ const state = {
 };
 
 document.addEventListener("DOMContentLoaded", () => {
-  investmentDebug("app cargada", { version: "estimaciones-v16" });
+  investmentDebug("app cargada", { version: "estimaciones-v17" });
   applySavedTheme();
   applySavedInvestmentEstimateMode();
   lucide.createIcons();
