@@ -128,7 +128,7 @@ const state = {
 };
 
 document.addEventListener("DOMContentLoaded", () => {
-  investmentDebug("app cargada", { version: "estimaciones-v14" });
+  investmentDebug("app cargada", { version: "estimaciones-v16" });
   applySavedTheme();
   applySavedInvestmentEstimateMode();
   lucide.createIcons();
@@ -1012,13 +1012,13 @@ async function refreshData(options = {}) {
 
     if (movedFutureMovements.length) {
       ensureMovedFutureMovementsVisible(movedFutureMovements);
-      enqueueInvestmentAllocationPrompts(movedFutureMovements, { source: "futuro", respectDay: true });
-      showMovementPopup(
-        "Futuros movidos a realizados",
-        null,
-        "",
-        movedFutureMovementsPopupHtml(movedFutureMovements)
-      );
+      state.pendingInvestmentSummaryPopup = {
+        title: "Futuros movidos a realizados",
+        movement: null,
+        account: "",
+        extra: movedFutureMovementsPopupHtml(movedFutureMovements)
+      };
+      scheduleInvestmentAllocationForRegistration(movedFutureMovements, { source: "futuro", respectDay: true });
     }
 
     markCacheSectionsSynced(syncedSections);
@@ -3566,7 +3566,17 @@ function getDisplayedMovements() {
 
 function renderFutureDueNotice() {
   const due = state.futureTransactions.filter(t => t.date <= endOfToday());
-  if (due.length) showMovementPopup('Movimientos futuros vencidos', null, '', lineMessage(`${due.length} movimiento(s) son de hoy o anteriores.`, 'Pulsa Actualizar para moverlos automáticamente desde Apps Script.'));
+  if (!due.length) return;
+  if (state.config.scriptUrl) {
+    setSyncStatus(`Moviendo ${due.length} movimiento(s) futuro(s) vencido(s)`, "");
+    return;
+  }
+  showMovementPopup(
+    "Movimientos futuros vencidos",
+    null,
+    "",
+    lineMessage(`${due.length} movimiento(s) son de hoy o anteriores.`, "Configura Apps Script para moverlos automáticamente.")
+  );
 }
 
 function movementPopupHtml(movement, account, extra = '') {
@@ -5024,7 +5034,7 @@ function scheduleInvestmentAllocationForRegistration(movements = [], options = {
       hasSummaryMovement: Boolean(summary?.movement),
       title: summary?.title
     });
-    if (summary?.movement) {
+    if (summary) {
       showMovementPopup(summary.title || "Movimiento guardado", summary.movement, summary.account || "", summary.extra || "");
     }
   }, 0);
@@ -5159,7 +5169,7 @@ function handleInvestmentAllocationDialogClosed() {
     processPendingInvestmentAllocationPrompts();
     return;
   }
-  if (state.pendingInvestmentSummaryPopup?.movement) {
+  if (state.pendingInvestmentSummaryPopup) {
     const summary = state.pendingInvestmentSummaryPopup;
     state.pendingInvestmentSummaryPopup = null;
     showMovementPopup(summary.title || "Movimiento guardado", summary.movement, summary.account || "", summary.extra || "");
