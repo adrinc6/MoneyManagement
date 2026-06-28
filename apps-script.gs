@@ -15,6 +15,7 @@ var PROCESSED_CLIENT_OPS_KEY = 'moneyProcessedClientOps';
 var MOVEMENT_CHANGELOG_KEY = 'moneyMovementChangelog';
 var MOVEMENT_CHANGELOG_LIMIT = 1200;
 var MOVEMENT_SID_HEADER = 'SID';
+var PROCESSED_NOTIFICATION_REQUESTS_KEY = 'moneyProcessedNotificationRequests';
 var TELEGRAM_BOT_TOKEN = '';
 var TELEGRAM_CHAT_ID = '';
 var DAILY_NOTIFICATION_HOUR = 22;
@@ -148,8 +149,11 @@ function doGet(e) {
       bumpSections_('investmentEstimateLedger');
       payload = { ok: true, estimatesSaved: saved.length, investmentEstimateLedger: readInvestmentEstimateLedger_(investmentEstimateLedgerSheet) };
     } else if (action === 'sendDailyNotifications') {
-      sendInvestmentNotificationMessages_(investmentSheet, { mode: investmentMode, rulesSheet: investmentEstimateRulesSheet, ledgerSheet: investmentEstimateLedgerSheet, movementSheet: movementSheet, investmentTotalsSheet: investmentTotalsSheet });
-      payload = { ok: true, notificationsSent: true, pricesUpdated: false, investmentMode: investmentMode }; 
+      const notificationRequestId = String(params.notificationRequestId || '').trim();
+      const notificationResult = sendInvestmentNotificationsOnce_(notificationRequestId, function() {
+        sendInvestmentNotificationMessages_(investmentSheet, { mode: investmentMode, rulesSheet: investmentEstimateRulesSheet, ledgerSheet: investmentEstimateLedgerSheet, movementSheet: movementSheet, investmentTotalsSheet: investmentTotalsSheet });
+      });
+      payload = { ok: true, notificationsSent: notificationResult.sent, duplicate: notificationResult.duplicate, pricesUpdated: false, investmentMode: investmentMode }; 
     } else {
       payload = { ok: false, error: 'Unknown action' };
     }
@@ -1389,15 +1393,20 @@ function buildInvestmentVariationSummaryFromInvestments_(investments, categories
     const normalizedType = (categories || []).find(function(cat) { return normalizeType_(cat) === normalizeType_(type); }) || type;
     if (!totals[normalizedType]) { totals[normalizedType] = emptyVariationBucket_(); totals.order.push(normalizedType); }
     const name = String(item.shortName || item.nombre || item.data || '').trim();
+    const isCash = isCashInvestment_(item);
     const quantity = parseNumber_(item.cantidad);
     const currentPrice = parseNumber_(item.valor);
     const previousPrice = parseNumber_(item.valorAnterior);
     const currentTotal = parseNumber_(item.total);
-    if (!Number.isFinite(quantity) || !Number.isFinite(currentPrice)) return;
-    const total = Number.isFinite(currentTotal) ? currentTotal : quantity * currentPrice;
-    const previousTotal = Number.isFinite(previousPrice) && previousPrice > 0 ? quantity * previousPrice : total;
+    const total = Number.isFinite(currentTotal)
+      ? currentTotal
+      : (Number.isFinite(quantity) && Number.isFinite(currentPrice) ? quantity * currentPrice : NaN);
+    const previousTotal = isCash
+      ? (Number.isFinite(previousPrice) ? previousPrice : total)
+      : (Number.isFinite(quantity) && Number.isFinite(previousPrice) && previousPrice > 0 ? quantity * previousPrice : total);
+    if (!Number.isFinite(total) || !Number.isFinite(previousTotal)) return;
     const variation = total - previousTotal;
-    const position = { name: name, type: normalizedType, price: currentPrice, current: total, previous: previousTotal, variation: variation, pct: percentageChange_(total, previousTotal) };
+    const position = { name: name, type: normalizedType, isCash: isCash, price: currentPrice, current: total, previous: previousTotal, variation: variation, pct: percentageChange_(total, previousTotal) };
     addVariationRow_(totals.all, position);
     addVariationRow_(totals[normalizedType], position);
   });
@@ -1873,8 +1882,36 @@ function sendInvestmentNotificationMessages_(investmentSheet, options) {
   } else {
     summary = buildInvestmentVariationSummary_(investmentSheet || DEFAULT_INVESTMENT_SHEET);
   }
+  summary.isEstimated = options.mode === 'estimated';
   sendTelegramMessage_(formatGeneralInvestmentMessage_(summary));
   (summary.order || []).forEach(type => sendTelegramMessage_(formatTypeInvestmentMessage_(summary, type)));
+}
+
+function sendInvestmentNotificationsOnce_(requestId, sendFn) {
+  if (!requestId) {
+    sendFn();
+    return { sent: true, duplicate: false };
+  }
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    const props = PropertiesService.getScriptProperties();
+    let processed = [];
+    try {
+      processed = JSON.parse(props.getProperty(PROCESSED_NOTIFICATION_REQUESTS_KEY) || '[]');
+    } catch (err) {
+      processed = [];
+    }
+    if (processed.some(function(item) { return item && item.id === requestId; })) {
+      return { sent: false, duplicate: true };
+    }
+    sendFn();
+    processed.push({ id: requestId, at: new Date().toISOString() });
+    props.setProperty(PROCESSED_NOTIFICATION_REQUESTS_KEY, JSON.stringify(processed.slice(-100)));
+    return { sent: true, duplicate: false };
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 function setupDailyMoneyManagementNotifications() {
@@ -1935,13 +1972,21 @@ function buildInvestmentVariationSummary_(sheetName) {
     const currentPrice = parseNumber_(row[col.valor - 1]);
     const currentTotal = parseNumber_(col.total ? row[col.total - 1] : NaN);
     const previousPrice = parseNumber_(col.valorAnterior ? row[col.valorAnterior - 1] : NaN);
-    if (!Number.isFinite(quantity) || !Number.isFinite(currentPrice) || !Number.isFinite(previousPrice)) return;
-    const previousTotal = quantity * previousPrice;
-    const total = Number.isFinite(currentTotal) ? currentTotal : quantity * currentPrice;
+    const isCash = isCashInvestment_({ data: row[col.data - 1], nombre: row[col.nombre - 1] });
+    const total = Number.isFinite(currentTotal)
+      ? currentTotal
+      : (Number.isFinite(quantity) && Number.isFinite(currentPrice) ? quantity * currentPrice : NaN);
+    const previousTotal = isCash
+      ? (Number.isFinite(parseNumber_(col.valorAnterior ? row[col.valorAnterior - 1] : NaN))
+        ? parseNumber_(col.valorAnterior ? row[col.valorAnterior - 1] : NaN)
+        : total)
+      : (Number.isFinite(quantity) && Number.isFinite(previousPrice) ? quantity * previousPrice : NaN);
+    if (!Number.isFinite(total) || !Number.isFinite(previousTotal)) return;
     const variation = total - previousTotal;
     const position = {
       name,
       type: normalizedType,
+      isCash,
       price: currentPrice,
       current: total,
       previous: previousTotal,
@@ -1992,7 +2037,7 @@ function formatTypeInvestmentMessage_(summary, type) {
   if (bucket.positions.length) {
     lines.push('');
     bucket.positions.forEach(position => {
-      lines.push(`${position.variation >= 0 ? '🟢' : '🔴'} ${escapeTelegramHtml_(position.name)}: ${formatMoney_(position.current)} | ${formatPct_(position.pct)} | ${formatMoney_(position.variation)}`);
+      lines.push(`${positionMarker_(position, summary.isEstimated)} ${escapeTelegramHtml_(position.name)}: ${formatMoney_(position.current)} | ${formatPct_(position.pct)} | ${formatMoney_(position.variation)}`);
     });
   } else {
     lines.push('', 'Sin posiciones.');
@@ -2016,6 +2061,14 @@ function emojiForType_(type) {
   if (type === 'Fondos') return '🏦';
   if (type === 'Cartera') return '💼';
   return '💰';
+}
+
+function positionMarker_(position, isEstimated) {
+  if (position && position.isCash) return '💵';
+  if (isEstimated && position && Math.abs(Number(position.variation || 0)) >= 0.005) {
+    return position.variation > 0 ? '🟢' : '🔴';
+  }
+  return '-';
 }
 
 function formatMoney_(value) {

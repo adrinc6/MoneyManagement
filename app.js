@@ -122,6 +122,7 @@ const state = {
   evolutionRange: loadEvolutionRange(),
   cacheMeta: defaultCacheMeta(),
   opQueueRunning: false,
+  investmentNotificationsSending: false,
   pendingInvestmentAllocationPrompts: [],
   currentInvestmentAllocationPrompt: null,
   pendingInvestmentSummaryPopup: null
@@ -450,15 +451,20 @@ async function updateInvestmentPricesFromHeader() {
 }
 
 async function sendInvestmentNotificationsFromHeader() {
+  if (state.investmentNotificationsSending) return false;
+  state.investmentNotificationsSending = true;
   const btn = document.getElementById("investmentSendNotificationsBtn");
   btn?.classList.add("saving");
   btn.disabled = true;
+  const notificationRequestId = typeof crypto?.randomUUID === "function"
+    ? crypto.randomUUID()
+    : `notification_${Date.now()}_${Math.random().toString(36).slice(2)}`;
 
   setRefreshLoading(true);
   setSyncStatus("Enviando notificaciones", "");
 
   try {
-    const payload = await fetchAppsScriptData({ action: "sendDailyNotifications" });
+    const payload = await fetchAppsScriptData({ action: "sendDailyNotifications", notificationRequestId });
     assertPayloadOk(payload);
     setNotice("Notificaciones enviadas con los datos actuales de Google Sheets.", "ok");
     setSyncStatus("Notificaciones enviadas", "ok");
@@ -476,6 +482,7 @@ async function sendInvestmentNotificationsFromHeader() {
     btn?.classList.remove("saving", "saved");
     return false;
   } finally {
+    state.investmentNotificationsSending = false;
     btn.disabled = false;
     setRefreshLoading(false);
     processOpQueue();
@@ -1939,6 +1946,7 @@ async function fetchAppsScriptData(options = {}) {
   if (options.renames) params.set("renames", JSON.stringify(options.renames));
   if (options.sheetName) params.set("sheetName", options.sheetName);
   if (options.clientOpId) params.set("clientOpId", options.clientOpId);
+  if (options.notificationRequestId) params.set("notificationRequestId", options.notificationRequestId);
   if (options.newInvestment) params.set("newInvestment", "1");
   if (options.rowNumber) params.set("rowNumber", String(options.rowNumber));
   if (options.ruleId) params.set("ruleId", String(options.ruleId));
