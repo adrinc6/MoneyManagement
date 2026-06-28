@@ -1,4 +1,23 @@
 const ENABLE_TEST_MODE = false;
+const INVESTMENT_DEBUG_PREFIX = "[MM-INV]";
+
+function investmentDebug(step, details = {}) {
+  console.log(`${INVESTMENT_DEBUG_PREFIX} ${step}`, details);
+}
+
+window.addEventListener("error", event => {
+  console.error(`${INVESTMENT_DEBUG_PREFIX} ERROR GLOBAL`, {
+    message: event.message,
+    file: event.filename,
+    line: event.lineno,
+    column: event.colno,
+    error: event.error
+  });
+});
+
+window.addEventListener("unhandledrejection", event => {
+  console.error(`${INVESTMENT_DEBUG_PREFIX} PROMESA RECHAZADA`, event.reason);
+});
 
 const DEFAULT_CONFIG = {
   scriptUrl: "",
@@ -7,6 +26,8 @@ const DEFAULT_CONFIG = {
   futureMovementSheet: "Movimientos futuros",
   investmentSheet: "Inversiones",
   investmentTotalsSheet: "Inversión Totales",
+  investmentEstimateRulesSheet: "Inversiones Estimación Reglas",
+  investmentEstimateLedgerSheet: "Inversiones Estimación Movimientos",
   bankSheet: "Bancos",
   objectiveSheet: "Objetivos",
   dataSheet: "Datos",
@@ -47,6 +68,7 @@ const OP_QUEUE_KEY = "moneyOpQueue";
 const SENT_HISTORY_KEY = "moneySentHistory";
 const SYNC_LOG_KEY = "moneySyncLog";
 const THEME_KEY = "moneyTheme";
+const INVESTMENT_ESTIMATE_MODE_KEY = "moneyInvestmentEstimateMode";
 const EVOLUTION_RANGE_KEY = "moneyEvolutionRange";
 const FULL_MONTH_NAMES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
 const SYSTEM_GOAL_LABELS = {
@@ -56,8 +78,8 @@ const SYSTEM_GOAL_LABELS = {
   total: "Inversión total"
 };
 const DATA_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-const DATA_CACHE_VERSION = 2;
-const CACHE_SECTION_KEYS = ["transactions", "futureTransactions", "investments", "investmentTotals", "banks", "investmentGoals", "categories"];
+const DATA_CACHE_VERSION = 3;
+const CACHE_SECTION_KEYS = ["transactions", "futureTransactions", "investments", "investmentTotals", "investmentEstimateRules", "investmentEstimateLedger", "banks", "investmentGoals", "categories"];
 const MOVEMENT_PAGE_SIZE = 500;
 
 const TEST_TRANSACTIONS = ENABLE_TEST_MODE ? [
@@ -82,6 +104,9 @@ const state = {
   futureTransactions: [],
   investments: [],
   investmentTotals: [],
+  investmentEstimateRules: [],
+  investmentEstimateLedger: [],
+  investmentMode: loadInvestmentEstimateMode(),
   banks: [],
   categories: { types: STATIC_TYPES, concepts: STATIC_CONCEPTS, investmentTypes: INVESTMENT_TYPES },
   charts: {},
@@ -96,16 +121,22 @@ const state = {
   investmentGoals: loadInvestmentGoals(),
   evolutionRange: loadEvolutionRange(),
   cacheMeta: defaultCacheMeta(),
-  opQueueRunning: false
+  opQueueRunning: false,
+  pendingInvestmentAllocationPrompts: [],
+  currentInvestmentAllocationPrompt: null,
+  pendingInvestmentSummaryPopup: null
 };
 
 document.addEventListener("DOMContentLoaded", () => {
+  investmentDebug("app cargada", { version: "estimaciones-v14" });
   applySavedTheme();
+  applySavedInvestmentEstimateMode();
   lucide.createIcons();
   wireUi();
   hydrateConfigForm();
   setDefaultDate();
   renderPendingOpsBadge();
+  syncInvestmentEstimateModeUi();
   renderSyncSettingsPanel();
   renderSettingsPanelTabs();
   syncRefreshButtonLabel("registrar");
@@ -145,6 +176,12 @@ function wireUi() {
   document.getElementById("closeInvestmentGoalsBtn")?.addEventListener("click", () => document.getElementById("investmentGoalsDialog").close());
   document.getElementById("investmentGoalsForm")?.addEventListener("submit", saveInvestmentGoalsFromDialog);
   document.getElementById("themeToggle")?.addEventListener("change", setThemeFromToggle);
+  document.getElementById("investmentEstimateToggle")?.addEventListener("change", setInvestmentEstimateModeFromToggle);
+  document.getElementById("editInvestmentEstimateRulesBtn")?.addEventListener("click", openInvestmentEstimateRulesDialog);
+  document.getElementById("clearInvestmentEstimatesBtn")?.addEventListener("click", clearInvestmentEstimates);
+  document.getElementById("closeInvestmentEstimateRulesBtn")?.addEventListener("click", () => document.getElementById("investmentEstimateRulesDialog")?.close());
+  document.getElementById("addInvestmentEstimateRuleBtn")?.addEventListener("click", addInvestmentEstimateRule);
+  document.getElementById("saveInvestmentEstimateRulesBtn")?.addEventListener("click", saveInvestmentEstimateRules);
   document.getElementById("formType").addEventListener("change", syncRegistrarMode);
   document.getElementById("formAmount")?.addEventListener("input", enforceTransferPositiveAmount);
   document.getElementById("formAmount")?.addEventListener("change", enforceTransferPositiveAmount);
@@ -180,7 +217,13 @@ function wireUi() {
   document.getElementById("editInvestmentQuantity")?.addEventListener("input", syncInvestmentDetailComputedTotal);
   document.getElementById("editInvestmentName")?.addEventListener("input", syncInvestmentDetailInputLocks);
   document.getElementById("editInvestmentData")?.addEventListener("input", syncInvestmentDetailInputLocks);
-  document.getElementById("closeMovementPopupBtn")?.addEventListener("click", () => document.getElementById("movementPopup").close());
+  document.getElementById("closeMovementPopupBtn")?.addEventListener("click", () => { document.getElementById("movementPopup").close(); processPendingInvestmentAllocationPrompts(); });
+  document.getElementById("movementPopup")?.addEventListener("close", processPendingInvestmentAllocationPrompts);
+  document.getElementById("discardInvestmentAllocationBtn")?.addEventListener("click", discardInvestmentAllocationPrompt);
+  document.getElementById("investmentAllocationDialog")?.addEventListener("close", handleInvestmentAllocationDialogClosed);
+  document.getElementById("addExistingInvestmentAllocationRowBtn")?.addEventListener("click", addExistingInvestmentAllocationRow);
+  document.getElementById("addNewInvestmentAllocationRowBtn")?.addEventListener("click", addBlankInvestmentAllocationRow);
+  document.getElementById("investmentAllocationForm")?.addEventListener("submit", saveInvestmentAllocationPrompt);
   document.getElementById("monthSituationMode").addEventListener("click", event => {
     const btn = event.target.closest("[data-situation-mode]");
     if (!btn) return;
@@ -450,6 +493,8 @@ function loadConfig() {
       futureMovementSheet: raw.futureMovementSheet || DEFAULT_CONFIG.futureMovementSheet,
       investmentSheet: raw.investmentSheet || DEFAULT_CONFIG.investmentSheet,
       investmentTotalsSheet: raw.investmentTotalsSheet || DEFAULT_CONFIG.investmentTotalsSheet,
+      investmentEstimateRulesSheet: raw.investmentEstimateRulesSheet || DEFAULT_CONFIG.investmentEstimateRulesSheet,
+      investmentEstimateLedgerSheet: raw.investmentEstimateLedgerSheet || DEFAULT_CONFIG.investmentEstimateLedgerSheet,
       bankSheet: raw.bankSheet || DEFAULT_CONFIG.bankSheet,
       objectiveSheet: raw.objectiveSheet || DEFAULT_CONFIG.objectiveSheet,
       dataSheet: raw.dataSheet || DEFAULT_CONFIG.dataSheet,
@@ -481,6 +526,8 @@ async function saveConfigFromForm() {
     futureMovementSheet: document.getElementById("configFutureMovementSheet").value.trim() || "Movimientos futuros",
     investmentSheet: document.getElementById("configInvestmentSheet").value.trim() || "Inversiones",
     investmentTotalsSheet: state.config.investmentTotalsSheet || "Inversión Totales",
+    investmentEstimateRulesSheet: state.config.investmentEstimateRulesSheet || "Inversiones Estimación Reglas",
+    investmentEstimateLedgerSheet: state.config.investmentEstimateLedgerSheet || "Inversiones Estimación Movimientos",
     bankSheet: document.getElementById("configBankSheet").value.trim() || "Bancos",
     objectiveSheet: state.config.objectiveSheet || "Objetivos",
     dataSheet: document.getElementById("configDataSheet").value.trim() || "Datos",
@@ -508,6 +555,48 @@ function setThemeFromToggle(event) {
   refreshChartTheme();
 }
 
+
+function loadInvestmentEstimateMode() {
+  return localStorage.getItem(INVESTMENT_ESTIMATE_MODE_KEY) === "estimated" ? "estimated" : "real";
+}
+
+function investmentEstimateEnabled() {
+  return state.investmentMode === "estimated";
+}
+
+function applySavedInvestmentEstimateMode() {
+  state.investmentMode = loadInvestmentEstimateMode();
+  syncInvestmentEstimateModeUi();
+}
+
+function syncInvestmentEstimateModeUi() {
+  const enabled = investmentEstimateEnabled();
+  const toggle = document.getElementById("investmentEstimateToggle");
+  if (toggle) toggle.checked = enabled;
+  const label = document.getElementById("investmentEstimateModeLabel");
+  if (label) label.textContent = enabled ? "Usando posiciones reales + estimaciones" : "Usando solo posiciones reales";
+  document.documentElement.dataset.investmentMode = enabled ? "estimated" : "real";
+}
+
+function setInvestmentEstimateModeFromToggle(event) {
+  state.investmentMode = event.target.checked ? "estimated" : "real";
+  localStorage.setItem(INVESTMENT_ESTIMATE_MODE_KEY, state.investmentMode);
+  syncInvestmentEstimateModeUi();
+  refreshChartTheme();
+  setNotice(state.investmentMode === "estimated" ? "Modo estimación activado." : "Modo real activado.", "ok", 1800);
+  saveInvestmentModePreference();
+}
+
+function saveInvestmentModePreference() {
+  if (!state.config.scriptUrl) return;
+  postAppsScript({ action: "saveInvestmentModePreference", investmentMode: state.investmentMode })
+    .then(() => logSyncEvent(`Modo de inversión guardado para notificaciones: ${state.investmentMode}.`, "ok"))
+    .catch(error => {
+      queueOp({ action: "saveInvestmentModePreference", investmentMode: state.investmentMode });
+      logSyncEvent("Modo de inversión pendiente de guardar para notificaciones.", "warn", error.message || String(error));
+    });
+}
+
 function refreshChartTheme() {
   Object.values(state.charts).forEach(chart => chart.destroy());
   state.charts = {};
@@ -524,15 +613,15 @@ function syncStatusStep(showProgress, message, type = "") {
 
 function cacheSectionsForScope(scope = "all") {
   if (scope === "movements") return ["transactions", "futureTransactions", "banks"];
-  if (scope === "investments") return ["investments", "investmentTotals", "investmentGoals", "categories"];
-  if (scope === "summary") return ["transactions", "futureTransactions", "investments", "investmentTotals", "banks", "investmentGoals", "categories"];
+  if (scope === "investments") return ["investments", "investmentTotals", "investmentEstimateRules", "investmentEstimateLedger", "investmentGoals", "categories"];
+  if (scope === "summary") return ["transactions", "futureTransactions", "investments", "investmentTotals", "investmentEstimateRules", "investmentEstimateLedger", "banks", "investmentGoals", "categories"];
   if (scope === "banks") return ["banks"];
   return [...CACHE_SECTION_KEYS];
 }
 
 function coreSectionsForScope(scope = "all") {
   const sections = cacheSectionsForScope(scope);
-  return sections.filter(section => ["investments", "investmentTotals", "banks", "investmentGoals", "categories"].includes(section));
+  return sections.filter(section => ["investments", "investmentTotals", "investmentEstimateRules", "investmentEstimateLedger", "banks", "investmentGoals", "categories"].includes(section));
 }
 
 function movementSectionsForScope(scope = "all") {
@@ -625,6 +714,7 @@ function renderCurrentView(viewId = activeViewId()) {
   } else if (viewId === "inversiones") {
     renderInvestments();
   } else if (viewId === "ajustes") {
+    syncInvestmentEstimateModeUi();
     renderSyncSettingsPanel();
     renderPendingOpsBadge();
   }
@@ -678,6 +768,8 @@ function syncedSectionsFromData(data = {}) {
   if (Object.prototype.hasOwnProperty.call(data, "futureTransactions")) sections.push("futureTransactions");
   if (Object.prototype.hasOwnProperty.call(data, "investments")) sections.push("investments");
   if (Object.prototype.hasOwnProperty.call(data, "investmentTotals")) sections.push("investmentTotals");
+  if (Object.prototype.hasOwnProperty.call(data, "investmentEstimateRules")) sections.push("investmentEstimateRules");
+  if (Object.prototype.hasOwnProperty.call(data, "investmentEstimateLedger")) sections.push("investmentEstimateLedger");
   if (Object.prototype.hasOwnProperty.call(data, "banks")) sections.push("banks");
   if (Object.prototype.hasOwnProperty.call(data, "investmentGoals")) sections.push("investmentGoals");
   if (Object.prototype.hasOwnProperty.call(data, "categories")) sections.push("categories");
@@ -788,7 +880,7 @@ async function refreshData(options = {}) {
     let syncedSections = [];
 
     let neededSections = updateInvestments || sendNotifications
-      ? ["investments", "investmentGoals"]
+      ? ["investments", "investmentTotals", "investmentEstimateRules", "investmentEstimateLedger", "investmentGoals"]
       : !cached || forceRequestedSections
         ? requestedSections.filter(section => !cachedSectionIsDirty(cached, section))
         : [];
@@ -843,8 +935,8 @@ async function refreshData(options = {}) {
       return true;
     } else {
       const needsMovements = neededSections.some(section => ["transactions", "futureTransactions"].includes(section));
-      const needsCore = neededSections.some(section => ["investments", "investmentTotals", "banks", "investmentGoals", "categories"].includes(section));
-      const onlyInvestments = neededSections.every(section => ["investments", "investmentGoals"].includes(section));
+      const needsCore = neededSections.some(section => ["investments", "investmentTotals", "investmentEstimateRules", "investmentEstimateLedger", "banks", "investmentGoals", "categories"].includes(section));
+      const onlyInvestments = neededSections.every(section => ["investments", "investmentTotals", "investmentEstimateRules", "investmentEstimateLedger", "investmentGoals", "categories"].includes(section));
 
       if (updateInvestments || (onlyInvestments && !needsMovements)) {
         syncStatusStep(showProgress, investmentRequestStatus({ updateInvestments, sendNotifications }), "");
@@ -854,7 +946,9 @@ async function refreshData(options = {}) {
           ...freshData,
           investments: payload.investments || [],
           investmentGoals: payload.investmentGoals ?? state.investmentGoals,
-          investmentTotals: payload.investmentTotals || state.investmentTotals
+          investmentTotals: payload.investmentTotals || state.investmentTotals,
+          investmentEstimateRules: payload.investmentEstimateRules || state.investmentEstimateRules,
+          investmentEstimateLedger: payload.investmentEstimateLedger || state.investmentEstimateLedger
         };
       } else {
         let core = null;
@@ -870,6 +964,8 @@ async function refreshData(options = {}) {
             banks: core.banks || state.banks,
             investmentGoals: core.investmentGoals ?? state.investmentGoals,
             investmentTotals: core.investmentTotals || state.investmentTotals,
+            investmentEstimateRules: core.investmentEstimateRules || state.investmentEstimateRules,
+            investmentEstimateLedger: core.investmentEstimateLedger || state.investmentEstimateLedger,
             categories: core.categories || state.categories
           };
         }
@@ -910,12 +1006,13 @@ async function refreshData(options = {}) {
 
     if (pendingOpsCount() === 0) {
       if (isFullDownload && syncedSections.length === CACHE_SECTION_KEYS.length) clearPendingCache();
-      else if (syncedSections.includes("investments")) dropPendingSections("investments", "investmentTotals", "investmentGoals");
+      else if (syncedSections.includes("investments")) dropPendingSections("investments", "investmentTotals", "investmentEstimateRules", "investmentEstimateLedger", "investmentGoals");
       else if (syncedSections.includes("transactions")) dropPendingSections("transactions");
     }
 
     if (movedFutureMovements.length) {
       ensureMovedFutureMovementsVisible(movedFutureMovements);
+      enqueueInvestmentAllocationPrompts(movedFutureMovements, { source: "futuro", respectDay: true });
       showMovementPopup(
         "Futuros movidos a realizados",
         null,
@@ -1144,6 +1241,8 @@ function applyDataSnapshot(data) {
   state.futureTransactions = (data.futureTransactions || []).map(normalizeTransaction).filter(Boolean);
   state.investments = (data.investments || []).map(normalizeInvestment).filter(Boolean).map(recalculateInvestmentTotal);
   state.investmentTotals = (data.investmentTotals || []).map(normalizeInvestmentTotal).filter(Boolean);
+  state.investmentEstimateRules = (data.investmentEstimateRules || []).map(normalizeInvestmentEstimateRule).filter(Boolean);
+  state.investmentEstimateLedger = (data.investmentEstimateLedger || []).map(normalizeInvestmentEstimateLedger).filter(Boolean);
   state.banks = (data.banks || []).map(normalizeBank).filter(Boolean);
   state.investmentGoals = normalizeInvestmentGoals(data.investmentGoals ?? state.investmentGoals);
   state.categories = normalizeCategories(data.categories);
@@ -1162,6 +1261,12 @@ function mergeDataSnapshot(data = {}) {
   if (Object.prototype.hasOwnProperty.call(data, "investmentTotals")) {
     state.investmentTotals = (data.investmentTotals || []).map(normalizeInvestmentTotal).filter(Boolean);
   }
+  if (Object.prototype.hasOwnProperty.call(data, "investmentEstimateRules")) {
+    state.investmentEstimateRules = (data.investmentEstimateRules || []).map(normalizeInvestmentEstimateRule).filter(Boolean);
+  }
+  if (Object.prototype.hasOwnProperty.call(data, "investmentEstimateLedger")) {
+    state.investmentEstimateLedger = (data.investmentEstimateLedger || []).map(normalizeInvestmentEstimateLedger).filter(Boolean);
+  }
   if (Object.prototype.hasOwnProperty.call(data, "banks")) {
     state.banks = (data.banks || []).map(normalizeBank).filter(Boolean);
   }
@@ -1174,8 +1279,8 @@ function mergeDataSnapshot(data = {}) {
 }
 
 function dataCacheConfigKey() {
-  const { scriptUrl, appToken, movementSheet, futureMovementSheet, investmentSheet, investmentTotalsSheet, bankSheet, objectiveSheet, dataSheet } = state.config;
-  return JSON.stringify({ scriptUrl, appToken, movementSheet, futureMovementSheet, investmentSheet, investmentTotalsSheet, bankSheet, objectiveSheet, dataSheet });
+  const { scriptUrl, appToken, movementSheet, futureMovementSheet, investmentSheet, investmentTotalsSheet, investmentEstimateRulesSheet, investmentEstimateLedgerSheet, bankSheet, objectiveSheet, dataSheet } = state.config;
+  return JSON.stringify({ scriptUrl, appToken, movementSheet, futureMovementSheet, investmentSheet, investmentTotalsSheet, investmentEstimateRulesSheet, investmentEstimateLedgerSheet, bankSheet, objectiveSheet, dataSheet });
 }
 
 function readDataCache() {
@@ -1206,6 +1311,8 @@ function writeDataCache(options = {}) {
       futureTransactions: state.futureTransactions.map(serializeTransaction),
       investments: state.investments,
       investmentTotals: state.investmentTotals,
+      investmentEstimateRules: state.investmentEstimateRules,
+      investmentEstimateLedger: state.investmentEstimateLedger,
       banks: state.banks,
       investmentGoals: state.investmentGoals,
       categories: state.categories
@@ -1350,6 +1457,9 @@ function formatCacheSectionName(section) {
     transactions: "Movimientos",
     futureTransactions: "Futuros",
     investments: "Inversiones",
+    investmentTotals: "Totales inversión",
+    investmentEstimateRules: "Reglas estimación",
+    investmentEstimateLedger: "Estimaciones",
     banks: "Bancos",
     investmentGoals: "Objetivos",
     categories: "Categorías"
@@ -1469,6 +1579,10 @@ function queueActionStatus(payload = {}) {
     deleteMovementsBatch: "Borrando movimientos",
     saveBanks: "Guardando cuentas",
     saveInvestments: "Guardando inversiones",
+    saveInvestmentEstimateRules: "Guardando reglas de estimación",
+    clearInvestmentEstimates: "Borrando estimaciones",
+    simulateInvestmentEstimateRule: "Simulando estimación",
+    saveInvestmentModePreference: "Guardando modo de inversión",
     saveInvestmentGoals: "Guardando objetivos",
     transferBank: "Enviando transferencia",
     addTransfersBatch: "Enviando transferencias periódicas"
@@ -1502,6 +1616,10 @@ function renderPendingOpsTable(queue = readOpQueue()) {
       deleteMovementsBatch: "Borrar múltiple",
       saveBanks: "Guardar cuentas",
       saveInvestments: "Guardar inversiones",
+      saveInvestmentEstimateRules: "Guardar reglas estimación",
+      clearInvestmentEstimates: "Borrar estimaciones",
+      simulateInvestmentEstimateRule: "Simular estimación",
+      saveInvestmentModePreference: "Modo inversión",
       saveInvestmentGoals: "Guardar objetivos",
       transferBank: "Transferencia",
       addTransfersBatch: "Transferencias periódicas"
@@ -1532,6 +1650,11 @@ function renderSentOpsTable() {
     deleteMovementsBatch: "Borrar múltiple",
     saveBanks: "Guardar cuentas",
     saveInvestments: "Guardar inversiones",
+    saveInvestmentEstimateRules: "Guardar reglas estimación",
+    clearInvestmentEstimates: "Borrar estimaciones",
+    simulateInvestmentEstimateRule: "Simular estimación",
+    saveInvestmentEstimateAllocations: "Reparto estimación",
+    saveInvestmentModePreference: "Modo inversión",
     saveInvestmentGoals: "Guardar objetivos",
     transferBank: "Transferencia",
     addTransfersBatch: "Transferencias periódicas"
@@ -1549,16 +1672,18 @@ function queuePayloadSections(payload = {}) {
     const sheetName = String(payload.sheetName || "");
     return sheetName === (state.config.futureMovementSheet || "Movimientos futuros") || action === "addFutureMovement"
       ? ["futureTransactions"]
-      : ["transactions", "banks", "investmentTotals"];
+      : ["transactions", "banks", "investmentTotals", "investmentEstimateLedger"];
   }
   if (action === "addFutureMovement") return ["futureTransactions"];
-  if (action === "addMovementsBatch") return ["transactions", "futureTransactions", "banks", "investmentTotals"];
+  if (action === "addMovementsBatch") return ["transactions", "futureTransactions", "banks", "investmentTotals", "investmentEstimateLedger"];
   if (action === "deleteMovementsBatch") {
     const sheetName = String(payload.sheetName || "");
     return sheetName === (state.config.futureMovementSheet || "Movimientos futuros") ? ["futureTransactions"] : ["transactions", "investmentTotals"];
   }
   if (["transferBank", "saveBanks", "addTransfersBatch"].includes(action)) return action === "addTransfersBatch" ? ["futureTransactions", "banks"] : ["banks"];
-  if (["saveInvestments", "updateInvestment", "deleteInvestment"].includes(action)) return ["investments", "investmentTotals"];
+  if (["saveInvestments", "updateInvestment", "deleteInvestment"].includes(action)) return ["investments", "investmentTotals", "investmentEstimateLedger"];
+  if (["saveInvestmentEstimateRules"].includes(action)) return ["investmentEstimateRules", "investmentEstimateLedger"];
+  if (["clearInvestmentEstimates", "simulateInvestmentEstimateRule", "saveInvestmentEstimateAllocations"].includes(action)) return ["investmentEstimateLedger"];
   if (action === "saveInvestmentGoals") return ["investmentGoals"];
   return [];
 }
@@ -1583,6 +1708,11 @@ function queuedOpLabel(payload = {}) {
     deleteMovementsBatch: "Borrar múltiple",
     saveBanks: "Guardar cuentas",
     saveInvestments: "Guardar inversiones",
+    saveInvestmentEstimateRules: "Guardar reglas estimación",
+    clearInvestmentEstimates: "Borrar estimaciones",
+    simulateInvestmentEstimateRule: "Simular estimación",
+    saveInvestmentEstimateAllocations: "Reparto estimación",
+    saveInvestmentModePreference: "Modo inversión",
     saveInvestmentGoals: "Guardar objetivos",
     transferBank: "Transferencia",
     addTransfersBatch: "Transferencias periódicas"
@@ -1671,6 +1801,8 @@ async function processOpQueue() {
           await refreshData({ force: true, scope: "investments", successMessage: "Inversión creada, precios actualizados y datos descargados desde Sheets." });
         } else if (item.payload?.action === "deleteInvestment") {
           await refreshData({ force: true, scope: "investments", successMessage: "Inversión eliminada y datos descargados desde Sheets." });
+        } else if (["saveInvestmentEstimateRules", "clearInvestmentEstimates", "simulateInvestmentEstimateRule", "saveInvestmentEstimateAllocations"].includes(item.payload?.action)) {
+          await refreshData({ force: true, scope: "investments", successMessage: "Estimaciones actualizadas desde Sheets." });
         }
         setSyncStatus("Cambio enviado\nCaché sincronizada", "ok");
       } catch (error) {
@@ -1789,6 +1921,9 @@ async function fetchAppsScriptData(options = {}) {
     futureMovementSheet: state.config.futureMovementSheet || "Movimientos futuros",
     investmentSheet: state.config.investmentSheet,
     investmentTotalsSheet: state.config.investmentTotalsSheet || "Inversión Totales",
+    investmentEstimateRulesSheet: state.config.investmentEstimateRulesSheet || "Inversiones Estimación Reglas",
+    investmentEstimateLedgerSheet: state.config.investmentEstimateLedgerSheet || "Inversiones Estimación Movimientos",
+    investmentMode: state.investmentMode || "real",
     bankSheet: state.config.bankSheet || "Bancos",
     objectiveSheet: state.config.objectiveSheet || "Objetivos",
     dataSheet: state.config.dataSheet
@@ -1803,6 +1938,9 @@ async function fetchAppsScriptData(options = {}) {
   if (options.clientOpId) params.set("clientOpId", options.clientOpId);
   if (options.newInvestment) params.set("newInvestment", "1");
   if (options.rowNumber) params.set("rowNumber", String(options.rowNumber));
+  if (options.ruleId) params.set("ruleId", String(options.ruleId));
+  if (Number.isFinite(Number(options.simulationAmount))) params.set("simulationAmount", String(Number(options.simulationAmount)));
+  if (options.simulationDate) params.set("simulationDate", options.simulationDate);
   if (options.sinceRev) params.set("sinceRev", options.sinceRev);
   if (options.movementKind) params.set("movementKind", options.movementKind);
   if (Number.isFinite(Number(options.offset))) params.set("offset", String(Number(options.offset)));
@@ -2008,6 +2146,7 @@ function renderAll() {
   renderSummary();
   renderMovements();
   renderInvestments();
+  syncInvestmentEstimateModeUi();
   renderSyncSettingsPanel();
   renderSettingsPanelTabs();
   lucide.createIcons();
@@ -2193,7 +2332,7 @@ function calculateSummary(month) {
       dailyByType[type] = Number.isFinite(totalRow.daily) ? safeNumber(totalRow.daily) : valueByType[type] - dailyPreviousByType[type];
       return;
     }
-    const positions = state.investments.filter(i => normalizeType(i.tipo) === normalizeType(type));
+    const positions = effectiveInvestmentPositions().filter(i => normalizeType(i.tipo) === normalizeType(type));
     investedByType[type] = Math.abs(sum(untilToday
       .filter(t => isInvestment(t) && normalizeType(t.descripcion) === normalizeType(type))
       .map(t => t.amount)));
@@ -2645,7 +2784,7 @@ function renderSettingsPanelTabs() {
   const labels = {
     sync: ["Sincronización", "Estado de caché, secciones y logs internos."],
     connection: ["Conexión", "Peticiones pendientes y envíos confirmados de hoy."],
-    params: ["Parámetros", "Tema, URL de Apps Script y token opcional."]
+    params: ["Parámetros", "Estimación, tema, URL de Apps Script y token opcional."]
   };
   document.querySelectorAll("#settingsPanelSwitch [data-settings-panel]").forEach(btn => {
     btn.classList.toggle("active", btn.dataset.settingsPanel === panel);
@@ -2669,17 +2808,23 @@ function setInvestmentPanelFromClick(event) {
 }
 
 function renderInvestmentEditTable() {
+  const sourcePositions = effectiveInvestmentPositions();
+  const estimatedMode = investmentEstimateEnabled();
   const rows = investmentTypes().flatMap(type => {
-    const positions = state.investments
+    const positions = sourcePositions
       .filter(i => normalizeType(i.tipo) === normalizeType(type))
       .sort((a, b) => currentInvestmentTotal(b) - currentInvestmentTotal(a));
     if (!positions.length) return [];
-    const group = `<tr><th colspan="5">${escapeHtml(type)}</th></tr>`;
+    const group = `<tr><th colspan="${estimatedMode ? 6 : 5}">${escapeHtml(type)}</th></tr>`;
     const body = positions.map(i => {
-      const idx = state.investments.indexOf(i);
-      return `<tr class="clickable-row" data-investment-index="${idx}">
-        <td class="investment-name col-detail" title="${escapeAttr(i.nombre)}">${escapeHtml(i.nombre)}</td>
-        <td class="amount col-qty">${isCashInvestmentPosition(i) ? '—' : quantityFmt(i.cantidad)}</td>
+      const idx = Number.isInteger(i.sourceIndex) ? i.sourceIndex : -1;
+      const estimatedShares = safeNumber(i.estimatedShares);
+      const displayedShares = estimatedMode ? safeNumber(i.cantidad) - estimatedShares : safeNumber(i.cantidad);
+      const displayName = estimatedMode ? (i.shortName || i.nombre || i.data) : (i.nombre || i.shortName || i.data);
+      return `<tr class="${estimatedMode ? "" : "clickable-row"}" data-investment-index="${idx}">
+        <td class="investment-name col-detail" title="${escapeAttr(displayName)}">${escapeHtml(displayName)}</td>
+        <td class="amount col-qty">${isCashInvestmentPosition(i) ? '—' : quantityFmt(displayedShares)}</td>
+        ${estimatedMode ? `<td class="amount col-qty estimated-shares-cell">${isCashInvestmentPosition(i) ? '—' : estimatedSharesFmt(estimatedShares)}</td>` : ""}
         <td class="amount col-money">${isCashInvestmentPosition(i) ? '—' : money(i.valor, 2)}</td>
         <td class="amount col-money">${money(currentInvestmentTotal(i), 2)}</td>
         <td class="amount col-pct">${pctCell(dailyInvestmentPct(i))}</td>
@@ -2688,9 +2833,12 @@ function renderInvestmentEditTable() {
     return [group + body];
   });
   const body = rows.join("");
-  document.getElementById("investmentEditTable").innerHTML = `<colgroup><col class="col-detail"><col class="col-qty"><col class="col-money"><col class="col-money"><col class="col-pct"></colgroup><thead><tr><th class="col-detail"></th><th class="col-qty">Shares</th><th class="col-money">Price</th><th class="col-money">Value</th><th class="col-pct">%d</th></tr></thead><tbody>${body || `<tr><td class="empty" colspan="5">Sin posiciones.</td></tr>`}</tbody>`;
+  const estimatedColumn = estimatedMode ? `<col class="col-qty">` : "";
+  const estimatedHeader = estimatedMode ? `<th class="col-qty">Est.</th>` : "";
+  const columnCount = estimatedMode ? 6 : 5;
+  document.getElementById("investmentEditTable").innerHTML = `<colgroup><col class="col-detail"><col class="col-qty">${estimatedColumn}<col class="col-money"><col class="col-money"><col class="col-pct"></colgroup><thead><tr><th class="col-detail"></th><th class="col-qty">Shares</th>${estimatedHeader}<th class="col-money">Price</th><th class="col-money">Value</th><th class="col-pct">%d</th></tr></thead><tbody>${body || `<tr><td class="empty" colspan="${columnCount}">Sin posiciones.</td></tr>`}</tbody>`;
   document.querySelectorAll("#investmentEditTable [data-investment-index]").forEach(row => {
-    row.addEventListener("click", () => openInvestmentDetail(Number(row.dataset.investmentIndex)));
+    if (!investmentEstimateEnabled()) row.addEventListener("click", () => openInvestmentDetail(Number(row.dataset.investmentIndex)));
   });
 }
 
@@ -2767,6 +2915,10 @@ function renderInvestmentBreakdownCharts(summary) {
 }
 
 function addInvestmentRow() {
+  if (investmentEstimateEnabled()) {
+    setNotice("Cambia a modo real para editar posiciones manuales.", "warn");
+    return;
+  }
   state.investments.push({ rowNumber: null, isDraftNew: true, divisa: "EUR", data: "", nombre: "", shortName: "", tipo: investmentTypes()[0] || "Cartera", cantidad: 0, valor: 0, total: 0, valorAnterior: 0, variacion: 0 });
   openInvestmentDetail(state.investments.length - 1);
 }
@@ -3085,6 +3237,14 @@ async function deleteInvestmentDetail(event) {
 
 async function submitMovement(event) {
   event.preventDefault();
+  investmentDebug("submitMovement inicio", {
+    formType: document.getElementById("formType")?.value,
+    formConcept: document.getElementById("formConcept")?.value,
+    formDescription: document.getElementById("formDescription")?.value,
+    formDate: document.getElementById("formDate")?.value,
+    formAmount: document.getElementById("formAmount")?.value,
+    recurring: isRecurringMode()
+  });
   if (!state.config.scriptUrl) {
     setNotice("Configura Apps Script antes de enviar movimientos.", "warn");
     return;
@@ -3144,12 +3304,18 @@ async function submitMovement(event) {
       const totalAfter = sum(state.banks.map(b => b.dinero));
       state.transactions.push(...realized);
       state.futureTransactions.push(...futureMovs);
+      state.pendingInvestmentSummaryPopup = {
+        title: "Movimientos periÃ³dicos guardados",
+        movement: realized[0] || futureMovs[0] || null,
+        account,
+        extra: lineMessage(
+          `${realized.length} ${plural(realized.length, "realizado", "realizados")} y ${futureMovs.length} futuros`,
+          realized.length ? bankChangeLines(totalBefore, totalAfter, account, accountBefore) : ""
+        )
+      };
+      scheduleInvestmentAllocationForRegistration(realized, { source: "registro", respectDay: false });
       writeDataCache();
       queueOp({ action: "addMovementsBatch", movements: movements.map(serializeTransaction), movementSheet: state.config.movementSheet, futureMovementSheet: state.config.futureMovementSheet || "Movimientos futuros", bankSheet: state.config.bankSheet || "Bancos", account });
-      showMovementPopup("Movimientos periódicos guardados", realized[0] || futureMovs[0], account, lineMessage(
-        `${realized.length} ${plural(realized.length, "realizado", "realizados")} y ${futureMovs.length} futuros`,
-        realized.length ? bankChangeLines(totalBefore, totalAfter, account, accountBefore) : ""
-      ));
     } else if (isTransfer) {
       const amount = Math.abs(Number(document.getElementById("formAmount").value || 0));
       const from = document.getElementById("formTransferFrom").value;
@@ -3165,6 +3331,26 @@ async function submitMovement(event) {
     } else {
       const movement = movementFromForm();
       const future = movement.date > endOfToday();
+      const isInvestmentRegistration = !future && (
+        isInvestmentMovement(movement)
+        || normalizeType(document.getElementById("formType")?.value) === "inversion"
+        || normalizeType(document.getElementById("formConcept")?.value) === "inversion"
+      );
+      investmentDebug("movimiento puntual clasificado", {
+        movement: movement ? {
+          sid: movement.sid,
+          date: formatDate(movement.date),
+          tipo: movement.tipo,
+          concepto: movement.concepto,
+          descripcion: movement.descripcion,
+          amount: movement.amount
+        } : null,
+        future,
+        isInvestmentMovement: isInvestmentMovement(movement),
+        rawTypeNormalized: normalizeType(document.getElementById("formType")?.value),
+        rawConceptNormalized: normalizeType(document.getElementById("formConcept")?.value),
+        isInvestmentRegistration
+      });
       const account = document.getElementById("formAccount").value;
       movement.cuenta = account;
       const bankBefore = getBankAmount(account);
@@ -3174,6 +3360,16 @@ async function submitMovement(event) {
         applyInvestmentCostDeltaLocal(movement, 1);
       }
       (future ? state.futureTransactions : state.transactions).push(movement);
+      if (isInvestmentRegistration) {
+        state.pendingInvestmentSummaryPopup = {
+          title: "Movimiento guardado",
+          movement,
+          account,
+          extra: bankChangeLines(totalBefore, sum(state.banks.map(b => b.dinero)), account, bankBefore)
+        };
+      } else {
+        state.pendingInvestmentSummaryPopup = null;
+      }
       writeDataCache();
       queueOp({
         action: future ? "addFutureMovement" : "addMovement",
@@ -3182,12 +3378,18 @@ async function submitMovement(event) {
         bankSheet: state.config.bankSheet || "Bancos",
         account
       });
-      showMovementPopup(
-        future ? "Movimiento futuro guardado" : "Movimiento guardado",
-        movement,
-        account,
-        !future ? bankChangeLines(totalBefore, sum(state.banks.map(b => b.dinero)), account, bankBefore) : ""
-      );
+      if (isInvestmentRegistration) {
+        investmentDebug("programando popup de reparto", { sid: movement.sid });
+        scheduleInvestmentAllocationForRegistration([movement], { source: "registro", respectDay: false });
+      } else {
+        investmentDebug("abriendo resumen directamente", { reason: future ? "movimiento futuro" : "no clasificado como inversión" });
+        showMovementPopup(
+          future ? "Movimiento futuro guardado" : "Movimiento guardado",
+          movement,
+          account,
+          !future ? bankChangeLines(totalBefore, sum(state.banks.map(b => b.dinero)), account, bankBefore) : ""
+        );
+      }
     }
     syncOptions();
     renderDataScope("movements");
@@ -3196,6 +3398,7 @@ async function submitMovement(event) {
     syncRegistrarMode();
     markButtonSaved(btn);
   } catch (error) {
+    console.error(`${INVESTMENT_DEBUG_PREFIX} submitMovement falló`, error);
     restoreButton(btn);
     setNotice(`No se pudo enviar: ${error.message}`, "warn");
   } finally {
@@ -3439,7 +3642,20 @@ function movedFutureMovementsPopupHtml(movements) {
 
 function showMovementPopup(title, movement, account = '', extra = '') {
   const dialog = document.getElementById('movementPopup');
+  investmentDebug("showMovementPopup solicitado", {
+    title,
+    sid: movement?.sid || null,
+    dialogExists: Boolean(dialog),
+    dialogOpen: Boolean(dialog?.open),
+    pendingAllocationCount: state.pendingInvestmentAllocationPrompts.length,
+    allocationDialogOpen: Boolean(document.getElementById("investmentAllocationDialog")?.open),
+    hasPendingSummary: Boolean(state.pendingInvestmentSummaryPopup)
+  });
   if (!dialog) return;
+  if (state.pendingInvestmentSummaryPopup && state.pendingInvestmentAllocationPrompts.length) {
+    state.pendingInvestmentSummaryPopup = { title, movement, account, extra };
+    return;
+  }
   document.getElementById('movementPopupTitle').textContent = title;
   document.getElementById('movementPopupBody').innerHTML = movementPopupHtml(movement, account, extra);
   if (!dialog.open) dialog.showModal();
@@ -3671,6 +3887,9 @@ async function postAppsScript(payload) {
       dataSheet: state.config.dataSheet || "Datos",
       investmentSheet: state.config.investmentSheet || "Inversiones",
       investmentTotalsSheet: state.config.investmentTotalsSheet || "Inversión Totales",
+      investmentEstimateRulesSheet: state.config.investmentEstimateRulesSheet || "Inversiones Estimación Reglas",
+      investmentEstimateLedgerSheet: state.config.investmentEstimateLedgerSheet || "Inversiones Estimación Movimientos",
+      investmentMode: state.investmentMode || "real",
       movementSheet: state.config.movementSheet || "Control Finanzas",
       futureMovementSheet: state.config.futureMovementSheet || "Movimientos futuros",
       ...finalPayload
@@ -3700,11 +3919,12 @@ function createSid(prefix = "id") {
 }
 
 function normalizeTransaction(row) {
+  if (!row) return null;
   const date = parseDate(row.fecha || row.FECHA || row.date || row[0]);
   const tipo = prettyType(String(row.tipo || row.TIPO || row[4] || "").trim());
   const concepto = prettyType(String(row.concepto || row.CONCEPTO || row[5] || "").trim());
   const descripcion = String(row.descripcion || row.DESCRIPCION || row["DESCRIPCION"] || row[6] || "").trim();
-  const amount = parseNumber(row.importe ?? row.IMPORTE ?? row[7]);
+  const amount = parseNumber(row.importe ?? row.IMPORTE ?? row.amount ?? row[7]);
   if (!date || !tipo || Number.isNaN(amount)) return null;
   const cuenta = String(row.cuenta || row.CUENTA || row.account || row[8] || "").trim();
   const transferParts = parseTransferAccountText(cuenta || descripcion);
@@ -3790,13 +4010,150 @@ function normalizeInvestmentTotal(row) {
   };
 }
 
+
+function normalizeInvestmentEstimateRule(row) {
+  const isArrayRow = Array.isArray(row);
+  const id = String(row.id || row.ID || row.ruleId || row[0] || createSid("rule")).trim();
+  const activeRaw = row.activa ?? row.ACTIVA ?? row.active ?? row[1];
+  const active = activeRaw === true || String(activeRaw || '').toLowerCase().trim() === 'true' || String(activeRaw || '').toLowerCase().trim() === 'sí' || String(activeRaw || '').toLowerCase().trim() === 'si' || String(activeRaw || '').trim() === '1';
+  return {
+    id,
+    activa: active,
+    dayOfMonth: Number(row.dayOfMonth ?? row.diaMes ?? row['DÍA MES'] ?? row['DIA MES'] ?? (isArrayRow ? row[2] : '')) || '',
+    movementConcept: 'Inversión',
+    movementDescription: String(row.movementDescription ?? row.descripcionMovimiento ?? row['DESCRIPCIÓN MOVIMIENTO'] ?? row['DESCRIPCION MOVIMIENTO'] ?? (isArrayRow ? row[3] : '') ?? '').trim(),
+    tipo: '',
+    data: String(row.data ?? row.DATA ?? row.ticker ?? row.TICKER ?? (isArrayRow ? row[4] : '') ?? '').trim(),
+    nombre: String(row.nombre ?? row.NOMBRE ?? row.name ?? row.NAME ?? '').trim(),
+    shortName: String(row.shortName ?? row['SHORT NAME'] ?? row.short_name ?? (isArrayRow ? row[5] : '') ?? '').trim(),
+    percentage: parseNumber(row.percentage ?? row.porcentaje ?? row.PORCENTAJE ?? row['%'] ?? (isArrayRow ? row[6] : '')),
+    fixedAmount: parseNumber(row.fixedAmount ?? row.importeFijo ?? row['IMPORTE FIJO'] ?? row['FIJO'] ?? (isArrayRow ? row[7] : '')),
+    order: Number(row.order ?? row.orden ?? row.ORDEN ?? (isArrayRow ? row[8] : '')) || 0
+  };
+}
+
+function normalizeInvestmentEstimateLedger(row) {
+  const isArrayRow = Array.isArray(row);
+  const activeRaw = row.activo ?? row.ACTIVO ?? row.active ?? row[1];
+  const active = activeRaw !== false && String(activeRaw || 'TRUE').toLowerCase().trim() !== 'false' && String(activeRaw || '').toLowerCase().trim() !== 'no' && String(activeRaw || '').trim() !== '0';
+  const date = parseDate(row.fechaMovimiento ?? row['FECHA MOVIMIENTO'] ?? row.fecha ?? (isArrayRow ? row[2] : ''));
+  return {
+    id: String(row.id || row.ID || row[0] || '').trim(),
+    activo: active,
+    fechaMovimiento: date,
+    sidMovimiento: String(row.sidMovimiento ?? row['SID MOVIMIENTO'] ?? (isArrayRow ? row[3] : '') ?? '').trim(),
+    reglaId: String(row.reglaId ?? row['REGLA ID'] ?? '').trim(),
+    tipo: prettyType(String(row.tipo ?? row['TIPO INVERSIÓN'] ?? row['TIPO INVERSION'] ?? (isArrayRow ? row[4] : '') ?? '').trim()),
+    data: String(row.data ?? row.DATA ?? row.ticker ?? (isArrayRow ? row[5] : '') ?? '').trim(),
+    nombre: String(row.nombre ?? row.NOMBRE ?? (isArrayRow ? row[6] : '') ?? '').trim(),
+    shortName: String(row.shortName ?? row['SHORT NAME'] ?? (isArrayRow ? row[7] : '') ?? '').trim(),
+    importe: parseNumber(row.importe ?? row['IMPORTE'] ?? (isArrayRow ? row[8] : '')),
+    precioUsado: parseNumber(row.precioUsado ?? row['PRECIO USADO'] ?? (isArrayRow ? row[9] : '')),
+    sharesEstimadas: parseNumber(row.sharesEstimadas ?? row['SHARES ESTIMADAS'] ?? (isArrayRow ? row[10] : '')),
+    origen: String(row.origen ?? row.ORIGEN ?? (isArrayRow ? row[11] : '') ?? '').trim(),
+    createdAt: String(row.createdAt ?? row['CREATED AT'] ?? '').trim(),
+    movimiento: String(row.movimiento ?? row.MOVIMIENTO ?? '').trim()
+  };
+}
+
+function effectiveInvestmentPositions() {
+  const positions = state.investments.map((item, sourceIndex) => ({ ...item, sourceIndex, estimatedShares: 0 }));
+  if (!investmentEstimateEnabled()) return positions;
+  activeInvestmentEstimateLedger().forEach(entry => {
+    const shares = safeNumber(entry.sharesEstimadas);
+    if (!shares) return;
+    const match = findMatchingInvestmentPosition(positions, entry);
+    if (match) {
+      match.estimatedShares = safeNumber(match.estimatedShares) + shares;
+      match.cantidad = safeNumber(match.cantidad) + shares;
+      const price = currentPriceForEstimate(entry, match);
+      if (Number.isFinite(price) && price > 0) match.valor = price;
+      match.total = safeNumber(match.cantidad) * safeNumber(match.valor);
+      if (!Number.isFinite(match.valorAnterior)) match.valorAnterior = safeNumber(match.valor);
+      match.isEstimated = true;
+    } else {
+      const price = safeNumber(entry.precioUsado);
+      positions.push({
+        rowNumber: null,
+        divisa: 'EUR',
+        data: entry.data,
+        nombre: entry.nombre || entry.data || 'Estimación',
+        shortName: entry.shortName || entry.nombre || entry.data,
+        tipo: entry.tipo || 'Cartera',
+        cantidad: shares,
+        valor: price,
+        total: shares * price,
+        valorAnterior: price,
+        variacion: 0,
+        isEstimated: true,
+        estimatedShares: shares
+      });
+    }
+  });
+  return positions.map(item => recalculateInvestmentTotal(item));
+}
+
+function activeInvestmentEstimateLedger() {
+  return (state.investmentEstimateLedger || []).filter(item => item && item.activo !== false && safeNumber(item.sharesEstimadas) > 0);
+}
+
+function findMatchingInvestmentPosition(positions, entry) {
+  const data = normalizeType(entry.data);
+  const type = normalizeType(entry.tipo);
+  const name = normalizeType(entry.nombre);
+  return positions.find(item => data && normalizeType(item.data) === data)
+    || positions.find(item => type && name && normalizeType(item.tipo) === type && normalizeType(item.nombre) === name)
+    || null;
+}
+
+function currentPriceForEstimate(entry, match) {
+  const price = safeNumber(match?.valor);
+  if (Number.isFinite(price) && price > 0) return price;
+  const used = safeNumber(entry?.precioUsado);
+  return Number.isFinite(used) && used > 0 ? used : NaN;
+}
+
 function investmentTotalsByType() {
   const map = new Map();
   (state.investmentTotals || []).forEach(item => {
     if (!item || !item.tipo) return;
-    map.set(normalizeType(item.tipo), item);
+    map.set(normalizeType(item.tipo), { ...item });
+  });
+  if (!investmentEstimateEnabled()) return map;
+  activeInvestmentEstimateLedger().forEach(entry => {
+    const type = prettyType(entry.tipo || 'Cartera');
+    const key = normalizeType(type);
+    const existing = map.get(key) || {
+      tipo: type,
+      cost: realizedInvestmentCostForType(type),
+      value: 0,
+      lastValue: 0,
+      daily: 0,
+      order: 0
+    };
+    const match = findMatchingInvestmentPosition(state.investments, entry);
+    const price = currentPriceForEstimate(entry, match);
+    const lastPrice = safeNumber(match?.valorAnterior);
+    const shares = safeNumber(entry.sharesEstimadas);
+    const value = shares * (Number.isFinite(price) && price > 0 ? price : safeNumber(entry.precioUsado));
+    const lastValue = shares * (Number.isFinite(lastPrice) && lastPrice > 0 ? lastPrice : (Number.isFinite(price) ? price : safeNumber(entry.precioUsado)));
+    // Cost already comes from the realized investment movement.
+    // Estimated allocations only change position value and shares.
+    existing.value = safeNumber(existing.value) + value;
+    existing.lastValue = safeNumber(existing.lastValue) + lastValue;
+    existing.daily = safeNumber(existing.value) - safeNumber(existing.lastValue);
+    existing.gain = safeNumber(existing.value) - safeNumber(existing.cost);
+    existing.gainPct = existing.cost ? existing.gain / existing.cost * 100 : 0;
+    map.set(key, existing);
   });
   return map;
+}
+
+function realizedInvestmentCostForType(type) {
+  return Math.abs(sum((state.transactions || [])
+    .filter(movement => isInvestment(movement)
+      && normalizeType(localInvestmentCategoryForMovement(movement)) === normalizeType(type))
+    .map(movement => movement.amount)));
 }
 
 function localInvestmentCategoryForMovement(movement) {
@@ -3897,9 +4254,10 @@ function investmentTypes() {
     .sort((a, b) => safeNumber(a.order) - safeNumber(b.order))
     .map(i => prettyType(i.tipo))
     .filter(Boolean);
-  const current = state.investments.map(i => i.tipo).map(prettyType).filter(Boolean);
-  const base = configured.length || totals.length || current.length ? [] : INVESTMENT_TYPES;
-  return unique([...configured, ...totals, ...current, ...base])
+  const current = effectiveInvestmentPositions().map(i => i.tipo).map(prettyType).filter(Boolean);
+  const estimateTypes = [...(state.investmentEstimateRules || []), ...(state.investmentEstimateLedger || [])].map(i => prettyType(i.tipo)).filter(Boolean);
+  const base = configured.length || totals.length || current.length || estimateTypes.length ? [] : INVESTMENT_TYPES;
+  return unique([...configured, ...totals, ...current, ...estimateTypes, ...base])
     .map(prettyType)
     .filter(Boolean);
 }
@@ -4169,8 +4527,13 @@ function renderInvestmentBreakdownTable(summary) {
 }
 
 function renderInvestmentPositionCharts(type) {
-  const positions = state.investments.filter(i => normalizeType(i.tipo) === normalizeType(type) && currentInvestmentTotal(i) > 0).sort((a, b) => currentInvestmentTotal(b) - currentInvestmentTotal(a));
-  const rows = positions.map((i, idx) => ({ label: i.nombre, value: currentInvestmentTotal(i), color: chartColor(PIE_CHART_COLORS, idx) }));
+  const positions = effectiveInvestmentPositions().filter(i => normalizeType(i.tipo) === normalizeType(type) && currentInvestmentTotal(i) > 0).sort((a, b) => currentInvestmentTotal(b) - currentInvestmentTotal(a));
+  const estimatedMode = investmentEstimateEnabled();
+  const rows = positions.map((i, idx) => ({
+    label: estimatedMode ? (i.shortName || i.nombre || i.data) : (i.nombre || i.shortName || i.data),
+    value: currentInvestmentTotal(i),
+    color: chartColor(PIE_CHART_COLORS, idx)
+  }));
   renderColorRowsTable("investmentOverviewTable", rows, ["", "Detalle", "Total", ""]);
   upsertChart("investmentBreakdownDonut", "doughnut", {
     labels: rows.map(row => row.label),
@@ -4378,7 +4741,7 @@ function renderInvestments() {
   const panel = state.summaryModes.investmentPanel;
   const showingGoals = panel === "goals";
   const showingEvolution = panel === "evolution";
-  document.getElementById("investmentPanelLabel").textContent = showingEvolution ? "Evolución" : showingGoals ? "Objetivos" : "Inversión";
+  document.getElementById("investmentPanelLabel").textContent = showingEvolution ? "Evolución" : showingGoals ? "Objetivos" : (investmentEstimateEnabled() ? "Inversión estimada" : "Inversión");
   document.getElementById("editInvestmentGoalsBtn").classList.toggle("hidden", !showingGoals);
   document.getElementById("openInvestmentOverviewBtn").classList.toggle("hidden", showingGoals || showingEvolution);
   document.getElementById("investmentGoals").classList.toggle("hidden", !showingGoals);
@@ -4414,6 +4777,655 @@ function renderInvestments() {
     el.classList.toggle("hidden", hideLowerSections);
   });
   document.getElementById("saveInvestmentsBtn")?.classList.add("hidden");
+  document.getElementById("addInvestmentRowBtn")?.classList.toggle("hidden", investmentEstimateEnabled());
+}
+
+
+
+function openInvestmentEstimateRulesDialog() {
+  renderInvestmentEstimateRulesTable();
+  document.getElementById("investmentEstimateRulesDialog")?.showModal();
+  lucide.createIcons();
+}
+
+function blankInvestmentEstimateRule() {
+  return {
+    id: createSid("rule"),
+    activa: true,
+    dayOfMonth: "",
+    movementConcept: "Inversión",
+    movementDescription: "",
+    tipo: "",
+    data: "",
+    nombre: "",
+    shortName: "",
+    percentage: NaN,
+    fixedAmount: NaN,
+    order: (state.investmentEstimateRules || []).length + 1
+  };
+}
+
+function addInvestmentEstimateRule() {
+  readInvestmentEstimateRulesFromEditor();
+  state.investmentEstimateRules.push(blankInvestmentEstimateRule());
+  renderInvestmentEstimateRulesTable();
+}
+
+function renderInvestmentEstimateRulesTable() {
+  const table = document.getElementById("investmentEstimateRulesTable");
+  if (!table) return;
+  const rows = (state.investmentEstimateRules || []).map((rule, idx) => `
+    <tr data-estimate-rule-index="${idx}">
+      <td><input type="checkbox" data-field="activa" ${rule.activa ? "checked" : ""}></td>
+      <td><input class="tiny-input" type="number" min="1" max="31" step="1" data-field="dayOfMonth" value="${escapeAttr(rule.dayOfMonth || '')}" placeholder="—"></td>
+      <td><input data-field="movementDescription" value="${escapeAttr(rule.movementDescription || '')}" placeholder="Bolsa / Cartera / Fondos"></td>
+      <td><input data-field="data" value="${escapeAttr(rule.data || '')}" placeholder="Ticker/ISIN"></td>
+      <td><input data-field="shortName" value="${escapeAttr(rule.shortName || '')}" placeholder="Short"></td>
+      <td><input data-field="nombre" value="${escapeAttr(rule.nombre || '')}" placeholder="Nombre"></td>
+      <td><input class="tiny-input" type="number" step="0.01" data-field="percentage" value="${formatOptionalInput(rule.percentage)}" placeholder="%"></td>
+      <td><input class="money-input" type="number" step="0.01" data-field="fixedAmount" value="${formatOptionalInput(rule.fixedAmount)}" placeholder="EUR"></td>
+      <td class="estimate-rule-actions">
+        <button class="icon-btn danger-icon" type="button" data-estimate-rule-delete="${idx}" title="Borrar regla"><i data-lucide="trash-2"></i></button>
+      </td>
+    </tr>`).join("");
+  table.innerHTML = `<thead><tr><th>On</th><th>Día</th><th>Descripción</th><th>Ticker/ISIN</th><th>Short</th><th>Nombre</th><th>%</th><th>Fijo</th><th></th></tr></thead><tbody>${rows || `<tr><td class="empty" colspan="9">Sin reglas. Pulsa + para crear una.</td></tr>`}</tbody>`;
+  table.querySelectorAll("[data-estimate-rule-delete]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      readInvestmentEstimateRulesFromEditor();
+      state.investmentEstimateRules.splice(Number(btn.dataset.estimateRuleDelete), 1);
+      renderInvestmentEstimateRulesTable();
+    });
+  });
+  lucide.createIcons();
+}
+
+function formatOptionalInput(value) {
+  const n = parseNumber(value);
+  return Number.isFinite(n) ? String(n) : "";
+}
+
+function estimateRuleAmountLocal(rule, movementAmount) {
+  const fixed = parseNumber(rule?.fixedAmount);
+  if (Number.isFinite(fixed) && fixed > 0) return Math.min(fixed, safeNumber(movementAmount));
+  let percentage = parseNumber(rule?.percentage);
+  if (!Number.isFinite(percentage) || percentage <= 0) return NaN;
+  if (percentage > 1) percentage = percentage / 100;
+  return safeNumber(movementAmount) * percentage;
+}
+
+function readInvestmentEstimateRulesFromEditor() {
+  document.querySelectorAll("#investmentEstimateRulesTable tbody tr[data-estimate-rule-index]").forEach(row => {
+    const idx = Number(row.dataset.estimateRuleIndex);
+    const current = state.investmentEstimateRules[idx] || blankInvestmentEstimateRule();
+    row.querySelectorAll("[data-field]").forEach(input => {
+      const field = input.dataset.field;
+      if (field === "activa") current.activa = Boolean(input.checked);
+      else if (["dayOfMonth", "percentage", "fixedAmount"].includes(field)) {
+        const parsed = parseNumber(input.value);
+        current[field] = Number.isFinite(parsed) ? parsed : "";
+      } else current[field] = input.value.trim();
+    });
+    current.movementConcept = "Inversión";
+    current.tipo = "";
+    if (!current.id) current.id = createSid("rule");
+    current.order = idx + 1;
+    state.investmentEstimateRules[idx] = current;
+  });
+}
+
+async function saveInvestmentEstimateRules() {
+  readInvestmentEstimateRulesFromEditor();
+  const btn = document.getElementById("saveInvestmentEstimateRulesBtn");
+  markButtonSaving(btn);
+  try {
+    writeDataCache({ dirtySections: ["investmentEstimateRules"] });
+    if (!state.config.scriptUrl) {
+      setNotice("Reglas guardadas solo en caché local porque falta Apps Script.", "warn");
+      markButtonSaved(btn);
+      return;
+    }
+    await postAppsScript({ action: "saveInvestmentEstimateRules", rules: state.investmentEstimateRules });
+    await refreshData({ force: true, scope: "investments", successMessage: "Reglas de estimación guardadas." });
+    markButtonSaved(btn);
+    setNotice("Reglas de estimación guardadas.", "ok");
+  } catch (error) {
+    queueOp({ action: "saveInvestmentEstimateRules", rules: state.investmentEstimateRules });
+    restoreButton(btn);
+    setNotice(lineMessage("No se pudieron confirmar ahora; quedan pendientes.", error.message), "warn");
+  } finally {
+    renderInvestmentEstimateRulesTable();
+  }
+}
+
+async function clearInvestmentEstimates() {
+  const ok = window.confirm("Esto borra las estimaciones generadas y toma la posición manual actual como nuevo punto de partida. Las reglas se mantienen.");
+  if (!ok) return;
+  const btn = document.getElementById("clearInvestmentEstimatesBtn");
+  markButtonSaving(btn, "");
+  try {
+    state.investmentEstimateLedger = [];
+    writeDataCache({ dirtySections: ["investmentEstimateLedger"] });
+    if (state.config.scriptUrl) {
+      await postAppsScript({ action: "clearInvestmentEstimates" });
+      await refreshData({ force: true, scope: "investments", successMessage: "Estimaciones borradas." });
+    }
+    setNotice("Estimaciones borradas. Las reglas se conservan.", "ok");
+  } catch (error) {
+    queueOp({ action: "clearInvestmentEstimates" });
+    setNotice(lineMessage("No se pudieron borrar ahora; queda pendiente.", error.message), "warn");
+  } finally {
+    restoreButton(btn);
+    renderInvestments();
+  }
+}
+
+
+function isInvestmentMovement(movement) {
+  const normalized = normalizeTransaction(movement);
+  if (!normalized) return false;
+  return normalizeType(normalized.tipo) === "inversion"
+    || normalizeType(normalized.concepto) === "inversion";
+}
+
+function enqueueInvestmentAllocationPrompts(movements = [], options = {}) {
+  investmentDebug("enqueue inicio", {
+    movementCount: movements?.length || 0,
+    options,
+    movements: (movements || []).map(item => ({
+      tipo: item?.tipo,
+      concepto: item?.concepto,
+      descripcion: item?.descripcion,
+      amount: item?.amount ?? item?.importe
+    }))
+  });
+  const prompts = (movements || [])
+    .map(normalizeTransaction)
+    .filter(shouldPromptForInvestmentAllocation)
+    .map(movement => ({
+    movement,
+    source: options.source || "registro",
+    respectDay: Boolean(options.respectDay)
+  }));
+  investmentDebug("enqueue filtrado", {
+    promptCount: prompts.length,
+    prompts: prompts.map(prompt => ({
+      sid: prompt.movement.sid,
+      tipo: prompt.movement.tipo,
+      concepto: prompt.movement.concepto,
+      descripcion: prompt.movement.descripcion
+    }))
+  });
+  if (!prompts.length) return 0;
+  state.pendingInvestmentAllocationPrompts.push(...prompts);
+  if (options.openNow) processPendingInvestmentAllocationPrompts();
+  return prompts.length;
+}
+
+function openInvestmentAllocationForRegistration(movements = [], options = {}) {
+  investmentDebug("openInvestmentAllocationForRegistration inicio", {
+    movementCount: movements.length,
+    options
+  });
+  const promptCount = enqueueInvestmentAllocationPrompts(movements, { ...options, openNow: false });
+  if (!promptCount) {
+    investmentDebug("sin prompts para abrir", {});
+    return false;
+  }
+  const summaryDialog = document.getElementById("movementPopup");
+  investmentDebug("estado antes de procesar popup", {
+    promptCount,
+    summaryDialogOpen: Boolean(summaryDialog?.open),
+    allocationDialogExists: Boolean(document.getElementById("investmentAllocationDialog")),
+    allocationDialogOpen: Boolean(document.getElementById("investmentAllocationDialog")?.open)
+  });
+  if (summaryDialog?.open) summaryDialog.close();
+  try {
+    processPendingInvestmentAllocationPrompts();
+  } catch (error) {
+    console.error(`${INVESTMENT_DEBUG_PREFIX} error abriendo reparto`, error);
+    state.pendingInvestmentAllocationPrompts = [];
+    state.currentInvestmentAllocationPrompt = null;
+    setNotice(lineMessage("No se pudo abrir el reparto de inversión.", error.message), "warn");
+    return false;
+  }
+  const opened = Boolean(
+    document.getElementById("investmentAllocationDialog")?.open
+    || state.currentInvestmentAllocationPrompt
+    || state.pendingInvestmentAllocationPrompts.length
+  );
+  investmentDebug("resultado apertura reparto", {
+    opened,
+    dialogOpen: Boolean(document.getElementById("investmentAllocationDialog")?.open),
+    hasCurrentPrompt: Boolean(state.currentInvestmentAllocationPrompt),
+    pendingCount: state.pendingInvestmentAllocationPrompts.length
+  });
+  return opened;
+}
+
+function scheduleInvestmentAllocationForRegistration(movements = [], options = {}) {
+  investmentDebug("schedule solicitado", {
+    movementCount: movements.length,
+    options,
+    hasPendingSummary: Boolean(state.pendingInvestmentSummaryPopup)
+  });
+  window.setTimeout(() => {
+    investmentDebug("schedule ejecutándose", {
+      movementCount: movements.length,
+      hasPendingSummary: Boolean(state.pendingInvestmentSummaryPopup)
+    });
+    const allocationOpened = openInvestmentAllocationForRegistration(movements, options);
+    if (allocationOpened) {
+      investmentDebug("schedule terminó con reparto abierto", {});
+      return;
+    }
+    const summary = state.pendingInvestmentSummaryPopup;
+    state.pendingInvestmentSummaryPopup = null;
+    investmentDebug("schedule usa resumen como fallback", {
+      hasSummaryMovement: Boolean(summary?.movement),
+      title: summary?.title
+    });
+    if (summary?.movement) {
+      showMovementPopup(summary.title || "Movimiento guardado", summary.movement, summary.account || "", summary.extra || "");
+    }
+  }, 0);
+}
+
+function shouldPromptForInvestmentAllocation(movement) {
+  const normalized = normalizeTransaction(movement);
+  if (!normalized) return false;
+  return isInvestmentMovement(normalized);
+}
+
+function processPendingInvestmentAllocationPrompts() {
+  const allocationDialog = document.getElementById("investmentAllocationDialog");
+  const summaryDialog = document.getElementById("movementPopup");
+  investmentDebug("processPendingInvestmentAllocationPrompts", {
+    allocationDialogExists: Boolean(allocationDialog),
+    allocationDialogOpen: Boolean(allocationDialog?.open),
+    summaryDialogOpen: Boolean(summaryDialog?.open),
+    pendingCount: state.pendingInvestmentAllocationPrompts.length
+  });
+  if (allocationDialog?.open) {
+    investmentDebug("process cancelado: reparto ya abierto", {});
+    return;
+  }
+  if (summaryDialog?.open) {
+    investmentDebug("process cancelado: resumen abierto", {});
+    return;
+  }
+  const next = state.pendingInvestmentAllocationPrompts.shift();
+  if (!next) {
+    investmentDebug("process sin siguiente prompt", {});
+    return;
+  }
+  investmentDebug("process abre siguiente prompt", {
+    sid: next.movement?.sid,
+    descripcion: next.movement?.descripcion
+  });
+  openInvestmentAllocationDialog(next);
+}
+
+function openInvestmentAllocationDialog(prompt) {
+  const movement = normalizeTransaction(prompt?.movement);
+  investmentDebug("openInvestmentAllocationDialog inicio", {
+    prompt,
+    normalizedMovement: movement ? {
+      sid: movement.sid,
+      tipo: movement.tipo,
+      concepto: movement.concepto,
+      descripcion: movement.descripcion,
+      amount: movement.amount
+    } : null
+  });
+  if (!movement) {
+    investmentDebug("open cancelado: movimiento no normalizable", {});
+    return;
+  }
+  state.currentInvestmentAllocationPrompt = { ...prompt, movement };
+  const amount = Math.abs(safeNumber(movement.amount));
+  const dialog = document.getElementById("investmentAllocationDialog");
+  investmentDebug("diálogo de reparto localizado", {
+    exists: Boolean(dialog),
+    openBefore: Boolean(dialog?.open),
+    amount
+  });
+  document.getElementById("investmentAllocationTitle").textContent = `Repartir inversión · ${money(amount)}`;
+  document.getElementById("investmentAllocationContext").textContent = `${formatDate(movement.date)} · ${movement.concepto || "Inversión"} · ${movement.descripcion || "Sin descripción"}`;
+  if (dialog && !dialog.open) {
+    dialog.showModal();
+    investmentDebug("showModal reparto ejecutado", { openAfter: dialog.open });
+  }
+  try {
+    const matchedRules = matchingInvestmentAllocationRules(movement, Boolean(prompt.respectDay));
+    investmentDebug("reglas antes de renderizar", {
+      loadedRuleCount: state.investmentEstimateRules.length,
+      matchedRuleCount: matchedRules.length,
+      matchedRules: matchedRules.map(rule => ({
+        id: rule.id,
+        activa: rule.activa,
+        dayOfMonth: rule.dayOfMonth,
+        movementDescription: rule.movementDescription,
+        data: rule.data,
+        percentage: rule.percentage,
+        fixedAmount: rule.fixedAmount
+      }))
+    });
+    renderInvestmentAllocationExistingSelect();
+    renderInvestmentAllocationTable(initialInvestmentAllocationRows(movement, prompt));
+  } catch (error) {
+    console.error(`${INVESTMENT_DEBUG_PREFIX} error renderizando reparto`, error);
+    renderInvestmentAllocationFallbackRow(amount, movement);
+    setNotice(lineMessage("Se abrió un reparto editable sin precargar las reglas.", error.message), "warn");
+  }
+  lucide.createIcons();
+}
+
+function renderInvestmentAllocationFallbackRow(amount, movement) {
+  const select = document.getElementById("investmentAllocationExistingSelect");
+  if (select) {
+    select.innerHTML = `<option value="">Sin precarga disponible</option>`;
+    select.dataset.candidateIndexes = "[]";
+  }
+  const table = document.getElementById("investmentAllocationTable");
+  if (!table) return;
+  const inferredType = inferredInvestmentTypeFromMovement(movement) || "Cartera";
+  table.innerHTML = `<thead><tr><th>Tipo</th><th>Ticker/ISIN</th><th>Short</th><th>Nombre</th><th>%</th><th>Importe</th><th>Precio</th><th>Shares est.</th><th></th></tr></thead>
+    <tbody><tr data-allocation-row data-regla-id="">
+      <td><select data-field="tipo"><option value="${escapeAttr(inferredType)}">${escapeHtml(inferredType)}</option></select></td>
+      <td><input data-field="data" value="" placeholder="Ticker/ISIN"></td>
+      <td><input data-field="shortName" value="" placeholder="Short"></td>
+      <td><input data-field="nombre" value="" placeholder="Nombre"></td>
+      <td><input class="tiny-input" type="number" step="0.01" data-field="percentage" value="100"></td>
+      <td><input class="money-input" type="number" step="0.01" data-field="importe" value="${escapeAttr(formatOptionalInput(amount))}"></td>
+      <td><input class="money-input" type="number" step="0.0001" data-field="precioUsado" value=""></td>
+      <td data-allocation-shares>—</td>
+      <td><button class="icon-btn danger-icon" type="button" data-allocation-delete title="Borrar fila"><i data-lucide="trash-2"></i></button></td>
+    </tr></tbody>`;
+  table.querySelectorAll("input, select").forEach(input => input.addEventListener("input", handleInvestmentAllocationInput));
+  table.querySelector("[data-allocation-delete]")?.addEventListener("click", event => {
+    event.currentTarget.closest("tr")?.remove();
+    updateInvestmentAllocationTotals();
+  });
+  updateInvestmentAllocationTotals();
+}
+
+function handleInvestmentAllocationDialogClosed() {
+  investmentDebug("diálogo de reparto cerrado", {
+    pendingCount: state.pendingInvestmentAllocationPrompts.length,
+    hasPendingSummary: Boolean(state.pendingInvestmentSummaryPopup)
+  });
+  state.currentInvestmentAllocationPrompt = null;
+  if (state.pendingInvestmentAllocationPrompts.length) {
+    processPendingInvestmentAllocationPrompts();
+    return;
+  }
+  if (state.pendingInvestmentSummaryPopup?.movement) {
+    const summary = state.pendingInvestmentSummaryPopup;
+    state.pendingInvestmentSummaryPopup = null;
+    showMovementPopup(summary.title || "Movimiento guardado", summary.movement, summary.account || "", summary.extra || "");
+  }
+}
+
+function discardInvestmentAllocationPrompt() {
+  setNotice("Movimiento guardado sin añadirlo a estimaciones.", "ok");
+  document.getElementById("investmentAllocationDialog")?.close();
+}
+
+function initialInvestmentAllocationRows(movement, prompt = {}) {
+  const amount = Math.abs(safeNumber(movement.amount));
+  const rules = matchingInvestmentAllocationRules(movement, Boolean(prompt.respectDay));
+  const rows = rules.map(rule => allocationRowFromRule(rule, amount)).filter(Boolean);
+  if (rows.length) return rows;
+  return [{ id: createSid("alloc"), tipo: inferredInvestmentTypeFromMovement(movement) || investmentTypes()[0] || "Cartera", data: "", nombre: "", shortName: "", percentage: 100, importe: amount, precioUsado: "", reglaId: "", isNew: true }];
+}
+
+function matchingInvestmentAllocationRules(movement, respectDay = false) {
+  const normalized = normalizeTransaction(movement);
+  if (!shouldPromptForInvestmentAllocation(normalized)) {
+    investmentDebug("matching descartado: no es inversión", { movement });
+    return [];
+  }
+  const active = (state.investmentEstimateRules || []).filter(rule => rule && rule.activa);
+  const dayFiltered = active.filter(rule => {
+    if (!respectDay || !rule.dayOfMonth) return true;
+    return Number(rule.dayOfMonth) === normalized.date.getDate();
+  });
+  const movementDescription = normalizeDescription(normalized.descripcion || "");
+  const matched = dayFiltered.filter(rule => {
+    const ruleDescription = normalizeDescription(rule.movementDescription || "");
+    if (!ruleDescription || !movementDescription) return false;
+    return movementDescription.includes(ruleDescription)
+      || ruleDescription.includes(movementDescription);
+  });
+  investmentDebug("matching de reglas", {
+    respectDay,
+    movementDate: formatDate(normalized.date),
+    movementDescription,
+    totalRules: state.investmentEstimateRules.length,
+    activeRules: active.length,
+    dayFilteredRules: dayFiltered.length,
+    matchedRules: matched.length
+  });
+  return matched.sort((a, b) => safeNumber(a.order) - safeNumber(b.order));
+}
+
+function allocationRowFromRule(rule, movementAmount) {
+  const amount = estimateRuleAmountLocal(rule, movementAmount);
+  if (!Number.isFinite(amount) || amount <= 0) return null;
+  const match = findInvestmentForAllocation(rule);
+  const price = safeNumber(match?.valor);
+  const percentage = Number.isFinite(parseNumber(rule.percentage)) && parseNumber(rule.percentage) > 0
+    ? parseNumber(rule.percentage)
+    : (movementAmount ? amount / movementAmount * 100 : "");
+  return {
+    id: createSid("alloc"),
+    tipo: match?.tipo || inferredInvestmentTypeFromMovement(state.currentInvestmentAllocationPrompt?.movement) || "Cartera",
+    data: rule.data || match?.data || "",
+    nombre: rule.nombre || match?.nombre || rule.shortName || rule.data || "",
+    shortName: rule.shortName || match?.shortName || match?.nombre || rule.data || "",
+    percentage,
+    importe: roundMoney(amount),
+    precioUsado: price || "",
+    reglaId: rule.id || "",
+    isNew: !match
+  };
+}
+
+function findInvestmentForAllocation(seed = {}) {
+  const data = normalizeType(seed.data || "");
+  const shortName = normalizeType(seed.shortName || "");
+  const name = normalizeType(seed.nombre || "");
+  return (state.investments || []).find(item => data && normalizeType(item.data) === data)
+    || (state.investments || []).find(item => shortName && normalizeType(item.shortName || item.nombre) === shortName)
+    || (state.investments || []).find(item => name && normalizeType(item.nombre) === name)
+    || null;
+}
+
+function inferredInvestmentTypeFromMovement(movement) {
+  const text = normalizeType(`${movement?.concepto || ""} ${movement?.descripcion || ""}`);
+  return investmentTypes().find(type => text.includes(normalizeType(type))) || "";
+}
+
+function renderInvestmentAllocationExistingSelect() {
+  const select = document.getElementById("investmentAllocationExistingSelect");
+  if (!select) return;
+  const movement = state.currentInvestmentAllocationPrompt?.movement;
+  const inferredType = inferredInvestmentTypeFromMovement(movement);
+  const candidates = (state.investments || []).filter(item => !inferredType || normalizeType(item.tipo) === normalizeType(inferredType));
+  select.innerHTML = candidates.map((item, idx) => `<option value="${idx}">${escapeHtml(item.shortName || item.nombre || item.data)} · ${escapeHtml(item.tipo || "")}</option>`).join("") || `<option value="">Sin posiciones de ese tipo</option>`;
+  select.dataset.candidateIndexes = JSON.stringify(candidates.map(item => state.investments.indexOf(item)));
+}
+
+function renderInvestmentAllocationTable(rows = []) {
+  const table = document.getElementById("investmentAllocationTable");
+  if (!table) return;
+  table.innerHTML = `<thead><tr><th>Tipo</th><th>Ticker/ISIN</th><th>Short</th><th>Nombre</th><th>%</th><th>Importe</th><th>Precio</th><th>Shares est.</th><th></th></tr></thead><tbody>${rows.map(investmentAllocationRowHtml).join("")}</tbody>`;
+  table.querySelectorAll("input, select").forEach(input => input.addEventListener("input", handleInvestmentAllocationInput));
+  table.querySelectorAll("[data-allocation-delete]").forEach(btn => btn.addEventListener("click", () => {
+    btn.closest("tr")?.remove();
+    updateInvestmentAllocationTotals();
+  }));
+  updateInvestmentAllocationTotals();
+  lucide.createIcons();
+}
+
+function investmentAllocationRowHtml(row) {
+  const types = investmentTypes();
+  const shares = safeNumber(row.precioUsado) > 0 ? safeNumber(row.importe) / safeNumber(row.precioUsado) : 0;
+  return `<tr data-allocation-row data-regla-id="${escapeAttr(row.reglaId || "")}">
+    <td><select data-field="tipo">${types.map(type => `<option value="${escapeAttr(type)}" ${normalizeType(type) === normalizeType(row.tipo) ? "selected" : ""}>${escapeHtml(type)}</option>`).join("")}</select></td>
+    <td><input data-field="data" value="${escapeAttr(row.data || "")}" placeholder="Ticker/ISIN"></td>
+    <td><input data-field="shortName" value="${escapeAttr(row.shortName || "")}" placeholder="Short"></td>
+    <td><input data-field="nombre" value="${escapeAttr(row.nombre || "")}" placeholder="Nombre"></td>
+    <td><input class="tiny-input" type="number" step="0.01" data-field="percentage" value="${formatOptionalInput(row.percentage)}"></td>
+    <td><input class="money-input" type="number" step="0.01" data-field="importe" value="${formatOptionalInput(row.importe)}"></td>
+    <td><input class="money-input" type="number" step="0.0001" data-field="precioUsado" value="${formatOptionalInput(row.precioUsado)}"></td>
+    <td data-allocation-shares>${shares ? formatDecimalInput(shares, 6) : "—"}</td>
+    <td><button class="icon-btn danger-icon" type="button" data-allocation-delete title="Borrar fila"><i data-lucide="trash-2"></i></button></td>
+  </tr>`;
+}
+
+function handleInvestmentAllocationInput(event) {
+  const row = event.target.closest("tr[data-allocation-row]");
+  const prompt = state.currentInvestmentAllocationPrompt;
+  const totalAmount = Math.abs(safeNumber(prompt?.movement?.amount));
+  const field = event.target.dataset.field;
+  if (field === "percentage") {
+    const percentage = parseNumber(event.target.value);
+    if (Number.isFinite(percentage)) {
+      row.querySelector('[data-field="importe"]').value = formatDecimalInput(roundMoney(totalAmount * percentage / 100), 2);
+    }
+  } else if (field === "importe") {
+    const amount = parseNumber(event.target.value);
+    if (Number.isFinite(amount) && totalAmount > 0) {
+      row.querySelector('[data-field="percentage"]').value = formatDecimalInput(amount / totalAmount * 100, 2);
+    }
+  }
+  updateInvestmentAllocationTotals();
+}
+
+function readInvestmentAllocationRows() {
+  return Array.from(document.querySelectorAll("#investmentAllocationTable tbody tr[data-allocation-row]")).map(row => {
+    const item = { reglaId: row.dataset.reglaId || "" };
+    row.querySelectorAll("[data-field]").forEach(input => {
+      const field = input.dataset.field;
+      if (["percentage", "importe", "precioUsado"].includes(field)) item[field] = parseNumber(input.value);
+      else item[field] = input.value.trim();
+    });
+    const amount = safeNumber(item.importe);
+    const price = safeNumber(item.precioUsado);
+    item.sharesEstimadas = amount > 0 && price > 0 ? amount / price : NaN;
+    return item;
+  });
+}
+
+function updateInvestmentAllocationTotals() {
+  const prompt = state.currentInvestmentAllocationPrompt;
+  const target = Math.abs(safeNumber(prompt?.movement?.amount));
+  const rows = readInvestmentAllocationRows();
+  const total = roundMoney(sum(rows.map(row => safeNumber(row.importe))));
+  const diff = roundMoney(target - total);
+  document.querySelectorAll("#investmentAllocationTable tbody tr[data-allocation-row]").forEach((row, idx) => {
+    const item = rows[idx];
+    const sharesCell = row.querySelector("[data-allocation-shares]");
+    if (sharesCell) sharesCell.textContent = Number.isFinite(item.sharesEstimadas) ? formatDecimalInput(item.sharesEstimadas, 6) : "—";
+  });
+  const totalEl = document.getElementById("investmentAllocationTotal");
+  const balanced = rows.length > 0 && Math.abs(diff) < 0.01;
+  if (totalEl) {
+    totalEl.textContent = balanced
+      ? `✓ Cuadra: ${money(total)} / ${money(target)}`
+      : `! ${money(total)} / ${money(target)} · diferencia ${money(diff)}`;
+    totalEl.classList.toggle("balanced", balanced);
+    totalEl.classList.toggle("unbalanced", !balanced);
+  }
+  const saveBtn = document.getElementById("saveInvestmentAllocationBtn");
+  if (saveBtn) {
+    saveBtn.disabled = !balanced;
+    saveBtn.classList.toggle("allocation-ready", balanced);
+  }
+}
+
+function addExistingInvestmentAllocationRow() {
+  const select = document.getElementById("investmentAllocationExistingSelect");
+  const indexes = JSON.parse(select?.dataset.candidateIndexes || "[]");
+  const investment = state.investments[indexes[Number(select?.value || 0)]];
+  if (!investment) return;
+  const remaining = investmentAllocationRemainingAmount();
+  appendInvestmentAllocationRow({
+    tipo: investment.tipo,
+    data: investment.data,
+    nombre: investment.nombre,
+    shortName: investment.shortName || investment.nombre || investment.data,
+    percentage: "",
+    importe: remaining > 0 ? remaining : "",
+    precioUsado: investment.valor || "",
+    reglaId: ""
+  });
+}
+
+function addBlankInvestmentAllocationRow() {
+  const movement = state.currentInvestmentAllocationPrompt?.movement;
+  appendInvestmentAllocationRow({ tipo: inferredInvestmentTypeFromMovement(movement) || investmentTypes()[0] || "Cartera", data: "", nombre: "", shortName: "", percentage: "", importe: investmentAllocationRemainingAmount() || "", precioUsado: "", reglaId: "" });
+}
+
+function appendInvestmentAllocationRow(row) {
+  const tbody = document.querySelector("#investmentAllocationTable tbody");
+  if (!tbody) return;
+  tbody.insertAdjacentHTML("beforeend", investmentAllocationRowHtml(row));
+  const tr = tbody.lastElementChild;
+  tr.querySelectorAll("input, select").forEach(input => input.addEventListener("input", handleInvestmentAllocationInput));
+  tr.querySelector("[data-allocation-delete]")?.addEventListener("click", () => { tr.remove(); updateInvestmentAllocationTotals(); });
+  updateInvestmentAllocationTotals();
+  lucide.createIcons();
+}
+
+function investmentAllocationRemainingAmount() {
+  const target = Math.abs(safeNumber(state.currentInvestmentAllocationPrompt?.movement?.amount));
+  const total = roundMoney(sum(readInvestmentAllocationRows().map(row => safeNumber(row.importe))));
+  return roundMoney(target - total);
+}
+
+async function saveInvestmentAllocationPrompt(event) {
+  event.preventDefault();
+  const prompt = state.currentInvestmentAllocationPrompt;
+  const movement = normalizeTransaction(prompt?.movement);
+  if (!movement) return;
+  const target = Math.abs(safeNumber(movement.amount));
+  const rows = readInvestmentAllocationRows().filter(row => safeNumber(row.importe) > 0);
+  const total = roundMoney(sum(rows.map(row => safeNumber(row.importe))));
+  if (Math.abs(total - target) >= 0.01) {
+    setNotice(`El reparto no cuadra: ${money(total)} de ${money(target)}. Ajusta los importes antes de guardar.`, "warn");
+    return;
+  }
+  const invalid = rows.find(row => !row.data || !row.nombre || !row.shortName || !safeNumber(row.precioUsado) || !Number.isFinite(row.sharesEstimadas));
+  if (invalid) {
+    setNotice("Cada fila debe tener ticker/ISIN, short, nombre, precio e importe.", "warn");
+    return;
+  }
+  const entries = rows.map(row => normalizeInvestmentEstimateLedger({
+    id: createSid("est"), activo: true, fechaMovimiento: formatDate(movement.date), sidMovimiento: movement.sid,
+    tipo: row.tipo, data: row.data, nombre: row.nombre, shortName: row.shortName,
+    importe: roundMoney(row.importe), precioUsado: safeNumber(row.precioUsado), sharesEstimadas: row.sharesEstimadas,
+    origen: prompt.source === "futuro" ? "movimiento futuro activado" : "registro confirmado"
+  }));
+  const btn = document.getElementById("saveInvestmentAllocationBtn");
+  markButtonSaving(btn);
+  try {
+    state.investmentEstimateLedger.push(...entries);
+    writeDataCache({ dirtySections: ["investmentEstimateLedger"] });
+    queueOp({ action: "saveInvestmentEstimateAllocations", movement: serializeTransaction(movement), entries });
+    setNotice("Reparto guardado como estimación.", "ok");
+    document.getElementById("investmentAllocationDialog")?.close();
+    renderInvestments();
+  } catch (error) {
+    setNotice(lineMessage("No se pudo guardar el reparto.", error.message), "warn");
+  } finally {
+    restoreButton(btn);
+    if (document.getElementById("investmentAllocationDialog")?.open) {
+      updateInvestmentAllocationTotals();
+    }
+  }
 }
 
 function loadEvolutionRange() {
@@ -4710,6 +5722,12 @@ function quantityFmt(value) {
   const number = Number(value) || 0;
   const decimals = Math.abs(number) > 0 && Math.abs(number) < 0.01 ? 6 : 4;
   return new Intl.NumberFormat("es-ES", { maximumFractionDigits: decimals }).format(number);
+}
+function estimatedSharesFmt(value) {
+  return new Intl.NumberFormat("es-ES", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
+  }).format(Number(value) || 0);
 }
 function round2(value) {
   const n = safeNumber(value);
