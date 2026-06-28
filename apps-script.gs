@@ -80,7 +80,12 @@ function doGet(e) {
         const moveStamp = bumpSections_('transactions', 'futureTransactions', 'banks', 'investmentTotals');
         recordMovedFutureChanges_(movedFutureMovements, moveStamp, previousRevs);
       }
-      payload = buildCoreDataPayload_(investmentSheet, bankSheet, objectiveSheet, dataSheet, movedFutureMovements, movementSheet, futureMovementSheet, investmentTotalsSheet, investmentEstimateRulesSheet, investmentEstimateLedgerSheet);
+      payload = {
+        ok: true,
+        movedFutureMovements,
+        banks: readBanks_(bankSheet),
+        investmentTotals: readInvestmentTotals_(investmentTotalsSheet)
+      };
     } else if (action === 'all') {
       const movedFutureMovements = moveDueFutureMovements_(futureMovementSheet, movementSheet, bankSheet);
       if (movedFutureMovements.length) {
@@ -308,6 +313,7 @@ function sectionsForPayload_(payload) {
     return sheet === DEFAULT_FUTURE_MOVEMENT_SHEET ? ['futureTransactions'] : ['transactions', 'investmentTotals'];
   }
   if (action === 'updateInvestment' || action === 'saveInvestments' || action === 'deleteInvestment') return ['investments', 'investmentTotals', 'investmentEstimateLedger'];
+  if (action === 'saveInvestmentCategories') return ['categories', 'investments', 'investmentTotals', 'transactions', 'futureTransactions'];
   if (action === 'saveInvestmentEstimateRules') return ['investmentEstimateRules', 'investmentEstimateLedger'];
   if (action === 'clearInvestmentEstimates' || action === 'simulateInvestmentEstimateRule' || action === 'saveInvestmentEstimateAllocations') return ['investmentEstimateLedger'];
   if (action === 'saveInvestmentGoals') return ['investmentGoals'];
@@ -919,6 +925,7 @@ function moveDueFutureMovements_(futureSheetName, movementSheetName, bankSheetNa
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const futureSheet = ss.getSheetByName(futureSheetName);
   if (!futureSheet) return [];
+  const sidCol = ensureMovementSidColumn_(futureSheet);
   const values = futureSheet.getDataRange().getValues();
   const today = new Date();
   today.setHours(23, 59, 59, 999);
@@ -928,7 +935,6 @@ function moveDueFutureMovements_(futureSheetName, movementSheetName, bankSheetNa
     const row = values[r];
     const date = parseMovementDate_(row[0]);
     if (!date || date > today) continue;
-    const sidCol = ensureMovementSidColumn_(futureSheet);
     const movement = { sid: sidCol ? String(row[sidCol - 1] || '').trim() : '', fecha: normalizeDate_(date), tipo: row[4], concepto: row[5], descripcion: row[6], importe: parseNumber_(row[7]) };
     if (isTransferType_(movement.tipo)) {
       const accounts = parseTransferAccountText_(row[8] || row[6]);

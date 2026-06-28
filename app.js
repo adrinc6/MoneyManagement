@@ -128,7 +128,7 @@ const state = {
 };
 
 document.addEventListener("DOMContentLoaded", () => {
-  investmentDebug("app cargada", { version: "estimaciones-v17" });
+  investmentDebug("app cargada", { version: "local-mirror-v19" });
   applySavedTheme();
   applySavedInvestmentEstimateMode();
   lucide.createIcons();
@@ -589,12 +589,8 @@ function setInvestmentEstimateModeFromToggle(event) {
 
 function saveInvestmentModePreference() {
   if (!state.config.scriptUrl) return;
-  postAppsScript({ action: "saveInvestmentModePreference", investmentMode: state.investmentMode })
-    .then(() => logSyncEvent(`Modo de inversión guardado para notificaciones: ${state.investmentMode}.`, "ok"))
-    .catch(error => {
-      queueOp({ action: "saveInvestmentModePreference", investmentMode: state.investmentMode });
-      logSyncEvent("Modo de inversión pendiente de guardar para notificaciones.", "warn", error.message || String(error));
-    });
+  queueOp({ action: "saveInvestmentModePreference", investmentMode: state.investmentMode });
+  logSyncEvent(`Modo de inversión actualizado en local y enviado para notificaciones: ${state.investmentMode}.`, "ok");
 }
 
 function refreshChartTheme() {
@@ -886,7 +882,9 @@ async function refreshData(options = {}) {
         : [];
 
     if (shouldMoveDueFutureMovements) {
-      neededSections = unique([...neededSections, "transactions", "futureTransactions", "banks"]);
+      neededSections = forceRequestedSections
+        ? unique([...neededSections, "transactions", "futureTransactions", "banks"])
+        : unique([...neededSections, "banks", "investmentTotals"]);
       setNotice(`Hay ${dueFutureMovementsFromCache.length} movimiento(s) futuro(s) vencido(s). Los muevo y actualizo lo necesario...`, "warn");
     }
 
@@ -969,15 +967,16 @@ async function refreshData(options = {}) {
             categories: core.categories || state.categories
           };
         }
-        if (needsMovements || shouldMoveDueFutureMovements) {
-          syncStatusStep(showProgress, "Descargando movimientos", "");
+        const movementReconciliationNeeded = shouldMoveDueFutureMovements && !movedFutureMovements.length;
+        if (needsMovements || movementReconciliationNeeded) {
+          syncStatusStep(showProgress, movementReconciliationNeeded ? "Reconciliando movimientos" : "Descargando movimientos", "");
           const movementDownloads = [];
-          if (neededSections.includes("transactions") || shouldMoveDueFutureMovements) {
+          if (neededSections.includes("transactions") || movementReconciliationNeeded) {
             movementDownloads.push(downloadMovementSectionOptimized("realized", "transactions", "movimientos", cached, { showProgress, disableIncremental: true }));
           } else {
             movementDownloads.push(Promise.resolve(null));
           }
-          if (neededSections.includes("futureTransactions") || shouldMoveDueFutureMovements) {
+          if (neededSections.includes("futureTransactions") || movementReconciliationNeeded) {
             movementDownloads.push(downloadMovementSectionOptimized("future", "futureTransactions", "movimientos futuros", cached, { showProgress, disableIncremental: true }));
           } else {
             movementDownloads.push(Promise.resolve(null));
@@ -1012,6 +1011,13 @@ async function refreshData(options = {}) {
 
     if (movedFutureMovements.length) {
       ensureMovedFutureMovementsVisible(movedFutureMovements);
+      syncedSections = unique([
+        ...syncedSections,
+        "transactions",
+        "futureTransactions",
+        "banks",
+        "investmentTotals"
+      ]);
       state.pendingInvestmentSummaryPopup = {
         title: "Futuros movidos a realizados",
         movement: null,
@@ -1682,6 +1688,7 @@ function queuePayloadSections(payload = {}) {
   }
   if (["transferBank", "saveBanks", "addTransfersBatch"].includes(action)) return action === "addTransfersBatch" ? ["futureTransactions", "banks"] : ["banks"];
   if (["saveInvestments", "updateInvestment", "deleteInvestment"].includes(action)) return ["investments", "investmentTotals", "investmentEstimateLedger"];
+  if (action === "saveInvestmentCategories") return ["categories", "investments", "investmentTotals", "transactions", "futureTransactions"];
   if (["saveInvestmentEstimateRules"].includes(action)) return ["investmentEstimateRules", "investmentEstimateLedger"];
   if (["clearInvestmentEstimates", "simulateInvestmentEstimateRule", "saveInvestmentEstimateAllocations"].includes(action)) return ["investmentEstimateLedger"];
   if (action === "saveInvestmentGoals") return ["investmentGoals"];
@@ -1799,10 +1806,6 @@ async function processOpQueue() {
         writeDataCache({ syncedSections: synced });
         if (item.payload?.action === "updateInvestment" && item.payload?.newInvestment) {
           await refreshData({ force: true, scope: "investments", successMessage: "Inversión creada, precios actualizados y datos descargados desde Sheets." });
-        } else if (item.payload?.action === "deleteInvestment") {
-          await refreshData({ force: true, scope: "investments", successMessage: "Inversión eliminada y datos descargados desde Sheets." });
-        } else if (["saveInvestmentEstimateRules", "clearInvestmentEstimates", "simulateInvestmentEstimateRule", "saveInvestmentEstimateAllocations"].includes(item.payload?.action)) {
-          await refreshData({ force: true, scope: "investments", successMessage: "Estimaciones actualizadas desde Sheets." });
         }
         setSyncStatus("Cambio enviado\nCaché sincronizada", "ok");
       } catch (error) {
@@ -2925,6 +2928,7 @@ function addInvestmentRow() {
 
 async function saveInvestments() {
   readInvestmentEditor();
+  const payload = { action: "saveInvestments", sheetName: state.config.investmentSheet, investments: state.investments };
   if (!state.config.scriptUrl) {
     writeDataCache({ dirtySections: ["investments"] });
     rememberPendingSnapshot("investments");
@@ -2935,15 +2939,13 @@ async function saveInvestments() {
   const btn = document.getElementById("saveInvestmentsBtn");
   markButtonSaving(btn);
   try {
-    writeDataCache();
-    await postAppsScript({ action: "saveInvestments", sheetName: state.config.investmentSheet, investments: state.investments });
-    await refreshData({ force: true, scope: "investments", successMessage: "Inversiones guardadas y tabla recargada desde Sheets." });
+    writeDataCache({ dirtySections: queuePayloadSections(payload) });
+    queueOp(payload);
     markButtonSaved(btn);
-    setNotice("Inversiones guardadas y recargadas desde Sheets.", "ok");
+    setNotice("Inversiones guardadas en local y enviadas a Sheets.", "ok");
   } catch (error) {
-    queueOp({ action: "saveInvestments", sheetName: state.config.investmentSheet, investments: state.investments });
     restoreButton(btn);
-    setNotice(lineMessage("No se pudieron confirmar ahora; quedan pendientes.", error.message), "warn");
+    setNotice(lineMessage("No se pudo preparar el guardado.", error.message), "warn");
   } finally {
     renderInvestments();
   }
@@ -4885,6 +4887,7 @@ function readInvestmentEstimateRulesFromEditor() {
 
 async function saveInvestmentEstimateRules() {
   readInvestmentEstimateRulesFromEditor();
+  const payload = { action: "saveInvestmentEstimateRules", rules: state.investmentEstimateRules };
   const btn = document.getElementById("saveInvestmentEstimateRulesBtn");
   markButtonSaving(btn);
   try {
@@ -4894,14 +4897,12 @@ async function saveInvestmentEstimateRules() {
       markButtonSaved(btn);
       return;
     }
-    await postAppsScript({ action: "saveInvestmentEstimateRules", rules: state.investmentEstimateRules });
-    await refreshData({ force: true, scope: "investments", successMessage: "Reglas de estimación guardadas." });
+    queueOp(payload);
     markButtonSaved(btn);
-    setNotice("Reglas de estimación guardadas.", "ok");
+    setNotice("Reglas guardadas en local y enviadas a Sheets.", "ok");
   } catch (error) {
-    queueOp({ action: "saveInvestmentEstimateRules", rules: state.investmentEstimateRules });
     restoreButton(btn);
-    setNotice(lineMessage("No se pudieron confirmar ahora; quedan pendientes.", error.message), "warn");
+    setNotice(lineMessage("No se pudo preparar el guardado.", error.message), "warn");
   } finally {
     renderInvestmentEstimateRulesTable();
   }
@@ -4916,13 +4917,11 @@ async function clearInvestmentEstimates() {
     state.investmentEstimateLedger = [];
     writeDataCache({ dirtySections: ["investmentEstimateLedger"] });
     if (state.config.scriptUrl) {
-      await postAppsScript({ action: "clearInvestmentEstimates" });
-      await refreshData({ force: true, scope: "investments", successMessage: "Estimaciones borradas." });
+      queueOp({ action: "clearInvestmentEstimates" });
     }
     setNotice("Estimaciones borradas. Las reglas se conservan.", "ok");
   } catch (error) {
-    queueOp({ action: "clearInvestmentEstimates" });
-    setNotice(lineMessage("No se pudieron borrar ahora; queda pendiente.", error.message), "warn");
+    setNotice(lineMessage("No se pudo preparar el borrado.", error.message), "warn");
   } finally {
     restoreButton(btn);
     renderInvestments();
