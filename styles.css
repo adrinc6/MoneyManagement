@@ -2448,13 +2448,36 @@ TABLAS DE INVERSIONES: ajuste mínimo sin scroll horizontal
 }
 .estimate-allocation-toolbar {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) 92px 92px;
   align-items: center;
   gap: 8px;
 }
 .existing-allocation-picker {
+  display: block;
+  width: 100%;
   min-width: 0;
-  grid-template-columns: auto minmax(0, 1fr);
+  overflow: hidden;
+  border-radius: var(--radius-sm);
+}
+.existing-allocation-picker select {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.allocation-add-btn {
+  width: 92px;
+  min-width: 0;
+  min-height: 52px;
+  padding-inline: 8px;
+  white-space: normal;
+  line-height: 1.05;
+}
+.allocation-add-btn span {
+  text-align: center;
 }
 .estimate-allocation-wrap table input,
 .estimate-allocation-wrap table select {
@@ -2469,10 +2492,11 @@ TABLAS DE INVERSIONES: ajuste mínimo sin scroll horizontal
 }
 @media (max-width: 680px) {
   .estimate-allocation-toolbar {
-    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-columns: minmax(0, 1fr) 82px 82px;
     gap: 5px;
   }
-  .estimate-allocation-toolbar .btn {
+  .estimate-allocation-toolbar .allocation-add-btn {
+    width: 82px;
     padding-inline: 8px;
     font-size: .72rem;
   }

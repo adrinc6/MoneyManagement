@@ -469,7 +469,6 @@
       <button class="icon-btn" id="closeInvestmentEstimateRulesBtn" type="button" aria-label="Cerrar"><i data-lucide="x"></i></button>
     </div>
     <div class="panel-body estimate-rules-body">
-      <p class="dialog-help">Las reglas activas precargan el reparto del popup cuando el movimiento es de tipo/concepto Inversión y la descripción coincide con Bolsa, Cartera, Fondos u otro texto que pongas. Puedes usar Porcentaje o Importe fijo; si rellenas ambos, se usa el Importe fijo. En movimientos futuros se respeta Día; en registros manuales se ignora Día.</p>
       <div class="table-wrap estimate-rules-wrap"><table id="investmentEstimateRulesTable"></table></div>
       <div class="section-toolbar estimate-rules-toolbar">
         <button class="btn" id="addInvestmentEstimateRuleBtn" type="button"><i data-lucide="plus"></i> Regla</button>
@@ -494,9 +493,9 @@
       </div>
       <div class="table-wrap estimate-allocation-wrap"><table id="investmentAllocationTable"></table></div>
       <div class="section-toolbar estimate-allocation-toolbar">
-        <label class="existing-allocation-picker">Existente <select id="investmentAllocationExistingSelect"></select></label>
-        <button class="btn" id="addExistingInvestmentAllocationRowBtn" type="button"><i data-lucide="plus"></i> Añadir existente</button>
-        <button class="btn" id="addNewInvestmentAllocationRowBtn" type="button"><i data-lucide="plus-circle"></i> Añadir nuevo</button>
+        <label class="existing-allocation-picker"><select id="investmentAllocationExistingSelect"></select></label>
+        <button class="btn allocation-add-btn" id="addExistingInvestmentAllocationRowBtn" type="button"><i data-lucide="plus"></i><span>Añadir<br>existente</span></button>
+        <button class="btn allocation-add-btn" id="addNewInvestmentAllocationRowBtn" type="button"><i data-lucide="plus-circle"></i><span>Añadir<br>nuevo</span></button>
       </div>
     </form>
   </dialog>
