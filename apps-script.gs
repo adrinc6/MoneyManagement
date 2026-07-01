@@ -439,7 +439,9 @@ function recordMovedFutureChanges_(movements, rev, previousRevs) {
   const changes = [];
   (movements || []).forEach(movement => {
     changes.push(movementChangeEntry_('futureTransactions', 'delete', movement, rev, previousRevs && previousRevs.futureTransactions));
-    changes.push(movementChangeEntry_('transactions', 'upsert', movement, rev, previousRevs && previousRevs.transactions));
+    if (!isTransferType_(movement && movement.tipo)) {
+      changes.push(movementChangeEntry_('transactions', 'upsert', movement, rev, previousRevs && previousRevs.transactions));
+    }
   });
   appendMovementChanges_(changes.filter(Boolean));
 }

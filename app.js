@@ -1236,8 +1236,9 @@ function restoreButton(button) {
 
 function ensureMovedFutureMovementsVisible(movedFutureMovements) {
   const moved = movedFutureMovements.map(normalizeTransaction).filter(Boolean);
+  const realizedMovements = moved.filter(movement => !isTransfer(movement));
   const existingRealized = new Set(state.transactions.map(transactionSignature));
-  moved.forEach(movement => {
+  realizedMovements.forEach(movement => {
     const signature = transactionSignature(movement);
     if (!existingRealized.has(signature)) {
       state.transactions.push(movement);
