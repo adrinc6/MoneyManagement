@@ -2285,7 +2285,7 @@ TABLAS DE INVERSIONES: ajuste mínimo sin scroll horizontal
 }
 
 /* Resumen de inversión en modal Dinero */
-.investment-money-grid .money-item {
+.investment-money-grid .investment-summary-card {
   background: var(--panel);
   border: 1px solid var(--line);
 }
@@ -2302,6 +2302,8 @@ TABLAS DE INVERSIONES: ajuste mínimo sin scroll horizontal
   display: block;
   white-space: normal;
   line-height: 1.25;
+}
+.investment-money-grid .investment-summary-card small {
   text-align: right;
 }
 
