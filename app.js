@@ -2374,10 +2374,10 @@ function deleteAccountGroup() {
   setNotice("Tarjeta eliminada.", "ok");
 }
 
-function investmentSummaryCard(label, invested, current) {
+function investmentSummaryCard(label, invested, current, extraClass = "") {
   const gain = current - invested;
   const tone = gain >= 0 ? "positive" : "negative";
-  return `<div class="money-item investment-summary-card">
+  return `<div class="money-item investment-summary-card ${extraClass}">
     <span>${escapeHtml(label)}</span>
     <div class="investment-summary-card-row">
       <strong>${money(invested)}</strong>
@@ -2400,7 +2400,7 @@ function openMoneyDetail(mode) {
   document.getElementById("investedMoneyDetail").classList.toggle("hidden", isBank);
   document.getElementById("moneyDialogSummary").innerHTML = isBank ? "" : `
     <div class="money-grid investment-money-grid">
-      <div class="money-item investment-summary-total"><span>Invertido</span><strong>${money(summary.investedTotal)}</strong><small class="${summary.profitLoss >= 0 ? "positive" : "negative"}">Actual: ${money(summary.valueTotal)} · ${pct(summary.profitLossPct)}</small></div>
+      ${investmentSummaryCard("Invertido", summary.investedTotal, summary.valueTotal, "investment-summary-total")}
       ${parts}
     </div>
   `;
