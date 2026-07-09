@@ -1613,7 +1613,12 @@ function renameAccount_(bankSheetName, movementSheetName, futureMovementSheetNam
   const bankSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(bankSheetName);
   if (!bankSheet) throw new Error(`Sheet not found: ${bankSheetName}`);
   const bankRow = findBankRow_(bankSheet, normalizedOld);
-  if (!bankRow) throw new Error(`Bank account not found: ${normalizedOld}`);
+  if (!bankRow) {
+    // Reintento de una operación ya aplicada (p.ej. tras un timeout de red): si la cuenta
+    // antigua ya no existe pero la nueva sí, asumimos que el renombrado ya se completó.
+    if (findBankRow_(bankSheet, normalizedNew)) return { movementsUpdated: 0, futureMovementsUpdated: 0, alreadyApplied: true };
+    throw new Error(`Bank account not found: ${normalizedOld}`);
+  }
   if (findBankRow_(bankSheet, normalizedNew)) throw new Error(`Ya existe una cuenta llamada ${normalizedNew}`);
   bankSheet.getRange(bankRow, 1).setValue(normalizedNew);
   const movementsUpdated = renameAccountInMovementSheet_(movementSheetName, normalizedOld, normalizedNew);
@@ -1642,7 +1647,7 @@ function deleteAccount_(bankSheetName, movementSheetName, futureMovementSheetNam
   const bankSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(bankSheetName);
   if (!bankSheet) throw new Error(`Sheet not found: ${bankSheetName}`);
   const row = findBankRow_(bankSheet, normalized);
-  if (!row) throw new Error(`Bank account not found: ${normalized}`);
+  if (!row) return { movementsCount, futureMovementsCount, alreadyApplied: true };
   bankSheet.deleteRow(row);
   return { movementsCount, futureMovementsCount };
 }
