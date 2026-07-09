@@ -90,6 +90,7 @@ const THEME_KEY = "moneyTheme";
 const INVESTMENT_ESTIMATE_MODE_KEY = "moneyInvestmentEstimateMode";
 const EVOLUTION_RANGE_KEY = "moneyEvolutionRange";
 const ACCOUNT_GROUPS_KEY = "moneyAccountGroups";
+const FUTURE_MOVEMENT_ACCOUNT_SKIP_KEY = "moneyFutureMovementAccountSkip";
 const FULL_MONTH_NAMES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
 const SYSTEM_GOAL_LABELS = {
   expenseMonthly: "Gasto mensual",
@@ -146,7 +147,8 @@ const state = {
   investmentNotificationsSending: false,
   pendingInvestmentAllocationPrompts: [],
   currentInvestmentAllocationPrompt: null,
-  pendingInvestmentSummaryPopup: null
+  pendingInvestmentSummaryPopup: null,
+  futureMovementAccountPromptDismissed: false
 };
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -972,10 +974,17 @@ async function refreshData(options = {}) {
         };
       } else {
         let core = null;
-        if (needsCore || shouldMoveDueFutureMovements) {
-          const coreAction = shouldMoveDueFutureMovements ? "moveDueFutureMovements" : "downloadCoreData";
-          syncStatusStep(showProgress, shouldMoveDueFutureMovements ? "Moviendo futuros vencidos\nDescargando datos base" : "Descargando datos base", "");
-          core = await fetchAppsScriptData({ action: coreAction });
+        let moveDueNow = shouldMoveDueFutureMovements;
+        let moveSkipSids = [];
+        if (shouldMoveDueFutureMovements) {
+          const resolution = await resolveDueFutureMovementsToMove(dueFutureMovementsFromCache);
+          moveDueNow = resolution.proceed;
+          moveSkipSids = resolution.skipSids;
+        }
+        if (needsCore || moveDueNow) {
+          const coreAction = moveDueNow ? "moveDueFutureMovements" : "downloadCoreData";
+          syncStatusStep(showProgress, moveDueNow ? "Moviendo futuros vencidos\nDescargando datos base" : "Descargando datos base", "");
+          core = await fetchAppsScriptData({ action: coreAction, skipFutureSids: moveSkipSids });
           assertPayloadOk(core);
           movedFutureMovements = core.movedFutureMovements || [];
           freshData = {
@@ -989,7 +998,7 @@ async function refreshData(options = {}) {
             categories: core.categories || state.categories
           };
         }
-        const movementReconciliationNeeded = shouldMoveDueFutureMovements && !movedFutureMovements.length;
+        const movementReconciliationNeeded = moveDueNow && !movedFutureMovements.length;
         if (needsMovements || movementReconciliationNeeded) {
           syncStatusStep(showProgress, movementReconciliationNeeded ? "Reconciliando movimientos" : "Descargando movimientos", "");
           const movementDownloads = [];
@@ -1984,6 +1993,79 @@ function findDueFutureMovements(futureTransactions = []) {
     .filter(movement => movement && movement.date && movement.date <= today);
 }
 
+function bankAccountExists(account) {
+  const normalized = String(account || "").trim();
+  return Boolean(normalized) && state.banks.some(b => b.cuenta === normalized);
+}
+
+function dueFutureMovementAccountIssue(movement) {
+  if (isTransfer(movement)) {
+    const parts = movement.transferFrom && movement.transferTo
+      ? { from: movement.transferFrom, to: movement.transferTo }
+      : parseTransferAccountText(movement.cuenta || movement.descripcion);
+    if (!parts.from || !parts.to || parts.from === parts.to) return "sin cuentas de origen/destino válidas";
+    if (!bankAccountExists(parts.from)) return `la cuenta de origen "${parts.from}" ya no existe`;
+    if (!bankAccountExists(parts.to)) return `la cuenta de destino "${parts.to}" ya no existe`;
+    return "";
+  }
+  if (!movement.cuenta) return "no tiene cuenta seleccionada";
+  if (!bankAccountExists(movement.cuenta)) return `la cuenta "${movement.cuenta}" ya no existe`;
+  return "";
+}
+
+function invalidDueFutureMovements(dueMovements) {
+  return (dueMovements || [])
+    .map(movement => ({ movement, issue: dueFutureMovementAccountIssue(movement) }))
+    .filter(entry => entry.issue);
+}
+
+function loadFutureMovementAccountSkipSids() {
+  try { return new Set(JSON.parse(localStorage.getItem(FUTURE_MOVEMENT_ACCOUNT_SKIP_KEY) || "[]")); }
+  catch { return new Set(); }
+}
+
+function saveFutureMovementAccountSkipSids(sids) {
+  localStorage.setItem(FUTURE_MOVEMENT_ACCOUNT_SKIP_KEY, JSON.stringify([...sids]));
+}
+
+function addFutureMovementAccountSkipSids(newSids) {
+  const skip = loadFutureMovementAccountSkipSids();
+  newSids.forEach(sid => { if (sid) skip.add(sid); });
+  saveFutureMovementAccountSkipSids(skip);
+  return skip;
+}
+
+async function resolveDueFutureMovementsToMove(dueMovements) {
+  const invalid = invalidDueFutureMovements(dueMovements);
+  const invalidSids = new Set(invalid.map(entry => entry.movement.sid));
+  const skipSet = loadFutureMovementAccountSkipSids();
+  let skipSetChanged = false;
+  [...skipSet].forEach(sid => {
+    if (!invalidSids.has(sid)) { skipSet.delete(sid); skipSetChanged = true; }
+  });
+  if (skipSetChanged) saveFutureMovementAccountSkipSids(skipSet);
+  if (!invalid.length) return { proceed: true, skipSids: [] };
+  const pending = invalid.filter(entry => !skipSet.has(entry.movement.sid));
+  if (!pending.length) return { proceed: true, skipSids: invalid.map(entry => entry.movement.sid) };
+  if (state.futureMovementAccountPromptDismissed) return { proceed: false, skipSids: [] };
+  const lines = pending.slice(0, 8).map(entry => `${formatDate(entry.movement.date)} · ${entry.movement.concepto || entry.movement.tipo}: ${entry.issue}`);
+  if (pending.length > 8) lines.push(`… y ${pending.length - 8} más`);
+  const message = [
+    `${pending.length} movimiento(s) futuro(s) vencido(s) no se pueden mover automáticamente porque su cuenta ya no existe o no se puede elegir:`,
+    "",
+    lines.join("\n"),
+    "",
+    "Acepta para mover el resto de vencidos y dejar estos como futuros (podrás corregirlos y moverlos a mano). Cancela para no mover ningún vencido todavía."
+  ].join("\n");
+  const confirmed = await confirmDialog(message, "Movimientos futuros con cuenta inválida");
+  if (!confirmed) {
+    state.futureMovementAccountPromptDismissed = true;
+    return { proceed: false, skipSids: [] };
+  }
+  addFutureMovementAccountSkipSids(pending.map(entry => entry.movement.sid));
+  return { proceed: true, skipSids: invalid.map(entry => entry.movement.sid) };
+}
+
 async function fetchAppsScriptData(options = {}) {
   if (!state.config.scriptUrl) throw new Error("falta la URL de Apps Script");
   if (navigator.onLine === false) throw new Error("Sin conexión");
@@ -2017,6 +2099,7 @@ async function fetchAppsScriptData(options = {}) {
   if (options.investmentTotalsSheet) params.set("investmentTotalsSheet", options.investmentTotalsSheet);
   if (options.renames) params.set("renames", JSON.stringify(options.renames));
   if (options.sheetName) params.set("sheetName", options.sheetName);
+  if (options.skipFutureSids && options.skipFutureSids.length) params.set("skipFutureSids", options.skipFutureSids.join(","));
   if (options.clientOpId) params.set("clientOpId", options.clientOpId);
   if (options.notificationRequestId) params.set("notificationRequestId", options.notificationRequestId);
   if (options.newInvestment) params.set("newInvestment", "1");
@@ -2778,12 +2861,13 @@ function renderMovementEntries(year, month) {
 function renderMovementTable(rows) {
   const table = document.getElementById("movementTable");
   table.classList.toggle("movement-bulk-edit", state.movementBulkEdit);
+  table.classList.toggle("future-movements", state.movementMode === "future");
   const columns = [
     ["day", "Día", t => t.date.getDate()],
     ["type", "Tipo", t => t.tipo],
     ["concept", "Concepto", t => t.concepto],
     ["desc", "Desc.", t => t.descripcion],
-    ["amount", "Importe", t => t.amount]
+    ["money", "Importe", t => t.amount]
   ];
   const control = state.tableControls.movement || {};
   let visibleRows = [...rows];
@@ -2799,10 +2883,13 @@ function renderMovementTable(rows) {
     if (column[0] === "type") return `<td class="col-type">${tag(t.tipo)}</td>`;
     if (column[0] === "concept") return `<td class="text-clip col-concept" title="${escapeAttr(t.concepto)}">${escapeHtml(t.concepto)}</td>`;
     if (column[0] === "desc") {
-      if (state.movementMode === "future" && t.cuenta) {
+      if (state.movementMode === "future") {
+        const accountText = t.cuenta || "Sin cuenta";
+        const accountIssue = dueFutureMovementAccountIssue(t);
+        const showDescription = t.descripcion && t.descripcion !== accountText;
         return `<td class="col-desc col-desc-with-account">
-          <span class="text-clip" title="${escapeAttr(t.descripcion)}">${escapeHtml(t.descripcion)}</span>
-          <span class="text-clip cell-secondary" title="${escapeAttr(t.cuenta)}">${escapeHtml(t.cuenta)}</span>
+          ${showDescription ? `<span class="text-clip" title="${escapeAttr(t.descripcion)}">${escapeHtml(t.descripcion)}</span>` : ""}
+          <span class="text-clip cell-secondary${accountIssue ? " cell-secondary-warn" : ""}" title="${escapeAttr(accountIssue || accountText)}">${escapeHtml(accountText)}</span>
         </td>`;
       }
       return `<td class="text-clip col-desc" title="${escapeAttr(t.descripcion)}">${escapeHtml(t.descripcion)}</td>`;

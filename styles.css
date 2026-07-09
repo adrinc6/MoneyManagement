@@ -963,9 +963,11 @@ th {
 .col-type { width: 1%; min-width: 0; }
 .col-concept { width: 12ch; min-width: 11ch; }
 .col-desc { width: auto; min-width: 12ch; }
-.col-desc-with-account { display: flex; flex-direction: column; gap: 1px; padding-block: 6px; }
+.col-desc-with-account { padding-block: 6px; white-space: normal; }
 .col-desc-with-account .text-clip { display: block; }
+.col-desc-with-account .cell-secondary { margin-top: 1px; }
 .cell-secondary { color: var(--muted); font-size: 0.785em; }
+.cell-secondary-warn { color: var(--bad); font-weight: 600; }
 .col-detail { width: auto; min-width: 8ch; }
 .col-qty { width: 6ch; min-width: 6ch; text-align: right; }
 .col-money { width: 9ch; min-width: 9ch; text-align: right; }
@@ -1039,16 +1041,31 @@ th {
   text-align: center;
 }
 #movementTable .col-type {
-  width: calc(.25 * (100% - 38px - 7ch));
+  width: 19%;
   min-width: 0;
 }
 #movementTable .col-concept {
-  width: calc(.35 * (100% - 38px - 7ch));
+  width: 27%;
   min-width: 0;
 }
 #movementTable .col-desc {
-  width: calc(.4 * (100% - 38px - 7ch));
+  width: 31%;
   min-width: 0;
+}
+#movementTable.future-movements .col-type {
+  width: 14%;
+  min-width: 0;
+}
+#movementTable.future-movements .col-concept {
+  width: 21%;
+  min-width: 0;
+}
+#movementTable.future-movements .col-desc {
+  width: 42%;
+  min-width: 0;
+}
+#movementTable.future-movements .cell-secondary {
+  font-size: 0.72em;
 }
 #movementTable .col-money {
   width: 7ch;
@@ -2478,6 +2495,7 @@ TABLAS DE INVERSIONES: ajuste mínimo sin scroll horizontal
 .dialog-help {
   margin: 0;
   font-size: 0.795rem;
+  white-space: pre-line;
 }
 .estimate-rules-wrap {
   max-height: min(58vh, 560px);

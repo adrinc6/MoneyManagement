@@ -34,6 +34,7 @@ function doGet(e) {
   const investmentEstimateRulesSheet = params.investmentEstimateRulesSheet || DEFAULT_INVESTMENT_ESTIMATE_RULES_SHEET;
   const investmentEstimateLedgerSheet = params.investmentEstimateLedgerSheet || DEFAULT_INVESTMENT_ESTIMATE_LEDGER_SHEET;
   const investmentMode = params.investmentMode || investmentModePreference_();
+  const skipFutureSids = String(params.skipFutureSids || '').split(',').map(function(s) { return s.trim(); }).filter(Boolean);
 
   let payload;
   try {
@@ -73,7 +74,7 @@ function doGet(e) {
         dataSheet
       );
     } else if (action === 'moveDueFutureMovements') {
-      const movedFutureMovements = moveDueFutureMovements_(futureMovementSheet, movementSheet, bankSheet);
+      const movedFutureMovements = moveDueFutureMovements_(futureMovementSheet, movementSheet, bankSheet, skipFutureSids);
       if (movedFutureMovements.length) {
         movedFutureMovements.forEach(function(movement) { adjustInvestmentCostFromMovement_(investmentTotalsSheet, dataSheet, investmentSheet, movementSheet, movement, 1); });
         syncInvestmentTotalsSheet_(investmentTotalsSheet, dataSheet, investmentSheet, movementSheet);
@@ -88,7 +89,7 @@ function doGet(e) {
         investmentTotals: readInvestmentTotals_(investmentTotalsSheet)
       };
     } else if (action === 'all') {
-      const movedFutureMovements = moveDueFutureMovements_(futureMovementSheet, movementSheet, bankSheet);
+      const movedFutureMovements = moveDueFutureMovements_(futureMovementSheet, movementSheet, bankSheet, skipFutureSids);
       if (movedFutureMovements.length) {
         movedFutureMovements.forEach(function(movement) { adjustInvestmentCostFromMovement_(investmentTotalsSheet, dataSheet, investmentSheet, movementSheet, movement, 1); });
         syncInvestmentTotalsSheet_(investmentTotalsSheet, dataSheet, investmentSheet, movementSheet);
@@ -935,10 +936,13 @@ function readFutureMovements_(sheetName) {
   return page.rows;
 }
 
-function moveDueFutureMovements_(futureSheetName, movementSheetName, bankSheetName) {
+function moveDueFutureMovements_(futureSheetName, movementSheetName, bankSheetName, skipSids) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const futureSheet = ss.getSheetByName(futureSheetName);
   if (!futureSheet) return [];
+  const bankSheet = ss.getSheetByName(bankSheetName);
+  const skipSet = {};
+  (skipSids || []).forEach(function(sid) { const trimmed = String(sid || '').trim(); if (trimmed) skipSet[trimmed] = true; });
   const sidCol = ensureMovementSidColumn_(futureSheet);
   const values = futureSheet.getDataRange().getValues();
   const today = new Date();
@@ -949,14 +953,19 @@ function moveDueFutureMovements_(futureSheetName, movementSheetName, bankSheetNa
     const row = values[r];
     const date = parseMovementDate_(row[0]);
     if (!date || date > today) continue;
-    const movement = { sid: sidCol ? String(row[sidCol - 1] || '').trim() : '', fecha: normalizeDate_(date), tipo: row[4], concepto: row[5], descripcion: row[6], importe: parseNumber_(row[7]) };
+    const sid = sidCol ? String(row[sidCol - 1] || '').trim() : '';
+    if (sid && skipSet[sid]) continue;
+    const movement = { sid: sid, fecha: normalizeDate_(date), tipo: row[4], concepto: row[5], descripcion: row[6], importe: parseNumber_(row[7]) };
     if (isTransferType_(movement.tipo)) {
       const accounts = parseTransferAccountText_(row[8] || row[6]);
       const amount = Math.abs(Number(movement.importe || 0));
       if (!accounts.from || !accounts.to || accounts.from === accounts.to || !Number.isFinite(amount) || amount <= 0) continue;
+      // Account renamed or deleted since the transfer was scheduled: leave it as a future movement instead of crashing.
+      if (bankSheet && (!findBankRow_(bankSheet, accounts.from) || !findBankRow_(bankSheet, accounts.to))) continue;
       transferBank_(bankSheetName, accounts.from, accounts.to, amount);
       moved.push({ ...movement, cuenta: `${accounts.from} → ${accounts.to}`, transferFrom: accounts.from, transferTo: accounts.to });
     } else {
+      if (row[8] && bankSheet && !findBankRow_(bankSheet, row[8])) continue;
       addMovement_(movement, movementSheetName);
       if (row[8]) adjustBank_(bankSheetName, row[8], movement.importe);
       moved.push({ ...movement, cuenta: row[8] || '' });
