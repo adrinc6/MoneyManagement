@@ -29,18 +29,6 @@ window.addEventListener("unhandledrejection", event => {
   notifyGlobalError("Promesa rechazada sin capturar", event.reason);
 });
 
-function updateViewportHeightVar() {
-  const height = window.visualViewport ? window.visualViewport.height : window.innerHeight;
-  document.documentElement.style.setProperty("--app-vh", `${height}px`);
-}
-if (window.visualViewport) {
-  window.visualViewport.addEventListener("resize", updateViewportHeightVar);
-} else {
-  window.addEventListener("resize", updateViewportHeightVar);
-}
-document.addEventListener("focusout", () => setTimeout(updateViewportHeightVar, 60));
-updateViewportHeightVar();
-
 window.addEventListener("offline", () => {
   if (typeof showToast === "function") showToast("Sin conexión. Los cambios se guardan en cola y se enviarán al volver.", "warn", 3200);
   if (typeof logSyncEvent === "function") logSyncEvent("Sin conexión", "warn");
