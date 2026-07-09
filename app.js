@@ -2235,23 +2235,26 @@ function renderAll() {
   lucide.createIcons();
 }
 
+function getPersonalCardTotal() {
+  const group = (state.accountGroups || []).find(g => /personal/i.test(g.name || ""));
+  if (!group) return null;
+  return sum(state.banks.filter(bank => group.accountNames.includes(bank.cuenta)).map(bank => bank.dinero));
+}
+
 function renderRegistrarSummaryCompact() {
   const el = document.getElementById("registrarSummary");
   if (!el) return;
   const summary = calculateSummary(getSelectedSummaryMonth());
   const selectedMonth = getSelectedSummaryMonth();
   const investedCurrentMonth = Math.abs(sum(state.transactions.filter(t => isInvestment(t) && monthKey(t.date) === selectedMonth).map(t => t.amount)));
-  const investedWithProfit = summary.investedTotal + summary.profitLoss;
-  const investedWithProfitLabel = summary.investedTotal
-    ? `Inv. + gan. (${pct(summary.profitLossPct)})`
-    : "Inv. + gan.";
+  const personalTotal = getPersonalCardTotal();
   const cards = [
-    { label: "Dinero banco", value: money(summary.bank) },
+    { label: "Dinero bancos total", value: money(summary.bank) },
     { label: "Dinero invertido", value: money(summary.investedTotal) },
+    { label: "Uso personal", value: personalTotal === null ? "-€" : money(personalTotal) },
+    { label: "Invertido mes actual", value: money(investedCurrentMonth) },
     { label: "Ingresos mes actual", value: money(summary.income) },
-    { label: investedWithProfitLabel, value: money(investedWithProfit) },
-    { label: "Gastos mes actual", value: money(summary.expenses) },
-    { label: "Invertido mes actual", value: money(investedCurrentMonth) }
+    { label: "Gastos mes actual", value: money(summary.expenses) }
   ];
   el.innerHTML = cards.map(card => `
     <article class="mini-stat-card">
@@ -2285,7 +2288,7 @@ function renderMoneySummary(summary) {
   const groups = state.accountGroups || [];
   const groupRows = groups.map(group => {
     const total = sum(state.banks.filter(bank => group.accountNames.includes(bank.cuenta)).map(bank => bank.dinero));
-    return `<button class="money-row money-action" data-account-group-id="${escapeAttr(group.id)}" type="button">
+    return `<button class="money-row money-row-group money-action" data-account-group-id="${escapeAttr(group.id)}" type="button">
       <span>${escapeHtml(group.name)}</span>
       <strong>${money(total)}</strong>
     </button>`;
@@ -2293,7 +2296,7 @@ function renderMoneySummary(summary) {
   document.getElementById("moneySummary").innerHTML = `
     <div class="money-list">
       <button class="money-row money-action" id="openAllAccountsBtn" type="button">
-        <span>Banco</span>
+        <span>Total Bancos</span>
         <strong>${money(summary.bank)}</strong>
       </button>
       ${groupRows}
