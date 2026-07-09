@@ -158,7 +158,7 @@ function doGet(e) {
       payload = { ok: false, error: 'Unknown action' };
     }
   } catch (err) {
-    payload = { ok: false, error: String(err && err.message ? err.message : err) };
+    payload = errorPayload_(err);
   }
 
   const json = JSON.stringify(payload);
@@ -589,9 +589,17 @@ function doPost(e) {
       transferBank_(payload.bankSheet || DEFAULT_BANK_SHEET, payload.from, payload.to, Number(payload.amount || 0));
       return finishPost_(pendingId, payload, { ok: true });
     }
+    if (payload.action === 'renameAccount') {
+      const renamed = renameAccount_(payload.bankSheet || DEFAULT_BANK_SHEET, payload.movementSheet || DEFAULT_MOVEMENT_SHEET, payload.futureMovementSheet || DEFAULT_FUTURE_MOVEMENT_SHEET, payload.oldName || '', payload.newName || '');
+      return finishPost_(pendingId, payload, Object.assign({ ok: true }, renamed));
+    }
+    if (payload.action === 'deleteAccount') {
+      const deleted = deleteAccount_(payload.bankSheet || DEFAULT_BANK_SHEET, payload.movementSheet || DEFAULT_MOVEMENT_SHEET, payload.futureMovementSheet || DEFAULT_FUTURE_MOVEMENT_SHEET, payload.account || '', Boolean(payload.force));
+      return finishPost_(pendingId, payload, Object.assign({ ok: true }, deleted));
+    }
     return finishPost_(pendingId, payload, { ok: false, error: 'Unknown action' });
   } catch (err) {
-    return json_({ ok: false, error: String(err && err.message ? err.message : err) });
+    return json_(errorPayload_(err));
   }
 }
 
@@ -1506,6 +1514,67 @@ function findBankRow_(sheet, account) {
     if (String(values[i][0]).trim() === String(account).trim()) return i + 2;
   }
   return 0;
+}
+
+function renameAccountInMovementSheet_(sheetName, oldName, newName) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
+  if (!sheet) return 0;
+  const rowCount = sheet.getLastRow() - 1;
+  if (rowCount <= 0 || sheet.getLastColumn() < 9) return 0;
+  const range = sheet.getRange(2, 9, rowCount, 1);
+  const values = range.getValues();
+  let changed = 0;
+  const normalizedOld = String(oldName).trim();
+  values.forEach(row => {
+    if (String(row[0]).trim() === normalizedOld) {
+      row[0] = newName;
+      changed++;
+    }
+  });
+  if (changed) range.setValues(values);
+  return changed;
+}
+
+function renameAccount_(bankSheetName, movementSheetName, futureMovementSheetName, oldName, newName) {
+  const normalizedOld = String(oldName || '').trim();
+  const normalizedNew = String(newName || '').trim();
+  if (!normalizedOld || !normalizedNew) throw new Error('Nombre de cuenta inválido');
+  if (normalizedOld === normalizedNew) return { movementsUpdated: 0, futureMovementsUpdated: 0 };
+  const bankSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(bankSheetName);
+  if (!bankSheet) throw new Error(`Sheet not found: ${bankSheetName}`);
+  const bankRow = findBankRow_(bankSheet, normalizedOld);
+  if (!bankRow) throw new Error(`Bank account not found: ${normalizedOld}`);
+  if (findBankRow_(bankSheet, normalizedNew)) throw new Error(`Ya existe una cuenta llamada ${normalizedNew}`);
+  bankSheet.getRange(bankRow, 1).setValue(normalizedNew);
+  const movementsUpdated = renameAccountInMovementSheet_(movementSheetName, normalizedOld, normalizedNew);
+  const futureMovementsUpdated = renameAccountInMovementSheet_(futureMovementSheetName, normalizedOld, normalizedNew);
+  return { movementsUpdated, futureMovementsUpdated };
+}
+
+function accountReferenceCountInMovementSheet_(sheetName, account) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
+  if (!sheet) return 0;
+  const rowCount = sheet.getLastRow() - 1;
+  if (rowCount <= 0 || sheet.getLastColumn() < 9) return 0;
+  const values = sheet.getRange(2, 9, rowCount, 1).getValues();
+  const normalized = String(account).trim();
+  return values.filter(row => String(row[0]).trim() === normalized).length;
+}
+
+function deleteAccount_(bankSheetName, movementSheetName, futureMovementSheetName, account, force) {
+  const normalized = String(account || '').trim();
+  if (!normalized) throw new Error('Nombre de cuenta inválido');
+  const movementsCount = accountReferenceCountInMovementSheet_(movementSheetName, normalized);
+  const futureMovementsCount = accountReferenceCountInMovementSheet_(futureMovementSheetName, normalized);
+  if (!force && (movementsCount || futureMovementsCount)) {
+    throw new Error(`La cuenta tiene ${movementsCount + futureMovementsCount} movimientos asociados. Confirma para borrar igualmente.`);
+  }
+  const bankSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(bankSheetName);
+  if (!bankSheet) throw new Error(`Sheet not found: ${bankSheetName}`);
+  const row = findBankRow_(bankSheet, normalized);
+  if (!row) throw new Error(`Bank account not found: ${normalized}`);
+  bankSheet.deleteRow(row);
+  return { movementsCount, futureMovementsCount };
 }
 
 function saveInvestments_(investments, sheetName) {
@@ -2430,4 +2499,21 @@ function json_(payload) {
   return ContentService
     .createTextOutput(JSON.stringify(payload))
     .setMimeType(ContentService.MimeType.JSON);
+}
+
+function errorCode_(err) {
+  const message = String(err && err.message ? err.message : err || '');
+  if (/Invalid app token/i.test(message)) return 'AUTH';
+  if (/Sheet not found/i.test(message)) return 'SHEET_NOT_FOUND';
+  if (/not found/i.test(message)) return 'NOT_FOUND';
+  if (/Invalid transfer|inválido|inv[aá]lida/i.test(message)) return 'VALIDATION';
+  if (/tiene \d+ movimientos asociados/i.test(message)) return 'CONFLICT';
+  if (/Ya existe una cuenta/i.test(message)) return 'CONFLICT';
+  if (/quota|límite|limit/i.test(message)) return 'QUOTA';
+  return 'UNKNOWN';
+}
+
+function errorPayload_(err) {
+  const message = String(err && err.message ? err.message : err);
+  return { ok: false, error: message, errorCode: errorCode_(err) };
 }
