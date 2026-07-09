@@ -456,12 +456,22 @@ function buildClientOpStatusPayload_(clientOpId) {
 
 function rememberProcessedClientOp_(clientOpId) {
   if (!clientOpId) return;
-  const props = PropertiesService.getDocumentProperties();
-  const items = JSON.parse(props.getProperty(processedClientOpsKey_()) || '[]')
-    .filter(item => item && item.id !== clientOpId)
-    .slice(-200);
-  items.push({ id: clientOpId, at: new Date().toISOString() });
-  props.setProperty(processedClientOpsKey_(), JSON.stringify(items));
+  try {
+    const props = PropertiesService.getDocumentProperties();
+    let items = JSON.parse(props.getProperty(processedClientOpsKey_()) || '[]')
+      .filter(item => item && item.id !== clientOpId);
+    items.push({ id: clientOpId, at: new Date().toISOString() });
+    // PropertiesService limita cada valor a 9 KB; si excede el límite se recorta
+    // hasta que quepa, para no perder nunca la confirmación de la operación actual.
+    let serialized = JSON.stringify(items);
+    while (serialized.length > 9000 && items.length > 1) {
+      items = items.slice(1);
+      serialized = JSON.stringify(items);
+    }
+    props.setProperty(processedClientOpsKey_(), serialized);
+  } catch (err) {
+    // No dejar que un fallo aquí oculte que la operación sí se completó.
+  }
 }
 
 function wasClientOpProcessed_(clientOpId) {
@@ -627,12 +637,15 @@ function finishPost_(pendingId, requestPayload, responsePayload) {
   removePendingPost_(pendingId);
   const response = responsePayload || requestPayload || { ok: true };
   if (response.ok !== false && requestPayload && requestPayload.action) {
+    // Se marca primero como procesada para que una excepción en los pasos de
+    // abajo (changelog, revisiones de sección) no deje la operación "colgada"
+    // sin confirmar en el cliente, ya que la mutación principal ya se aplicó.
+    rememberProcessedClientOp_(requestPayload.clientOpId || '');
     const sections = sectionsForPayload_(requestPayload);
     const previousRevs = {};
     sections.forEach(section => previousRevs[section] = getSectionRevision_(section));
     const stamp = bumpSections_.apply(null, sections);
     recordPayloadMovementChanges_(requestPayload, stamp, previousRevs);
-    rememberProcessedClientOp_(requestPayload.clientOpId || '');
   }
   return json_(response);
 }

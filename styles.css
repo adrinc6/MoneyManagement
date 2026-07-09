@@ -958,7 +958,7 @@ th {
   text-overflow: clip;
 }
 .text-clip { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.col-day { width: 1%; min-width: 0; text-align: center; }
+.col-day { width: 1%; min-width: 0; text-align: center; text-overflow: clip; }
 .col-select { width: 34px; min-width: 34px; text-align: center; }
 .col-type { width: 1%; min-width: 0; }
 .col-concept { width: 12ch; min-width: 11ch; }
@@ -970,7 +970,7 @@ th {
 .cell-secondary-warn { color: var(--bad); font-weight: 600; }
 .col-detail { width: auto; min-width: 8ch; }
 .col-qty { width: 6ch; min-width: 6ch; text-align: right; }
-.col-money { width: 9ch; min-width: 9ch; text-align: right; }
+.col-money { width: 11ch; min-width: 11ch; text-align: right; }
 .col-pct { width: 5ch; min-width: 5ch; }
 .tag {
   display: inline-block;
@@ -1568,8 +1568,8 @@ dialog::backdrop { background: rgba(15, 23, 42, .5); }
   table { font-size: 0.765rem; }
   .col-day { width: 1%; min-width: 0; }
   .col-type { width: 1%; min-width: 0; }
-  .col-concept { width: 12ch; min-width: 11ch; }
-  .col-money { width: 8ch; min-width: 8ch; }
+  .col-concept { width: 10ch; min-width: 9ch; }
+  .col-money { width: 10ch; min-width: 10ch; }
   .col-qty { width: 6ch; min-width: 6ch; }
   .col-pct { width: 5ch; min-width: 5ch; }
 
@@ -1686,11 +1686,11 @@ dialog[open] {
   min-width: 0;
 }
 .movement-popup-table th:nth-child(1),
-.movement-popup-table td:nth-child(1) { width: 48px; }
+.movement-popup-table td:nth-child(1) { width: 48px; white-space: nowrap; }
 .movement-popup-table th:nth-child(2),
 .movement-popup-table td:nth-child(2) { width: 54px; }
 .movement-popup-table th:nth-child(5),
-.movement-popup-table td:nth-child(5) { width: 54px; }
+.movement-popup-table td:nth-child(5) { width: 78px; white-space: nowrap; }
 .movement-popup-table th:nth-child(6),
 .movement-popup-table td:nth-child(6) { width: 64px; }
 .movement-popup-table .tag {
