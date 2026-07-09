@@ -616,6 +616,12 @@ function doPost(e) {
     }
     return finishPost_(pendingId, payload, { ok: false, error: 'Unknown action' });
   } catch (err) {
+    // Si la acción falla a medias, no dejamos la fila en "Pendientes": si no se
+    // limpia aquí, isClientOpPending_ devolvería pending:true para siempre y
+    // el cliente se quedaría "Confirmando" sin reintentar nunca la operación real.
+    if (pendingId) {
+      try { removePendingPost_(pendingId); } catch (cleanupErr) {}
+    }
     return json_(errorPayload_(err));
   }
 }

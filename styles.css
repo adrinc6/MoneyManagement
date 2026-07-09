@@ -958,11 +958,11 @@ th {
   text-overflow: clip;
 }
 .text-clip { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.col-day { width: 1%; min-width: 0; text-align: center; text-overflow: clip; }
+.col-day { width: 34px; min-width: 34px; text-align: center; text-overflow: clip; }
 .col-select { width: 34px; min-width: 34px; text-align: center; }
-.col-type { width: 1%; min-width: 0; }
-.col-concept { width: 12ch; min-width: 11ch; }
-.col-desc { width: auto; min-width: 12ch; }
+.col-type { width: 20%; min-width: 0; }
+.col-concept { width: 30%; min-width: 0; }
+.col-desc { width: auto; min-width: 0; }
 .col-desc-with-account { padding-block: 6px; white-space: normal; }
 .col-desc-with-account .text-clip { display: block; }
 .col-desc-with-account .cell-secondary { margin-top: 1px; }
@@ -1068,8 +1068,8 @@ th {
   font-size: 0.72em;
 }
 #movementTable .col-money {
-  width: 7ch;
-  min-width: 7ch;
+  width: 11ch;
+  min-width: 11ch;
   text-align: right;
 }
 #movementTable .col-account {
@@ -1084,7 +1084,7 @@ th {
   min-width: 0;
 }
 #movementTable.movement-bulk-edit .col-money {
-  min-width: 7ch;
+  min-width: 11ch;
 }
 #movementTable.movement-bulk-edit .col-account {
   min-width: 6ch;

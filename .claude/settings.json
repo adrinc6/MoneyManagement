@@ -3,7 +3,14 @@
     "allow": [
       "Bash(node --check app.js)",
       "Bash(python3 -c ' *)",
-      "Bash(node -e ' *)"
+      "Bash(node -e ' *)",
+      "Bash(cat > *)",
+      "Skill(artifact-design)",
+      "Skill(artifact-design:*)",
+      "Bash(start \"C:\\\\Users\\\\PC\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-PC-OneDrive-Documentos-Scripts-MoneyManagement\\\\94eccdd0-8d58-4478-9ca2-9ab03a4829e6\\\\scratchpad\\\\table-test.html\")"
+    ],
+    "additionalDirectories": [
+      "\\tmp"
     ]
   }
 }
