@@ -1,4 +1,4 @@
-:root {
+:root { 
   --page-bg: #111c19;
   --bg: #f6f7f9;
   --panel: #ffffff;
@@ -442,6 +442,11 @@ label {
 .theme-toggle input:checked + span::after {
   transform: translateX(20px);
   background: var(--on-accent);
+}
+@media (pointer: coarse) {
+  input, select, textarea {
+    font-size: 16px;
+  }
 }
 input, select {
   width: 100%;
