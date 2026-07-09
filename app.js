@@ -163,6 +163,7 @@ document.addEventListener("DOMContentLoaded", () => {
   renderSettingsPanelTabs();
   syncRefreshButtonLabel("registrar");
   refreshData({ scope: "all", cacheOnly: true });
+  ensureOpQueuePoller();
   window.setTimeout(() => retryPendingOps(null, { recoverSending: true }), 0);
 });
 
@@ -446,7 +447,7 @@ async function compareLocalWithSheets() {
     return false;
   } finally {
     setRefreshLoading(false);
-    processOpQueue();
+    kickOpQueue();
   }
 }
 
@@ -541,7 +542,7 @@ async function sendInvestmentNotificationsFromHeader() {
     state.investmentNotificationsSending = false;
     btn.disabled = false;
     setRefreshLoading(false);
-    processOpQueue();
+    kickOpQueue();
   }
 }
 
@@ -1094,7 +1095,7 @@ async function refreshData(options = {}) {
     return false;
   } finally {
     setRefreshLoading(false);
-    processOpQueue();
+    kickOpQueue();
   }
 }
 
@@ -1658,13 +1659,13 @@ function renderPendingOpsTable(queue = readOpQueue()) {
       transferBank: "Transferencia",
       addTransfersBatch: "Transferencias periódicas"
     };
-    const statusText = op.status === "sending" ? "Enviando" : op.status === "error" ? "Error" : "Pendiente";
+    const statusText = op.status === "sending" ? "Enviando" : op.status === "checking" ? "Confirmando" : "Pendiente (auto cada 5 s)";
     const detail = op.error ? `${statusText}: ${op.error}` : statusText;
     return `<tr>
       <td>${idx + 1}</td>
       <td>${escapeHtml(actionMap[op.payload?.action] || op.payload?.action || "Operación")}</td>
       <td>${escapeHtml(detail)}</td>
-      <td><button class="mini-edit-btn" type="button" data-retry-op="${escapeAttr(op.id)}">Reintentar</button></td>
+      <td><button class="mini-edit-btn" type="button" data-retry-op="${escapeAttr(op.id)}">Reintentar ahora</button></td>
     </tr>`;
   }).join("");
   table.innerHTML = `<thead><tr><th>#</th><th>Tipo</th><th>Estado</th><th></th></tr></thead><tbody>${rows || `<tr><td class="empty" colspan="4">Sin peticiones pendientes.</td></tr>`}</tbody>`;
@@ -1803,77 +1804,125 @@ function queueOp(payload) {
   if (payload?.action === "saveInvestments") rememberPendingSnapshot("investments");
   if (payload?.action === "saveBanks") rememberPendingSnapshot("banks");
   if (payload?.action === "saveInvestmentGoals") rememberPendingSnapshot("investmentGoals");
-  setTimeout(() => processOpQueue(), 0);
+  setTimeout(() => sendQueuedOp(queue[queue.length - 1].id), 0);
+  ensureOpQueuePoller();
 }
 
-async function processOpQueue() {
-  if (state.opQueueRunning) return false;
-  if (!state.config.scriptUrl) return false;
-  state.opQueueRunning = true;
-  let processedAny = false;
-  try {
-    while (true) {
-      const queue = readOpQueue();
-      const item = queue.find(op => op.status === "queued" || op.status === "retry");
-      if (!item) break;
-      processedAny = true;
-      item.status = "sending";
-      writeOpQueue(queue);
-      setSyncStatus(queueActionStatus(item.payload), "");
-      try {
-        await postAppsScript(item.payload);
-        logSyncEvent(`Operación confirmada: ${item.payload?.action || "cambio"}.`, "ok");
-        rememberSentOp(item.payload);
-        const next = readOpQueue().filter(op => op.id !== item.id);
-        writeOpQueue(next);
-        if (item.payload?.action === "saveInvestments") dropPendingSections("investments");
-        if (item.payload?.action === "saveBanks") dropPendingSections("banks");
-        if (item.payload?.action === "saveInvestmentGoals") dropPendingSections("investmentGoals");
-        const synced = queuePayloadSections(item.payload);
-        markCacheSectionsSynced(synced);
-        writeDataCache({ syncedSections: synced });
-        if (item.payload?.action === "updateInvestment" && item.payload?.newInvestment) {
-          await refreshData({ force: true, scope: "investments", successMessage: "Inversión creada, precios actualizados y datos descargados desde Sheets." });
-        }
-        setSyncStatus("Cambio enviado\nCaché sincronizada", "ok");
-      } catch (error) {
-        const nextQueue = readOpQueue();
-        const target = nextQueue.find(op => op.id === item.id);
-        if (target) {
-          target.status = "error";
-          target.error = String(error.message || error);
-        }
-        writeOpQueue(nextQueue);
-        logSyncEvent(`Operación pendiente por error: ${item.payload?.action || "cambio"}.`, "warn", error.message || String(error));
-        renderSyncSettingsPanel();
-        break;
-      }
-    }
-  } finally {
-    state.opQueueRunning = false;
-    renderPendingOpsBadge();
-    if (processedAny) {
-      window.setTimeout(() => {
-        if (!state.opQueueRunning) setSyncStatus("", "");
-      }, 1800);
+const OP_POLL_INTERVAL_MS = 5000;
+let opQueuePollerHandle = null;
+const opsInFlight = new Set();
+
+function ensureOpQueuePoller() {
+  if (opQueuePollerHandle) return;
+  opQueuePollerHandle = window.setInterval(() => pollPendingOps(), OP_POLL_INTERVAL_MS);
+}
+
+async function pollPendingOps() {
+  if (!state.config.scriptUrl) return;
+  const queue = readOpQueue();
+  const pending = queue.filter(op => op.status !== "done");
+  if (!pending.length) return;
+  for (const op of pending) {
+    if (op.status === "sending" || op.status === "checking") {
+      checkQueuedOp(op.id);
+    } else {
+      sendQueuedOp(op.id);
     }
   }
-  return processedAny;
+}
+
+function markOpStatus(opId, patch) {
+  const queue = readOpQueue();
+  const target = queue.find(op => op.id === opId);
+  if (!target) return;
+  Object.assign(target, patch);
+  writeOpQueue(queue);
+}
+
+function completeQueuedOp(item) {
+  const next = readOpQueue().filter(op => op.id !== item.id);
+  writeOpQueue(next);
+  logSyncEvent(`Operación confirmada: ${item.payload?.action || "cambio"}.`, "ok");
+  rememberSentOp(item.payload);
+  if (item.payload?.action === "saveInvestments") dropPendingSections("investments");
+  if (item.payload?.action === "saveBanks") dropPendingSections("banks");
+  if (item.payload?.action === "saveInvestmentGoals") dropPendingSections("investmentGoals");
+  const synced = queuePayloadSections(item.payload);
+  markCacheSectionsSynced(synced);
+  writeDataCache({ syncedSections: synced });
+  renderPendingOpsBadge();
+  setSyncStatus("Cambio enviado\nCaché sincronizada", "ok");
+  window.setTimeout(() => setSyncStatus("", ""), 1800);
+  if (item.payload?.action === "updateInvestment" && item.payload?.newInvestment) {
+    refreshData({ force: true, scope: "investments", successMessage: "Inversión creada, precios actualizados y datos descargados desde Sheets." });
+  }
+}
+
+async function sendQueuedOp(opId) {
+  if (opsInFlight.has(opId)) return;
+  if (!state.config.scriptUrl) return;
+  const queue = readOpQueue();
+  const item = queue.find(op => op.id === opId);
+  if (!item || item.status === "done" || item.status === "sending" || item.status === "checking") return;
+  opsInFlight.add(opId);
+  ensureOpQueuePoller();
+  markOpStatus(opId, { status: "sending", error: null });
+  setSyncStatus(queueActionStatus(item.payload), "");
+  try {
+    await fireAppsScript(item.payload);
+    markOpStatus(opId, { status: "checking", lastSentAt: Date.now() });
+  } catch (error) {
+    markOpStatus(opId, { status: "retry", error: String(error.message || error), lastSentAt: Date.now() });
+    logSyncEvent(`No se pudo enviar (se reintentará en 5 s): ${item.payload?.action || "cambio"}.`, "warn", error.message || String(error));
+  } finally {
+    opsInFlight.delete(opId);
+    renderPendingOpsBadge();
+  }
+}
+
+async function checkQueuedOp(opId) {
+  if (opsInFlight.has(opId)) return;
+  const queue = readOpQueue();
+  const item = queue.find(op => op.id === opId);
+  if (!item || item.status === "done") return;
+  const clientOpId = item.payload?.clientOpId;
+  if (!clientOpId) return;
+  opsInFlight.add(opId);
+  try {
+    const result = await fetchAppsScriptData({ action: "checkClientOp", clientOpId });
+    if (result?.ok && result.completed) {
+      completeQueuedOp(item);
+      return;
+    }
+    if (result?.ok && result.pending) {
+      markOpStatus(opId, { status: "checking", error: null });
+      return;
+    }
+    markOpStatus(opId, { status: "retry", error: "Sin confirmación todavía; se reintentará." });
+  } catch (error) {
+    markOpStatus(opId, { status: "retry", error: String(error.message || error) });
+  } finally {
+    opsInFlight.delete(opId);
+    renderPendingOpsBadge();
+  }
+}
+
+function kickOpQueue() {
+  ensureOpQueuePoller();
+  const queue = readOpQueue();
+  queue.filter(op => op.status === "queued" || op.status === "retry").forEach(op => sendQueuedOp(op.id));
+  queue.filter(op => op.status === "checking").forEach(op => checkQueuedOp(op.id));
 }
 
 async function retryPendingOps(opId = null, { recoverSending = true } = {}) {
   if (recoverSending) await recoverInterruptedSendingOps();
   const queue = readOpQueue();
-  if (opId) {
-    const target = queue.find(op => op.id === opId);
-    if (target && target.status !== "done") target.status = "retry";
-  } else {
-    queue.forEach(op => {
-      if (op.status !== "done") op.status = "retry";
-    });
-  }
+  const targets = opId ? queue.filter(op => op.id === opId) : queue.filter(op => op.status !== "done");
+  const wasChecking = new Map(targets.map(op => [op.id, op.status === "checking"]));
+  targets.forEach(op => { if (op.status !== "checking") op.status = "retry"; });
   writeOpQueue(queue);
-  await processOpQueue();
+  ensureOpQueuePoller();
+  await Promise.all(targets.map(op => wasChecking.get(op.id) ? checkQueuedOp(op.id) : sendQueuedOp(op.id)));
 }
 
 async function flushOpQueueBeforeDownload({ showProgress = false } = {}) {
@@ -2233,28 +2282,32 @@ function renderMonthSituationDialog(summary) {
 
 function renderMoneySummary(summary) {
   const groups = state.accountGroups || [];
-  const groupCards = groups.map(group => {
+  const groupRows = groups.map(group => {
     const total = sum(state.banks.filter(bank => group.accountNames.includes(bank.cuenta)).map(bank => bank.dinero));
-    return `<button class="money-item money-action" data-account-group-id="${escapeAttr(group.id)}" type="button">
+    return `<button class="money-row money-action" data-account-group-id="${escapeAttr(group.id)}" type="button">
       <span>${escapeHtml(group.name)}</span>
       <strong>${money(total)}</strong>
-      <small class="muted">${group.accountNames.length} ${plural(group.accountNames.length, "cuenta", "cuentas")}</small>
     </button>`;
   }).join("");
   document.getElementById("moneySummary").innerHTML = `
-    <div class="money-grid">
-      <button class="money-item money-action" id="openInvestedMoneyBtn" type="button">
-        <span>Invertido</span>
-        <strong>${money(summary.investedTotal)}</strong>
-        <small class="muted">Actual: ${money(summary.valueTotal)}</small>
+    <div class="money-list">
+      <button class="money-row money-action" id="openAllAccountsBtn" type="button">
+        <span>Banco</span>
+        <strong>${money(summary.bank)}</strong>
       </button>
-      ${groupCards}
-      <button class="money-item money-action add-account-group" id="addAccountGroupBtn" type="button">
+      ${groupRows}
+      <button class="money-row money-action add-account-group" id="addAccountGroupBtn" type="button">
         <i data-lucide="plus"></i>
         <span>Nueva tarjeta</span>
       </button>
     </div>
-    <button class="link-btn" id="openAllAccountsBtn" type="button">Ver todas las cuentas <i data-lucide="chevron-right"></i></button>
+  `;
+  document.getElementById("investedSummary").innerHTML = `
+    <button class="money-item money-action" id="openInvestedMoneyBtn" type="button">
+      <span>Invertido</span>
+      <strong>${money(summary.investedTotal)}</strong>
+      <small class="${summary.profitLoss >= 0 ? "positive" : "negative"}">Realizando ganancias: ${money(summary.valueTotal)} · ${pct(summary.profitLossPct)}</small>
+    </button>
   `;
 
   document.getElementById("openInvestedMoneyBtn")?.addEventListener("click", () => openMoneyDetail("invested"));
@@ -4034,7 +4087,7 @@ async function saveBanks() {
   }
 }
 
-async function postAppsScript(payload) {
+async function fireAppsScript(payload) {
   if (navigator.onLine === false) throw new Error("Sin conexión");
   const finalPayload = withClientOpId(payload || {});
   await fetch(state.config.scriptUrl, {
@@ -4054,6 +4107,11 @@ async function postAppsScript(payload) {
       ...finalPayload
     })
   });
+  return finalPayload;
+}
+
+async function postAppsScript(payload) {
+  const finalPayload = await fireAppsScript(payload);
   await confirmClientOp(finalPayload.clientOpId);
 }
 

@@ -21,13 +21,13 @@
     <header class="app-header">
       <div class="brand-title">
         <img src="images/logo.png" alt="" class="site-logo" />
-        <div>
+        <div class="brand-title-text">
         <p class="eyebrow">MoneyManagement</p>
         <h1 id="viewTitle">Registrar</h1>
+        <div id="sourceNotice" class="sync-status"></div>
         </div>
       </div>
       <div class="refresh-group">
-        <span id="sourceNotice" class="sync-status"></span>
         <button class="btn header-action hidden" id="investmentUpdatePricesBtn" type="button" aria-label="Actualizar precios" title="Actualizar precios"><i data-lucide="trending-up"></i><span>Precios</span></button>
         <button class="btn header-action hidden" id="investmentSendNotificationsBtn" type="button" aria-label="Enviar notificaciones" title="Enviar notificaciones"><i data-lucide="send"></i><span>Notificar</span></button>
         <button class="icon-btn" id="refreshBtn" aria-label="Actualizar"><i data-lucide="refresh-cw"></i><span class="refresh-all-label hidden">ALL</span></button>
@@ -98,22 +98,34 @@
         </div>
       </button>
 
-      <article class="total-panel">
-        <span>Dinero total</span>
-        <strong id="bookMoneyTotal">0,00 EUR</strong>
-        <small>Realizando ganancias: <span id="realizedMoneyTotal">0,00 EUR • 0 % • 0,00 EUR</span></small>
-      </article>
-
       <article class="panel">
         <div class="panel-header">
           <div>
             <h2>Dinero</h2>
-            <p>Invertido y cuentas agrupadas.</p>
+            <p>Cuentas agrupadas.</p>
           </div>
         </div>
         <div class="panel-body">
           <div id="moneySummary"></div>
         </div>
+      </article>
+
+      <article class="panel">
+        <div class="panel-header">
+          <div>
+            <h2>Invertido</h2>
+            <p>Valor de tus inversiones.</p>
+          </div>
+        </div>
+        <div class="panel-body">
+          <div id="investedSummary"></div>
+        </div>
+      </article>
+
+      <article class="total-panel">
+        <span>Dinero total</span>
+        <strong id="bookMoneyTotal">0,00 EUR</strong>
+        <small>Realizando ganancias: <span id="realizedMoneyTotal">0,00 EUR • 0 % • 0,00 EUR</span></small>
       </article>
 
     </section>
