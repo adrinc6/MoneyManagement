@@ -1998,6 +1998,41 @@ function bankAccountExists(account) {
   return Boolean(normalized) && state.banks.some(b => b.cuenta === normalized);
 }
 
+function movementReferencesAccount(movement, account) {
+  if (!account) return false;
+  if (isTransfer(movement)) {
+    const parts = movement.transferFrom && movement.transferTo
+      ? { from: movement.transferFrom, to: movement.transferTo }
+      : parseTransferAccountText(movement.cuenta || movement.descripcion);
+    return parts.from === account || parts.to === account;
+  }
+  return movement.cuenta === account;
+}
+
+function renameAccountReference(text, oldName, newName) {
+  const value = String(text || "").trim();
+  if (!value) return value;
+  if (value === oldName) return newName;
+  const parts = parseTransferAccountText(value);
+  if (parts.from || parts.to) {
+    const from = parts.from === oldName ? newName : parts.from;
+    const to = parts.to === oldName ? newName : parts.to;
+    if (from !== parts.from || to !== parts.to) return `${from} → ${to}`;
+  }
+  return value;
+}
+
+function applyAccountRename(movement, oldName, newName) {
+  if (movement.transferFrom === oldName) movement.transferFrom = newName;
+  if (movement.transferTo === oldName) movement.transferTo = newName;
+  const renamedCuenta = renameAccountReference(movement.cuenta, oldName, newName);
+  if (renamedCuenta !== movement.cuenta) movement.cuenta = renamedCuenta;
+  if (isTransfer(movement)) {
+    const renamedDesc = renameAccountReference(movement.descripcion, oldName, newName);
+    if (renamedDesc !== movement.descripcion) movement.descripcion = renamedDesc;
+  }
+}
+
 function dueFutureMovementAccountIssue(movement) {
   if (isTransfer(movement)) {
     const parts = movement.transferFrom && movement.transferTo
@@ -2565,8 +2600,8 @@ async function submitAccountManage(event) {
       });
     }
     bank.cuenta = name;
-    state.transactions.forEach(t => { if (t.cuenta === oldName) t.cuenta = name; });
-    state.futureTransactions.forEach(t => { if (t.cuenta === oldName) t.cuenta = name; });
+    state.transactions.forEach(t => applyAccountRename(t, oldName, name));
+    state.futureTransactions.forEach(t => applyAccountRename(t, oldName, name));
     renameAccountInGroups(oldName, name);
     writeDataCache();
     markButtonSaved(btn);
@@ -2581,40 +2616,104 @@ async function deleteAccountManage() {
   const index = dialog.__index;
   if (index === null || index === undefined) return;
   const bank = state.banks[index];
-  const movementsCount = state.transactions.filter(t => t.cuenta === bank.cuenta).length
-    + state.futureTransactions.filter(t => t.cuenta === bank.cuenta).length;
-  let force = false;
-  if (movementsCount) {
+  const account = bank.cuenta;
+  const futureMovements = state.futureTransactions.filter(t => movementReferencesAccount(t, account));
+  const realizedCount = state.transactions.filter(t => movementReferencesAccount(t, account)).length;
+
+  let futureResolution = null;
+  if (futureMovements.length) {
+    const otherAccounts = state.banks.filter(b => b.cuenta !== account).map(b => b.cuenta);
+    futureResolution = await promptFutureMovementAccountResolution({ account, count: futureMovements.length, otherAccounts });
+    if (!futureResolution) return;
+  }
+
+  let force = Boolean(futureMovements.length);
+  if (realizedCount) {
     const ok = await confirmDialog(
-      `Esta cuenta tiene ${movementsCount} movimiento(s) asociados. Los movimientos conservarán el nombre de cuenta, pero la cuenta desaparecerá del listado de Bancos. ¿Eliminar igualmente?`,
+      `Esta cuenta tiene ${realizedCount} movimiento(s) realizado(s) asociados. Conservarán el nombre de cuenta, pero la cuenta desaparecerá del listado de Bancos. ¿Eliminar igualmente?`,
       "Eliminar cuenta"
     );
     if (!ok) return;
     force = true;
-  } else {
-    const ok = await confirmDialog(`¿Eliminar la cuenta "${bank.cuenta}"?`, "Eliminar cuenta");
+  } else if (!futureMovements.length) {
+    const ok = await confirmDialog(`¿Eliminar la cuenta "${account}"?`, "Eliminar cuenta");
     if (!ok) return;
   }
   const btn = document.getElementById("accountManageDeleteBtn");
   markButtonSaving(btn, "Eliminando");
   await withButtonState(btn, async () => {
+    if (futureResolution?.mode === "delete") {
+      const toDelete = new Set(futureMovements);
+      for (let i = state.futureTransactions.length - 1; i >= 0; i--) {
+        if (toDelete.has(state.futureTransactions[i])) state.futureTransactions.splice(i, 1);
+      }
+      if (state.config.scriptUrl) {
+        queueOp({
+          action: "deleteMovementsBatch",
+          sheetName: state.config.futureMovementSheet || "Movimientos futuros",
+          movements: futureMovements.map(m => ({ rowNumber: m.rowNumber, movement: serializeTransaction(m) }))
+        });
+      }
+    } else if (futureResolution?.mode === "reassign") {
+      futureMovements.forEach(t => applyAccountRename(t, account, futureResolution.newAccount));
+      if (state.config.scriptUrl) {
+        queueOp({
+          action: "reassignFutureMovementsAccount",
+          futureMovementSheet: state.config.futureMovementSheet || "Movimientos futuros",
+          sids: futureMovements.map(m => m.sid).filter(Boolean),
+          oldName: account,
+          newName: futureResolution.newAccount
+        });
+      }
+    }
     if (state.config.scriptUrl) {
       queueOp({
         action: "deleteAccount",
         bankSheet: state.config.bankSheet || "Bancos",
         movementSheet: state.config.movementSheet,
         futureMovementSheet: state.config.futureMovementSheet || "Movimientos futuros",
-        account: bank.cuenta,
+        account,
         force
       });
     }
     state.banks.splice(index, 1);
-    removeAccountFromGroups(bank.cuenta);
+    removeAccountFromGroups(account);
     writeDataCache();
     markButtonSaved(btn, "Eliminada");
     dialog.close();
     refreshAfterAccountChange();
+    renderDataScope("movements");
     setNotice("Cuenta eliminada.", "ok");
+  });
+}
+
+function promptFutureMovementAccountResolution({ account, count, otherAccounts }) {
+  return new Promise(resolve => {
+    const dialog = document.getElementById("futureMovementAccountDialog");
+    document.getElementById("futureMovementAccountInfo").textContent =
+      `"${account}" tiene ${count} ${plural(count, "movimiento futuro", "movimientos futuros")} asociado(s). Elige qué hacer con ${plural(count, "él", "ellos")} antes de eliminar la cuenta.`;
+    const select = document.getElementById("futureMovementAccountSelect");
+    select.innerHTML = [
+      `<option value="__delete__">Eliminar estos movimientos futuros</option>`,
+      ...otherAccounts.map(a => `<option value="${escapeAttr(a)}">Moverlos a "${escapeHtml(a)}"</option>`)
+    ].join("");
+    const form = document.getElementById("futureMovementAccountForm");
+    const closeBtn = document.getElementById("closeFutureMovementAccountBtn");
+    const settle = result => {
+      form.removeEventListener("submit", onSubmit);
+      closeBtn.removeEventListener("click", onCancel);
+      dialog.close();
+      resolve(result);
+    };
+    const onSubmit = event => {
+      event.preventDefault();
+      const value = select.value;
+      settle(value === "__delete__" ? { mode: "delete" } : { mode: "reassign", newAccount: value });
+    };
+    const onCancel = () => settle(null);
+    form.addEventListener("submit", onSubmit);
+    closeBtn.addEventListener("click", onCancel);
+    dialog.showModal();
   });
 }
 

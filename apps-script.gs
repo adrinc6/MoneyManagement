@@ -323,6 +323,8 @@ function sectionsForPayload_(payload) {
   if (action === 'clearInvestmentEstimates' || action === 'simulateInvestmentEstimateRule' || action === 'saveInvestmentEstimateAllocations') return ['investmentEstimateLedger'];
   if (action === 'saveInvestmentGoals') return ['investmentGoals'];
   if (action === 'saveBanks' || action === 'transferBank') return ['banks'];
+  if (action === 'renameAccount' || action === 'deleteAccount') return ['banks', 'transactions', 'futureTransactions'];
+  if (action === 'reassignFutureMovementsAccount') return ['futureTransactions'];
   return [];
 }
 
@@ -597,6 +599,10 @@ function doPost(e) {
     if (payload.action === 'deleteAccount') {
       const deleted = deleteAccount_(payload.bankSheet || DEFAULT_BANK_SHEET, payload.movementSheet || DEFAULT_MOVEMENT_SHEET, payload.futureMovementSheet || DEFAULT_FUTURE_MOVEMENT_SHEET, payload.account || '', Boolean(payload.force));
       return finishPost_(pendingId, payload, Object.assign({ ok: true }, deleted));
+    }
+    if (payload.action === 'reassignFutureMovementsAccount') {
+      const changed = reassignFutureMovementsAccount_(payload.futureMovementSheet || DEFAULT_FUTURE_MOVEMENT_SHEET, payload.sids || [], payload.oldName || '', payload.newName || '');
+      return finishPost_(pendingId, payload, { ok: true, changed });
     }
     return finishPost_(pendingId, payload, { ok: false, error: 'Unknown action' });
   } catch (err) {
@@ -1525,22 +1531,77 @@ function findBankRow_(sheet, account) {
   return 0;
 }
 
+function renameAccountTextValue_(value, oldName, newName) {
+  const text = String(value || '').trim();
+  const normalizedOld = String(oldName || '').trim();
+  if (!text || !normalizedOld) return { value: text, changed: false };
+  if (text === normalizedOld) return { value: newName, changed: true };
+  const parts = parseTransferAccountText_(text);
+  if (parts.from || parts.to) {
+    let changed = false;
+    const from = parts.from === normalizedOld ? newName : parts.from;
+    const to = parts.to === normalizedOld ? newName : parts.to;
+    if (from !== parts.from || to !== parts.to) changed = true;
+    if (changed) return { value: `${from} → ${to}`, changed: true };
+  }
+  return { value: text, changed: false };
+}
+
 function renameAccountInMovementSheet_(sheetName, oldName, newName) {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
   if (!sheet) return 0;
   const rowCount = sheet.getLastRow() - 1;
   if (rowCount <= 0 || sheet.getLastColumn() < 9) return 0;
-  const range = sheet.getRange(2, 9, rowCount, 1);
-  const values = range.getValues();
+  const accountRange = sheet.getRange(2, 9, rowCount, 1);
+  const accountValues = accountRange.getValues();
+  const descRange = sheet.getRange(2, 7, rowCount, 1);
+  const descValues = descRange.getValues();
   let changed = 0;
-  const normalizedOld = String(oldName).trim();
-  values.forEach(row => {
-    if (String(row[0]).trim() === normalizedOld) {
-      row[0] = newName;
-      changed++;
-    }
-  });
-  if (changed) range.setValues(values);
+  for (let i = 0; i < rowCount; i++) {
+    const accountResult = renameAccountTextValue_(accountValues[i][0], oldName, newName);
+    if (!accountResult.changed) continue;
+    accountValues[i][0] = accountResult.value;
+    const descResult = renameAccountTextValue_(descValues[i][0], oldName, newName);
+    if (descResult.changed) descValues[i][0] = descResult.value;
+    changed++;
+  }
+  if (changed) {
+    accountRange.setValues(accountValues);
+    descRange.setValues(descValues);
+  }
+  return changed;
+}
+
+function reassignFutureMovementsAccount_(sheetName, sids, oldName, newName) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
+  if (!sheet) return 0;
+  const rowCount = sheet.getLastRow() - 1;
+  if (rowCount <= 0 || sheet.getLastColumn() < 9) return 0;
+  const sidCol = ensureMovementSidColumn_(sheet);
+  if (!sidCol) return 0;
+  const sidSet = {};
+  (sids || []).forEach(function(sid) { const trimmed = String(sid || '').trim(); if (trimmed) sidSet[trimmed] = true; });
+  if (!Object.keys(sidSet).length) return 0;
+  const sidValues = sheet.getRange(2, sidCol, rowCount, 1).getValues();
+  const accountRange = sheet.getRange(2, 9, rowCount, 1);
+  const accountValues = accountRange.getValues();
+  const descRange = sheet.getRange(2, 7, rowCount, 1);
+  const descValues = descRange.getValues();
+  let changed = 0;
+  for (let i = 0; i < rowCount; i++) {
+    const sid = String(sidValues[i][0] || '').trim();
+    if (!sid || !sidSet[sid]) continue;
+    const accountResult = renameAccountTextValue_(accountValues[i][0], oldName, newName);
+    if (!accountResult.changed) continue;
+    accountValues[i][0] = accountResult.value;
+    const descResult = renameAccountTextValue_(descValues[i][0], oldName, newName);
+    if (descResult.changed) descValues[i][0] = descResult.value;
+    changed++;
+  }
+  if (changed) {
+    accountRange.setValues(accountValues);
+    descRange.setValues(descValues);
+  }
   return changed;
 }
 
