@@ -225,6 +225,7 @@ function wireUi() {
   document.getElementById("movementBulkEditBtn").addEventListener("click", toggleMovementBulkEdit);
   document.getElementById("movementBulkDeleteBtn").addEventListener("click", deleteSelectedMovements);
   document.getElementById("addInvestmentRowBtn").addEventListener("click", addInvestmentRow);
+  document.getElementById("addAccountGroupBtn")?.addEventListener("click", () => openAccountGroupDialog(null));
   document.getElementById("saveInvestmentsBtn")?.classList.add("hidden");
   document.getElementById("saveInvestmentsBtn")?.addEventListener("click", saveInvestments);
   ensureInvestmentCategoryDialog();
@@ -2296,10 +2297,6 @@ function renderMoneySummary(summary) {
         <strong>${money(summary.bank)}</strong>
       </button>
       ${groupRows}
-      <button class="money-row money-action add-account-group" id="addAccountGroupBtn" type="button">
-        <i data-lucide="plus"></i>
-        <span>Nueva tarjeta</span>
-      </button>
     </div>
   `;
   document.getElementById("investedSummary").innerHTML = `
@@ -2312,7 +2309,6 @@ function renderMoneySummary(summary) {
 
   document.getElementById("openInvestedMoneyBtn")?.addEventListener("click", () => openMoneyDetail("invested"));
   document.getElementById("openAllAccountsBtn")?.addEventListener("click", () => openMoneyDetail("bank"));
-  document.getElementById("addAccountGroupBtn")?.addEventListener("click", () => openAccountGroupDialog(null));
   document.querySelectorAll("[data-account-group-id]").forEach(btn => {
     btn.addEventListener("click", () => openAccountGroupDialog(btn.dataset.accountGroupId));
   });

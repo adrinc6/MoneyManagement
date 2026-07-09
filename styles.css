@@ -619,15 +619,6 @@ input[readonly] {
   margin-top: 4px;
   font-size: 1.15rem;
 }
-.add-account-group {
-  display: grid;
-  place-items: center;
-  gap: 4px;
-  color: var(--muted);
-  border: 1px dashed var(--line);
-  background: transparent;
-}
-.add-account-group span { color: var(--muted); }
 .money-list {
   display: grid;
   gap: 8px;
@@ -650,11 +641,6 @@ input[readonly] {
 .money-row strong {
   font-size: .95rem;
 }
-.money-list .add-account-group {
-  justify-content: center;
-  display: flex;
-}
-.money-list .add-account-group span { color: var(--muted); }
 .link-btn {
   display: flex;
   align-items: center;
