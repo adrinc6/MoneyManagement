@@ -162,13 +162,13 @@ p { color: var(--muted); }
   display: grid;
   grid-template-rows: minmax(0, 25fr) minmax(0, 75fr);
   align-content: stretch;
-  gap: clamp(6px, .9vh, 10px);
+  gap: clamp(6px, .9dvh, 10px);
 }
 .registrar-summary-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   grid-template-rows: repeat(3, minmax(0, 1fr));
-  gap: clamp(4px, .65vh, 8px);
+  gap: clamp(4px, .65dvh, 8px);
   height: 100%;
   min-height: 0;
   width: 100%;
@@ -178,24 +178,24 @@ p { color: var(--muted); }
   background: color-mix(in srgb, var(--soft) 58%, transparent);
   border: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
   border-radius: 12px;
-  padding: clamp(4px, .7vh, 9px);
+  padding: clamp(4px, .7dvh, 9px);
   display: grid;
   place-items: center;
   align-content: center;
-  gap: clamp(2px, .35vh, 6px);
+  gap: clamp(2px, .35dvh, 6px);
   min-height: 0;
   text-align: center;
   box-shadow: none;
 }
 .mini-stat-card span {
   color: var(--muted);
-  font-size: clamp(.66rem, 1vh, .82rem);
+  font-size: clamp(.66rem, 1dvh, .82rem);
   line-height: 1.08;
   letter-spacing: 0;
   text-transform: none;
 }
 .mini-stat-card strong {
-  font-size: clamp(1rem, 1.85vh, 1.42rem);
+  font-size: clamp(1rem, 1.85dvh, 1.42rem);
   line-height: .98;
   font-weight: 700;
 }
@@ -208,7 +208,7 @@ p { color: var(--muted); }
   display: none;
 }
 .registrar-summary-panel .panel-body {
-  padding: clamp(8px, 1vh, 12px);
+  padding: clamp(8px, 1dvh, 12px);
 }
 .registrar-summary-panel .panel-body,
 .registrar-form-panel .panel-body {
@@ -223,65 +223,65 @@ p { color: var(--muted); }
   grid-template-rows: auto minmax(0, 1fr);
 }
 .registrar-form-panel .panel-header {
-  padding: clamp(8px, 1.1vh, 14px) clamp(12px, 1.8vw, 16px) 0;
+  padding: clamp(8px, 1.1dvh, 14px) clamp(12px, 1.8vw, 16px) 0;
 }
 .registrar-form-panel .panel-header p {
   display: none;
 }
 .registrar-form-panel .panel-body {
-  padding: clamp(8px, 1vh, 12px);
+  padding: clamp(8px, 1dvh, 12px);
 }
 .registrar-form-panel .form-grid {
   min-height: 100%;
-  gap: clamp(6px, .75vh, 9px);
+  gap: clamp(6px, .75dvh, 9px);
   align-content: stretch;
 }
 .registrar-form-panel .single-form-active {
   grid-auto-rows: minmax(0, 1fr);
 }
 .registrar-form-panel .recurring-form-active {
-  gap: clamp(5px, .62vh, 9px);
+  gap: clamp(5px, .62dvh, 9px);
 }
 .registrar-form-panel label {
-  font-size: clamp(.76rem, 1vh, .86rem);
+  font-size: clamp(.76rem, 1dvh, .86rem);
 }
 .registrar-form-panel input,
 .registrar-form-panel select {
-  min-height: clamp(54px, 5.5vh, 64px);
-  padding-block: clamp(12px, 1.2vh, 15px);
+  min-height: clamp(54px, 5.5dvh, 64px);
+  padding-block: clamp(12px, 1.2dvh, 15px);
 }
 .registrar-form-panel .recurring-fields {
   align-self: stretch;
 }
 .registrar-form-panel .recurring-form-active input,
 .registrar-form-panel .recurring-form-active select {
-  min-height: clamp(34px, 3.8vh, 44px);
-  padding-block: clamp(6px, .7vh, 9px);
+  min-height: clamp(34px, 3.8dvh, 44px);
+  padding-block: clamp(6px, .7dvh, 9px);
 }
 .registrar-form-panel .recurring-form-active label {
-  font-size: clamp(.68rem, .88vh, .8rem);
+  font-size: clamp(.68rem, .88dvh, .8rem);
 }
 .registrar-form-panel .recurring-form-active .recurring-fields {
-  gap: clamp(5px, .62vh, 8px);
-  padding: clamp(7px, .8vh, 10px);
+  gap: clamp(5px, .62dvh, 8px);
+  padding: clamp(7px, .8dvh, 10px);
 }
 .registrar-form-panel .recurring-form-active .choice-grid {
   gap: 4px;
 }
 .registrar-form-panel .recurring-form-active .choice-grid span {
-  min-height: clamp(26px, 2.9vh, 32px);
-  font-size: clamp(.65rem, .82vh, .75rem);
+  min-height: clamp(26px, 2.9dvh, 32px);
+  font-size: clamp(.65rem, .82dvh, .75rem);
 }
 .registrar-form-panel .recurring-form-active .recurrence-picker p {
   margin-bottom: 5px;
-  font-size: clamp(.66rem, .82vh, .76rem);
+  font-size: clamp(.66rem, .82dvh, .76rem);
 }
 @media (max-width: 720px) and (max-height: 820px) {
   .registrar-form-panel .panel-header h2 {
     font-size: .98rem;
   }
   .mini-stat-card strong {
-    font-size: clamp(.95rem, 1.9vh, 1.35rem);
+    font-size: clamp(.95rem, 1.9dvh, 1.35rem);
   }
 }
 .hidden { display: none !important; }
@@ -524,12 +524,12 @@ input[readonly] {
 .notice.warn { background: var(--warn-soft); border-color: var(--warn); color: var(--warn); }
 .sync-status {
   display: none;
-  max-width: min(48vw, 300px);
+  max-width: min(38vw, 220px);
   color: var(--muted);
   font-size: .74rem;
   line-height: 1.15;
   text-align: right;
-  white-space: pre-line;
+  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -611,6 +611,48 @@ input[readonly] {
   display: block;
   margin-top: 4px;
   font-size: 1.15rem;
+}
+.add-account-group {
+  display: grid;
+  place-items: center;
+  gap: 4px;
+  color: var(--muted);
+  border: 1px dashed var(--line);
+  background: transparent;
+}
+.add-account-group span { color: var(--muted); }
+.link-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  width: 100%;
+  margin-top: 10px;
+  padding: 8px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: .82rem;
+}
+.link-btn svg { width: 16px; height: 16px; }
+.account-group-checklist {
+  display: grid;
+  gap: 6px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+.account-group-checklist label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.account-group-checklist input[type="checkbox"] {
+  width: 20px;
+  height: 20px;
+  min-height: 0;
 }
 .monthly-goal-card {
   display: grid;
@@ -833,6 +875,10 @@ input[readonly] {
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
 }
+.table-wrap input,
+.table-wrap select {
+  font-size: 16px;
+}
 table {
   width: 100%;
   min-width: 100%;
@@ -876,7 +922,9 @@ th {
 .col-type { width: 1%; min-width: 0; }
 .col-concept { width: 12ch; min-width: 11ch; }
 .col-desc { width: auto; min-width: 12ch; }
-.col-account { width: 10ch; min-width: 9ch; }
+.col-desc-with-account { display: flex; flex-direction: column; gap: 1px; padding-block: 6px; }
+.col-desc-with-account .text-clip { display: block; }
+.cell-secondary { color: var(--muted); font-size: .82em; }
 .col-detail { width: auto; min-width: 8ch; }
 .col-qty { width: 6ch; min-width: 6ch; text-align: right; }
 .col-money { width: 9ch; min-width: 9ch; text-align: right; }
@@ -1096,7 +1144,7 @@ canvas { width: 100% !important; height: 100% !important; }
   gap: 8px;
 }
 .bank-row {
-  grid-template-columns: minmax(0, 1fr) 150px;
+  grid-template-columns: minmax(0, 1fr) 150px 34px;
   align-items: center;
   gap: 10px;
   color: var(--ink);
@@ -1184,7 +1232,7 @@ canvas { width: 100% !important; height: 100% !important; }
 .evolution-estimates input {
   min-height: 34px;
   padding: 6px 7px;
-  font-size: .76rem;
+  font-size: 1rem;
 }
 .evolution-table-wrap table {
   min-width: 0;
@@ -1435,10 +1483,10 @@ dialog::backdrop { background: rgba(15, 23, 42, .5); }
 @media (max-width: 720px) {
 
   .registrar-form-panel .recurring-form-active {
-    gap: clamp(4px, .52vh, 7px);
+    gap: clamp(4px, .52dvh, 7px);
   }
   .registrar-form-panel .recurring-form-active .recurring-fields {
-    gap: clamp(4px, .52vh, 7px);
+    gap: clamp(4px, .52dvh, 7px);
   }
   .app {
     width: 100%;
@@ -1474,7 +1522,7 @@ dialog::backdrop { background: rgba(15, 23, 42, .5); }
   .evolution-toolbar label,
   .evolution-estimates label { font-size: .62rem; }
   .evolution-toolbar select,
-  .evolution-estimates input { min-height: 31px; padding: 5px 4px; font-size: .68rem; }
+  .evolution-estimates input { min-height: 31px; padding: 5px 4px; font-size: 1rem; }
   .evolution-table-wrap table { font-size: .64rem; }
   .evolution-table-wrap th,
   .evolution-table-wrap td { padding: 5px 2px; }
@@ -1663,7 +1711,7 @@ input[type="date"]::-webkit-date-and-time-value {
 }
 .toast-container {
   position: fixed;
-  top: 14px;
+  top: max(14px, env(safe-area-inset-top));
   right: 14px;
   z-index: 60;
   width: min(360px, calc(100vw - 28px));
@@ -1726,7 +1774,7 @@ input[type="date"]::-webkit-date-and-time-value {
 
 @media (max-width: 720px) {
   .toast-container {
-    top: 10px;
+    top: max(10px, env(safe-area-inset-top));
     right: 10px;
     left: 10px;
     width: auto;
@@ -1752,7 +1800,7 @@ html, body {
 }
 .compact-bank-list .bank-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 120px;
+  grid-template-columns: minmax(0, 1fr) 120px 34px;
   padding: 8px 0;
   border-bottom: 1px solid var(--line);
 }
@@ -1765,7 +1813,7 @@ html, body {
 @media (max-width: 720px) {
   .large-donut { height: 360px; }
   .compact-bank-list .bank-row {
-    grid-template-columns: minmax(0, 1fr) 110px;
+    grid-template-columns: minmax(0, 1fr) 110px 34px;
   }
 }
 .register-switch {
@@ -2385,7 +2433,7 @@ TABLAS DE INVERSIONES: ajuste mínimo sin scroll horizontal
 .estimate-rules-wrap select {
   min-height: 34px;
   padding: 7px 8px;
-  font-size: .78rem;
+  font-size: 1rem;
 }
 .estimate-rules-wrap input[type="checkbox"] {
   min-height: 20px;
