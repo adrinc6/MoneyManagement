@@ -2374,22 +2374,33 @@ function deleteAccountGroup() {
   setNotice("Tarjeta eliminada.", "ok");
 }
 
+function investmentSummaryCard(label, invested, current) {
+  const gain = current - invested;
+  const tone = gain >= 0 ? "positive" : "negative";
+  return `<div class="money-item investment-summary-card">
+    <span>${escapeHtml(label)}</span>
+    <div class="investment-summary-card-row">
+      <strong>${money(invested)}</strong>
+      <small class="${tone}">P/L: ${money(gain)} · ${pct(gainPct(current, invested))}</small>
+    </div>
+  </div>`;
+}
+
 function openMoneyDetail(mode) {
   const summary = calculateSummary(getSelectedSummaryMonth());
   const isBank = mode === "bank";
-  const parts = investmentTypes().map(type => {
-    const invested = summary.investedByType[type] || 0;
-    const current = summary.valueByType[type] || 0;
-    const gain = current - invested;
-    return `<div class="money-item"><span>${type}</span><strong>${money(invested)}</strong><small class="${gain >= 0 ? "positive" : "negative"}">Actual: ${money(current)} · ${pct(gainPct(current, invested))}</small></div>`;
-  }).join("");
+  const parts = investmentTypes().map(type => investmentSummaryCard(
+    type,
+    summary.investedByType[type] || 0,
+    summary.valueByType[type] || 0
+  )).join("");
 
   document.getElementById("moneyDialogTitle").textContent = isBank ? "Banco" : "Invertido";
   document.getElementById("bankMoneyDetail").classList.toggle("hidden", !isBank);
   document.getElementById("investedMoneyDetail").classList.toggle("hidden", isBank);
   document.getElementById("moneyDialogSummary").innerHTML = isBank ? "" : `
     <div class="money-grid investment-money-grid">
-      <div class="money-item"><span>Invertido</span><strong>${money(summary.investedTotal)}</strong><small class="${summary.profitLoss >= 0 ? "positive" : "negative"}">Actual: ${money(summary.valueTotal)} · ${pct(summary.profitLossPct)}</small></div>
+      ${investmentSummaryCard("Invertido", summary.investedTotal, summary.valueTotal)}
       ${parts}
     </div>
   `;
@@ -4836,35 +4847,24 @@ function summaryItem(title, value, tone) {
 
 function renderMonthSituationBars(summary) {
   const outflow = summary.expenses + summary.investedMonth;
-  const base = Math.max(summary.income, outflow, 1);
-  const incomePct = Math.min(100, summary.income / base * 100);
-  const outflowPct = Math.min(100, outflow / base * 100);
   const expenseShare = outflow ? summary.expenses / outflow : 0;
   const investmentShare = outflow ? summary.investedMonth / outflow : 0;
-  const expenseWidth = outflowPct * expenseShare;
-  const investmentWidth = outflowPct * investmentShare;
   document.getElementById("monthSituationBars").innerHTML = `
     <div class="balance-bar-row">
       <div class="balance-bar-heading">
         <strong>Ingresos</strong>
         <span class="balance-bar-summary">
           <strong class="positive">${money(summary.income)}</strong>
-          ${summary.income > 0 ? `<small>Usado ${pct(outflow / summary.income)}</small>` : ""}
         </span>
         </div>
-      <div class="balance-track"><span class="income" style="width:${Math.max(3, incomePct)}%"></span></div>
     </div>
     <div class="balance-bar-row">
       <div class="balance-bar-heading">
-        <strong>Gastos + inversión</strong>
+        <strong>Gastos + Inversión</strong>
         <span class="balance-bar-summary">
           <strong>${money(outflow)}</strong>
           <small>Gasto ${pct(expenseShare)} · Inversión ${pct(investmentShare)}</small>
         </span>
-      </div>
-      <div class="balance-track stacked">
-        <span class="expense" style="width:${Math.max(outflow ? 3 : 0, expenseWidth)}%"></span>
-        <span class="investment" style="width:${Math.max(outflow ? 3 : 0, investmentWidth)}%"></span>
       </div>
     </div>
     <div class="balance-bar-row balance-final">
@@ -4872,7 +4872,6 @@ function renderMonthSituationBars(summary) {
         <strong>Balance</strong>
         <span class="balance-bar-summary">
           <strong class="${summary.balance >= 0 ? "positive" : "negative"}">${money(summary.balance)}</strong>
-          <small>${summary.balance >= 0 ? "Queda disponible" : "Te pasas del mes"}</small>
         </span>
       </div>
     </div>`;
