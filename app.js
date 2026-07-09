@@ -2249,7 +2249,7 @@ function renderRegistrarSummaryCompact() {
   const investedCurrentMonth = Math.abs(sum(state.transactions.filter(t => isInvestment(t) && monthKey(t.date) === selectedMonth).map(t => t.amount)));
   const personalTotal = getPersonalCardTotal();
   const cards = [
-    { label: "Dinero bancos total", value: money(summary.bank) },
+    { label: "Dinero total bancos", value: money(summary.bank) },
     { label: "Dinero invertido", value: money(summary.investedTotal) },
     { label: "Uso personal", value: personalTotal === null ? "-€" : money(personalTotal) },
     { label: "Invertido mes actual", value: money(investedCurrentMonth) },
