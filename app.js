@@ -29,6 +29,18 @@ window.addEventListener("unhandledrejection", event => {
   notifyGlobalError("Promesa rechazada sin capturar", event.reason);
 });
 
+function updateViewportHeightVar() {
+  const height = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+  document.documentElement.style.setProperty("--app-vh", `${height}px`);
+}
+if (window.visualViewport) {
+  window.visualViewport.addEventListener("resize", updateViewportHeightVar);
+} else {
+  window.addEventListener("resize", updateViewportHeightVar);
+}
+document.addEventListener("focusout", () => setTimeout(updateViewportHeightVar, 60));
+updateViewportHeightVar();
+
 window.addEventListener("offline", () => {
   if (typeof showToast === "function") showToast("Sin conexión. Los cambios se guardan en cola y se enviarán al volver.", "warn", 3200);
   if (typeof logSyncEvent === "function") logSyncEvent("Sin conexión", "warn");
@@ -2795,10 +2807,11 @@ function renderMovementTable(rows) {
     }
     return `<td class="col-money">${amountCell(t.amount)}</td>`;
   };
+  const colgroup = `<colgroup>${state.movementBulkEdit ? `<col class="col-select">` : ""}${columns.map(c => `<col class="col-${c[0]}">`).join("")}</colgroup>`;
   if (!visibleRows.length) {
-    table.innerHTML = `<thead><tr>${state.movementBulkEdit ? `<th class="col-select"></th>` : ""}${columns.map(c => `<th class="col-${c[0]}"><button class="table-head-btn" data-table-column="${c[0]}">${c[1]}</button></th>`).join("")}</tr></thead><tbody><tr><td class="empty" colspan="${columns.length + (state.movementBulkEdit ? 1 : 0)}">Sin datos para mostrar.</td></tr></tbody>`;
+    table.innerHTML = `${colgroup}<thead><tr>${state.movementBulkEdit ? `<th class="col-select"></th>` : ""}${columns.map(c => `<th class="col-${c[0]}"><button class="table-head-btn" data-table-column="${c[0]}">${c[1]}</button></th>`).join("")}</tr></thead><tbody><tr><td class="empty" colspan="${columns.length + (state.movementBulkEdit ? 1 : 0)}">Sin datos para mostrar.</td></tr></tbody>`;
   } else {
-    table.innerHTML = `<thead><tr>${state.movementBulkEdit ? `<th class="col-select"></th>` : ""}${columns.map(c => `<th class="col-${c[0]}"><button class="table-head-btn" data-table-column="${c[0]}">${c[1]}</button></th>`).join("")}</tr></thead><tbody>${visibleRows.map(t => {
+    table.innerHTML = `${colgroup}<thead><tr>${state.movementBulkEdit ? `<th class="col-select"></th>` : ""}${columns.map(c => `<th class="col-${c[0]}"><button class="table-head-btn" data-table-column="${c[0]}">${c[1]}</button></th>`).join("")}</tr></thead><tbody>${visibleRows.map(t => {
       const index = getDisplayedMovements().indexOf(t);
       const selector = state.movementBulkEdit ? `<td class="col-select"><input class="movement-select" type="checkbox" data-movement-select="${index}" aria-label="Seleccionar movimiento"></td>` : "";
       return `<tr class="clickable-row ${state.movementBulkEdit ? "selectable-row" : ""}" data-movement-index="${index}">${selector}${columns.map(column => renderCell(column, t)).join("")}</tr>`;

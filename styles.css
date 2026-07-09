@@ -88,6 +88,7 @@ button:active { transform: translateY(1px); }
 .app {
   width: min(980px, calc(100% - 20px));
   height: calc(100dvh - 96px - env(safe-area-inset-bottom));
+  height: calc(var(--app-vh, 100dvh) - 96px - env(safe-area-inset-bottom));
   margin: 10px auto 0;
   padding: 18px 16px 14px;
   display: flex;
@@ -135,12 +136,12 @@ button:active { transform: translateY(1px); }
 .eyebrow {
   margin: 0 0 2px;
   color: var(--muted);
-  font-size: .78rem;
+  font-size: 0.765rem;
   text-transform: uppercase;
   letter-spacing: .08em;
 }
 h1, h2, h3, p { margin-top: 0; }
-h1 { margin-bottom: 0; font-size: 1.7rem; }
+h1 { margin-bottom: 0; font-size: 2rem; }
 h2 { margin-bottom: 0; font-size: 1.05rem; }
 p { color: var(--muted); }
 
@@ -195,13 +196,13 @@ p { color: var(--muted); }
 }
 .mini-stat-card span {
   color: var(--muted);
-  font-size: clamp(.66rem, 1dvh, .82rem);
+  font-size: clamp(.66rem,1dvh, 0.785rem);
   line-height: 1.08;
   letter-spacing: 0;
   text-transform: none;
 }
 .mini-stat-card strong {
-  font-size: clamp(1rem, 1.85dvh, 1.42rem);
+  font-size: clamp(1rem,1.85dvh, 1.085rem);
   line-height: .98;
   font-weight: 700;
 }
@@ -249,7 +250,7 @@ p { color: var(--muted); }
   gap: clamp(5px, .62dvh, 9px);
 }
 .registrar-form-panel label {
-  font-size: clamp(.76rem, 1dvh, .86rem);
+  font-size: clamp(.76rem,1dvh, 0.805rem);
 }
 .registrar-form-panel input,
 .registrar-form-panel select {
@@ -265,7 +266,7 @@ p { color: var(--muted); }
   padding-block: clamp(6px, .7dvh, 9px);
 }
 .registrar-form-panel .recurring-form-active label {
-  font-size: clamp(.68rem, .88dvh, .8rem);
+  font-size: clamp(.68rem,.88dvh, 0.775rem);
 }
 .registrar-form-panel .recurring-form-active .recurring-fields {
   gap: clamp(5px, .62dvh, 8px);
@@ -280,14 +281,14 @@ p { color: var(--muted); }
 }
 .registrar-form-panel .recurring-form-active .recurrence-picker p {
   margin-bottom: 5px;
-  font-size: clamp(.66rem, .82dvh, .76rem);
+  font-size: clamp(.66rem,.82dvh, 0.755rem);
 }
 @media (max-width: 720px) and (max-height: 820px) {
   .registrar-form-panel .panel-header h2 {
-    font-size: .98rem;
+    font-size: 0.865rem;
   }
   .mini-stat-card strong {
-    font-size: clamp(.95rem, 1.9dvh, 1.35rem);
+    font-size: clamp(.95rem,1.9dvh, 1.05rem);
   }
 }
 .hidden { display: none !important; }
@@ -307,7 +308,7 @@ p { color: var(--muted); }
   gap: 12px;
 }
 .panel-header > div:first-child { min-width: 0; }
-.panel-header p { margin: 4px 0 0; font-size: .88rem; }
+.panel-header p { margin: 4px 0 0; font-size: 0.815rem; }
 .panel-body { padding: 16px; }
 .tappable {
   width: 100%;
@@ -323,9 +324,9 @@ p { color: var(--muted); }
   display: grid;
   gap: 6px;
 }
-.total-panel span { color: var(--muted); font-size: .86rem; }
-.total-panel strong { font-size: 1.75rem; }
-.total-panel small { color: var(--muted); font-size: .78rem; }
+.total-panel span { color: var(--muted); font-size: 0.805rem; }
+.total-panel strong { font-size: 1.25rem; }
+.total-panel small { color: var(--muted); font-size: 0.765rem; }
 .total-panel small span { font-size: inherit; }
 
 .section-toolbar {
@@ -368,7 +369,7 @@ label {
   align-items: center;
   gap: 10px;
   color: var(--muted);
-  font-size: .83rem;
+  font-size: 0.79rem;
 }
 .form-grid > label.wide {
   grid-template-columns: minmax(92px, .205fr) minmax(0, 1fr);
@@ -391,11 +392,11 @@ label {
 }
 .settings-row strong {
   color: var(--ink);
-  font-size: .92rem;
+  font-size: 0.835rem;
 }
 .settings-row span {
   color: var(--muted);
-  font-size: .78rem;
+  font-size: 0.765rem;
 }
 .theme-toggle {
   position: relative;
@@ -445,7 +446,7 @@ label {
 }
 @media (pointer: coarse) {
   input, select, textarea {
-    font-size: 16px;
+    font-size: 12px;
   }
 }
 input, select {
@@ -528,7 +529,7 @@ input[readonly] {
   background: var(--soft);
   border: 1px solid var(--line);
   color: var(--ink);
-  font-size: .9rem;
+  font-size: 0.825rem;
 }
 .notice.show { display: block; }
 .notice.ok { background: var(--soft); border-color: var(--good); color: var(--good); }
@@ -541,7 +542,7 @@ input[readonly] {
   border-radius: 8px;
   padding: 6px 10px;
   color: var(--muted);
-  font-size: .82rem;
+  font-size: 0.785rem;
   line-height: 1.2;
   white-space: pre-line;
 }
@@ -617,12 +618,12 @@ input[readonly] {
 .summary-item span, .money-item span, .drill-card span {
   display: block;
   color: var(--muted);
-  font-size: .8rem;
+  font-size: 0.775rem;
 }
 .summary-item strong, .money-item strong, .drill-card strong {
   display: block;
   margin-top: 4px;
-  font-size: 1.15rem;
+  font-size: 0.95rem;
 }
 .money-list {
   display: grid;
@@ -641,10 +642,10 @@ input[readonly] {
   gap: 8px;
 }
 .money-row span {
-  font-size: .92rem;
+  font-size: 0.835rem;
 }
 .money-row strong {
-  font-size: .95rem;
+  font-size: 0.85rem;
 }
 .link-btn {
   display: flex;
@@ -657,7 +658,7 @@ input[readonly] {
   border: 0;
   background: transparent;
   color: var(--muted);
-  font-size: .82rem;
+  font-size: 0.785rem;
 }
 .link-btn svg { width: 16px; height: 16px; }
 .account-group-checklist {
@@ -705,7 +706,7 @@ input[readonly] {
 }
 .monthly-goal-main strong {
   margin-top: 0;
-  font-size: 1rem;
+  font-size: 0.875rem;
 }
 .monthly-goal-main small {
   flex: 0 0 auto;
@@ -764,7 +765,7 @@ input[readonly] {
 
 .drill-title {
   color: var(--muted);
-  font-size: .9rem;
+  font-size: 0.825rem;
   line-height: 1.3;
   min-height: 1.3em;
   margin-bottom: 0;
@@ -794,10 +795,10 @@ input[readonly] {
 .year-card span,
 .year-card small {
   color: var(--muted);
-  font-size: .82rem;
+  font-size: 0.785rem;
 }
 .year-card strong {
-  font-size: 1.8rem;
+  font-size: 1.275rem;
   line-height: 1;
 }
 .year-card-balance {
@@ -810,7 +811,7 @@ input[readonly] {
   text-align: left;
   width: 100%;
 }
-.drill-card strong { font-size: 1.35rem; color: var(--ink); }
+.drill-card strong { font-size: 1.05rem; color: var(--ink); }
 .month-card-list {
   grid-template-columns: 1fr;
 }
@@ -843,7 +844,7 @@ input[readonly] {
   font-size: .72rem;
 }
 .month-number strong {
-  font-size: 1.65rem;
+  font-size: 1.2rem;
   line-height: 1;
 }
 .year-card .month-number {
@@ -851,7 +852,7 @@ input[readonly] {
   min-width: 50px;
 }
 .year-card .month-number strong {
-  font-size: 1rem;
+  font-size: 0.875rem;
 }
 .year-card .month-metrics {
   gap: 0;
@@ -879,7 +880,7 @@ input[readonly] {
 }
 .metric strong {
   display: block;
-  font-size: 0.85rem;
+  font-size: 0.8rem;
   line-height: 1;
   overflow-wrap: anywhere;
 }
@@ -902,14 +903,14 @@ input[readonly] {
 }
 .table-wrap input,
 .table-wrap select {
-  font-size: 16px;
+  font-size: 12px;
 }
 table {
   width: 100%;
   min-width: 100%;
   table-layout: auto;
   border-collapse: collapse;
-  font-size: .86rem;
+  font-size: 0.805rem;
 }
 #movementTable {
   table-layout: fixed;
@@ -950,7 +951,7 @@ th {
 .col-desc { width: auto; min-width: 12ch; }
 .col-desc-with-account { display: flex; flex-direction: column; gap: 1px; padding-block: 6px; }
 .col-desc-with-account .text-clip { display: block; }
-.cell-secondary { color: var(--muted); font-size: .82em; }
+.cell-secondary { color: var(--muted); font-size: 0.785em; }
 .col-detail { width: auto; min-width: 8ch; }
 .col-qty { width: 6ch; min-width: 6ch; text-align: right; }
 .col-money { width: 9ch; min-width: 9ch; text-align: right; }
@@ -986,7 +987,7 @@ th {
   min-width: 0;
 }
 #movementTable .amount {
-  font-size: .95em;
+  font-size: 0.85em;
 }
 #movementTable:where(*) {
   max-width: 100%;
@@ -999,7 +1000,7 @@ th {
   min-width: 0;
 }
 #movementTable .amount {
-  font-size: .95em;
+  font-size: 0.85em;
 }
 #movementTable:where(*) {
   max-width: 100%;
@@ -1019,24 +1020,24 @@ th {
   min-height: 14px;
 }
 #movementTable .col-day {
-  width: 3ch;
-  min-width: 3ch;
+  width: 38px;
+  min-width: 38px;
   text-align: center;
 }
 #movementTable .col-type {
-  width: 1%;
-  min-width: 5ch;
+  width: calc(.25 * (100% - 38px - 7ch));
+  min-width: 0;
 }
 #movementTable .col-concept {
-  width: 24%;
-  min-width: 8ch;
+  width: calc(.35 * (100% - 38px - 7ch));
+  min-width: 0;
 }
 #movementTable .col-desc {
-  width: auto;
+  width: calc(.4 * (100% - 38px - 7ch));
   min-width: 0;
 }
 #movementTable .col-money {
-  width: 1%;
+  width: 7ch;
   min-width: 7ch;
   text-align: right;
 }
@@ -1045,8 +1046,8 @@ th {
   min-width: 6ch;
 }
 #movementTable.movement-bulk-edit .col-concept {
-  width: 22%;
-  min-width: 7ch;
+  width: 33%;
+  min-width: 0;
 }
 #movementTable.movement-bulk-edit .col-desc {
   min-width: 0;
@@ -1096,7 +1097,7 @@ canvas { width: 100% !important; height: 100% !important; }
   padding: 5px 8px;
   background: transparent;
   color: var(--muted);
-  font-size: .76rem;
+  font-size: 0.755rem;
   line-height: 1;
 }
 .segmented button.active {
@@ -1122,7 +1123,7 @@ canvas { width: 100% !important; height: 100% !important; }
   justify-content: space-between;
   gap: 12px;
   color: var(--muted);
-  font-size: .84rem;
+  font-size: 0.795rem;
 }
 .balance-bar-row strong { color: var(--ink); }
 .balance-bar-summary {
@@ -1131,11 +1132,11 @@ canvas { width: 100% !important; height: 100% !important; }
   text-align: right;
 }
 .balance-bar-summary strong {
-  font-size: 1rem;
+  font-size: 0.875rem;
 }
 .balance-bar-summary small {
   color: var(--muted);
-  font-size: .78rem;
+  font-size: 0.765rem;
   line-height: 1.2;
 }
 .balance-track {
@@ -1202,7 +1203,7 @@ canvas { width: 100% !important; height: 100% !important; }
 }
 .investment-summary-title > h2 {
   margin: 0;
-  font-size: 1.05rem;
+  font-size: 0.9rem;
   color: var(--ink);
 }
 .minimal-icon {
@@ -1229,7 +1230,7 @@ canvas { width: 100% !important; height: 100% !important; }
   text-align: left;
 }
 .investment-summary-body > strong {
-  font-size: 1.75rem;
+  font-size: 1.25rem;
 }
 .investment-goals-body {
   display: grid;
@@ -1258,7 +1259,7 @@ canvas { width: 100% !important; height: 100% !important; }
 .evolution-estimates input {
   min-height: 34px;
   padding: 6px 7px;
-  font-size: 1rem;
+  font-size: 0.75rem;
 }
 .evolution-table-wrap table {
   min-width: 0;
@@ -1316,11 +1317,11 @@ canvas { width: 100% !important; height: 100% !important; }
 }
 .total-metrics span {
   color: var(--muted);
-  font-size: .78rem;
+  font-size: 0.765rem;
 }
 .total-metrics strong {
   margin-top: 2px;
-  font-size: .94rem;
+  font-size: 0.845rem;
   overflow-wrap: anywhere;
 }
 .investment-money-line strong {
@@ -1478,7 +1479,7 @@ dialog::backdrop { background: rgba(15, 23, 42, .5); }
 }
 .section-toolbar p {
   margin: 4px 0 0;
-  font-size: .8rem;
+  font-size: 0.775rem;
 }
 .form-submit-inline { display: none; }
 
@@ -1517,6 +1518,7 @@ dialog::backdrop { background: rgba(15, 23, 42, .5); }
   .app {
     width: 100%;
     height: calc(100dvh - 92px - env(safe-area-inset-bottom));
+    height: calc(var(--app-vh, 100dvh) - 92px - env(safe-area-inset-bottom));
     margin-top: 0;
     padding: 16px 12px 12px;
     border-top: 0;
@@ -1528,12 +1530,12 @@ dialog::backdrop { background: rgba(15, 23, 42, .5); }
   .form-grid > label.wide {
     grid-template-columns: minmax(88px, .38fr) minmax(0, 1fr);
   }
-  h1 { font-size: 1.45rem; }
+  h1 { font-size: 1.4rem; }
   .panel-header { padding: 14px 14px 0; }
   .panel-body { padding: 14px; }
   .table-wrap { max-height: none; }
   th, td { padding: 8px 5px; }
-  table { font-size: .78rem; }
+  table { font-size: 0.765rem; }
   .col-day { width: 1%; min-width: 0; }
   .col-type { width: 1%; min-width: 0; }
   .col-concept { width: 12ch; min-width: 11ch; }
@@ -1548,7 +1550,7 @@ dialog::backdrop { background: rgba(15, 23, 42, .5); }
   .evolution-toolbar label,
   .evolution-estimates label { font-size: .62rem; }
   .evolution-toolbar select,
-  .evolution-estimates input { min-height: 31px; padding: 5px 4px; font-size: 1rem; }
+  .evolution-estimates input { min-height: 31px; padding: 5px 4px; font-size: 0.75rem; }
   .evolution-table-wrap table { font-size: .64rem; }
   .evolution-table-wrap th,
   .evolution-table-wrap td { padding: 5px 2px; }
@@ -1564,7 +1566,7 @@ dialog::backdrop { background: rgba(15, 23, 42, .5); }
     min-height: 64px;
   }
   .metric strong {
-    font-size: .95rem;
+    font-size: 0.85rem;
   }
   .metric span {
     font-size: .62rem;
@@ -1584,7 +1586,7 @@ dialog[open] {
   background: var(--panel);
 }
 .dialog-head h2 {
-  font-size: .98rem;
+  font-size: 0.865rem;
   line-height: 1.1;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1629,7 +1631,7 @@ dialog[open] {
   align-items: center;
   gap: 10px;
   color: var(--muted);
-  font-size: .92rem;
+  font-size: 0.835rem;
 }
 .legend-swatch {
   height: 16px;
@@ -1646,7 +1648,7 @@ dialog[open] {
   width: 100%;
   min-width: 0;
   table-layout: fixed;
-  font-size: .78rem;
+  font-size: 0.765rem;
 }
 .movement-popup-table th,
 .movement-popup-table td {
@@ -1684,7 +1686,7 @@ dialog[open] {
 .saved-movement-card h3 {
   margin: 0 0 2px;
   color: var(--ink);
-  font-size: .92rem;
+  font-size: 0.835rem;
 }
 .saved-movement-row {
   display: grid;
@@ -1698,14 +1700,14 @@ dialog[open] {
 }
 .saved-movement-row span {
   color: var(--muted);
-  font-size: .82rem;
+  font-size: 0.785rem;
 }
 .saved-movement-row strong {
   min-width: 0;
   color: var(--ink);
   text-align: right;
   overflow-wrap: anywhere;
-  font-size: .95rem;
+  font-size: 0.85rem;
 }
 
 @media (max-width: 720px) {
@@ -1713,7 +1715,7 @@ dialog[open] {
   .bars-card { height: 330px; }
   .legend-row {
     grid-template-columns: 52px minmax(0, 1fr);
-    font-size: .88rem;
+    font-size: 0.815rem;
   }
 }
 
@@ -1759,7 +1761,7 @@ input[type="date"]::-webkit-date-and-time-value {
   box-shadow: 0 18px 48px rgba(15, 23, 42, .18);
   animation: toast-in .18s ease-out;
   line-height: 1.35;
-  font-size: .9rem;
+  font-size: 0.825rem;
 }
 .toast.ok {
   background: var(--soft);
@@ -1784,7 +1786,7 @@ input[type="date"]::-webkit-date-and-time-value {
   border-radius: 8px;
   background: rgba(255, 255, 255, .55);
   color: inherit;
-  font-size: 1.25rem;
+  font-size: 1rem;
   line-height: 1;
 }
 @keyframes toast-in {
@@ -1856,7 +1858,7 @@ html, body {
   border-radius: 8px;
   background: var(--field);
 }
-.recurrence-picker p { margin: 0 0 8px; color: var(--muted); font-size: .83rem; }
+.recurrence-picker p { margin: 0 0 8px; color: var(--muted); font-size: 0.79rem; }
 .choice-grid {
   --choice-gap: 6px;
   display: grid;
@@ -1897,7 +1899,7 @@ html, body {
   border-radius: 8px;
   background: var(--field-focus);
   color: var(--ink);
-  font-size: .78rem;
+  font-size: 0.765rem;
 }
 .choice-grid input:checked + span { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
 .table-head-btn { border: 0; background: transparent; color: inherit; font-weight: 800; padding: 0; }
@@ -1920,7 +1922,7 @@ html, body {
 }
 .goal-heading > strong {
   min-width: 0;
-  font-size: .98rem;
+  font-size: 0.865rem;
 }
 .goal-meta {
   display: flex;
@@ -1929,7 +1931,7 @@ html, body {
   gap: 8px;
   min-width: 0;
   color: var(--muted);
-  font-size: .76rem;
+  font-size: 0.755rem;
   text-align: right;
 }
 .goal-overrun {
@@ -1953,7 +1955,7 @@ html, body {
   background: var(--field);
 }
 .goal-metrics strong {
-  font-size: .88rem;
+  font-size: 0.815rem;
   line-height: 1.15;
   overflow-wrap: anywhere;
 }
@@ -2070,7 +2072,7 @@ TABLAS DE INVERSIONES: ajuste mínimo sin scroll horizontal
 }
 .settings-summary::-webkit-details-marker { display: none; }
 .settings-summary h2 { margin-bottom: 0; }
-.settings-summary p { margin: 4px 0 0; font-size: .88rem; }
+.settings-summary p { margin: 4px 0 0; font-size: 0.815rem; }
 
 .settings-card:not([open]) {
   box-shadow: var(--shadow);
@@ -2089,7 +2091,7 @@ TABLAS DE INVERSIONES: ajuste mínimo sin scroll horizontal
 .settings-subtitle {
   margin: 14px 0 8px;
   color: var(--muted);
-  font-size: .78rem;
+  font-size: 0.765rem;
   text-transform: uppercase;
   letter-spacing: .08em;
 }
@@ -2113,7 +2115,7 @@ TABLAS DE INVERSIONES: ajuste mínimo sin scroll horizontal
 .sync-summary-grid strong {
   display: block;
   margin-top: 4px;
-  font-size: .9rem;
+  font-size: 0.825rem;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2241,7 +2243,7 @@ TABLAS DE INVERSIONES: ajuste mínimo sin scroll horizontal
 }
 .dialog-subtitle {
   margin: 0 0 12px;
-  font-size: .84rem;
+  font-size: 0.795rem;
   color: var(--muted);
 }
 .investment-category-rows {
@@ -2266,7 +2268,7 @@ TABLAS DE INVERSIONES: ajuste mínimo sin scroll horizontal
   flex: 0 0 auto;
   min-height: 34px;
   padding: 7px 10px;
-  font-size: .78rem;
+  font-size: 0.765rem;
 }
 
 /* Resumen de inversión en modal Dinero */
@@ -2442,7 +2444,7 @@ TABLAS DE INVERSIONES: ajuste mínimo sin scroll horizontal
 }
 .dialog-help {
   margin: 0;
-  font-size: .84rem;
+  font-size: 0.795rem;
 }
 .estimate-rules-wrap {
   max-height: min(58vh, 560px);
@@ -2459,7 +2461,7 @@ TABLAS DE INVERSIONES: ajuste mínimo sin scroll horizontal
 .estimate-rules-wrap select {
   min-height: 34px;
   padding: 7px 8px;
-  font-size: 1rem;
+  font-size: 0.75rem;
 }
 .estimate-rules-wrap input[type="checkbox"] {
   min-height: 20px;
@@ -2511,7 +2513,7 @@ TABLAS DE INVERSIONES: ajuste mínimo sin scroll horizontal
   min-height: 24px;
 }
 .investment-allocation-check strong {
-  font-size: .88rem;
+  font-size: 0.815rem;
   font-variant-numeric: tabular-nums;
 }
 .investment-allocation-check .balanced {
@@ -2637,7 +2639,7 @@ TABLAS DE INVERSIONES: ajuste mínimo sin scroll horizontal
 
 .settings-row .estimate-action-btn span {
   color: inherit;
-  font-size: .82rem;
+  font-size: 0.785rem;
 }
 
 .settings-row .danger-outline {
