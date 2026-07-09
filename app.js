@@ -2400,7 +2400,7 @@ function openMoneyDetail(mode) {
   document.getElementById("investedMoneyDetail").classList.toggle("hidden", isBank);
   document.getElementById("moneyDialogSummary").innerHTML = isBank ? "" : `
     <div class="money-grid investment-money-grid">
-      ${investmentSummaryCard("Invertido", summary.investedTotal, summary.valueTotal)}
+      <div class="money-item investment-summary-total"><span>Invertido</span><strong>${money(summary.investedTotal)}</strong><small class="${summary.profitLoss >= 0 ? "positive" : "negative"}">Actual: ${money(summary.valueTotal)} · ${pct(summary.profitLossPct)}</small></div>
       ${parts}
     </div>
   `;
