@@ -2289,6 +2289,10 @@ TABLAS DE INVERSIONES: ajuste mínimo sin scroll horizontal
   background: var(--panel);
   border: 1px solid var(--line);
 }
+.investment-money-grid .investment-summary-card.investment-summary-total {
+  background: var(--soft);
+  border: none;
+}
 .investment-summary-card-row {
   display: flex;
   align-items: baseline;
