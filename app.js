@@ -3539,7 +3539,13 @@ async function submitMovement(event) {
       applyBankDelta(to, amount);
       writeDataCache();
       queueOp({ action: "transferBank", bankSheet: state.config.bankSheet || "Bancos", from, to, amount });
-      setNotice(lineMessage("Traspaso hecho", `Origen: ${bankChangeText(from, fromBefore)}`, `Destino: ${bankChangeText(to, toBefore)}`), "ok");
+      const movement = normalizeTransaction({ ...transferMovementFromFormBase(), fecha: formatDate(new Date()) });
+      showMovementPopup(
+        "Traspaso realizado",
+        movement,
+        `${from} → ${to}`,
+        lineMessage(`Origen: ${bankChangeText(from, fromBefore)}`, `Destino: ${bankChangeText(to, toBefore)}`)
+      );
     } else {
       const movement = movementFromForm();
       const future = movement.date > endOfToday();
