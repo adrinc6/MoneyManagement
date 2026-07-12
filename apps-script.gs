@@ -10,6 +10,10 @@ var DEFAULT_INVESTMENT_ESTIMATE_LEDGER_SHEET = 'Inversiones Estimación Movimien
 var INVESTMENT_ESTIMATE_BASELINE_PREFIX = 'moneyInvestmentEstimateBaseline:';
 var INVESTMENT_MODE_PREFERENCE_KEY = 'moneyInvestmentModePreference';
 var DEFAULT_PENDING_SHEET = 'Pendientes';
+// Una fila "Pendientes" que sobreviva más de este tiempo se considera huérfana
+// (ejecución interrumpida/cortada antes de limpiarla) y deja de bloquear los
+// reintentos, para que la operación pueda volver a enviarse y llegar a Sheets.
+var PENDING_OP_STALE_MS = 90 * 1000;
 var SECTION_REV_PREFIX = 'moneySectionRev:';
 var PROCESSED_CLIENT_OPS_KEY = 'moneyProcessedClientOps';
 var MOVEMENT_CHANGELOG_KEY = 'moneyMovementChangelog';
@@ -482,17 +486,41 @@ function wasClientOpProcessed_(clientOpId) {
 function isClientOpPending_(clientOpId) {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(DEFAULT_PENDING_SHEET);
   if (!sheet || sheet.getLastRow() < 2) return false;
-  const values = sheet.getRange(2, 4, sheet.getLastRow() - 1, 1).getValues();
-  return values.some(row => String(row[0] || '').indexOf(clientOpId) !== -1);
+  // Columnas: Fecha (2) y Payload (4).
+  const values = sheet.getRange(2, 2, sheet.getLastRow() - 1, 3).getValues();
+  const staleBefore = Date.now() - PENDING_OP_STALE_MS;
+  return values.some(row => {
+    if (String(row[2] || '').indexOf(clientOpId) === -1) return false;
+    const at = row[0] instanceof Date ? row[0].getTime() : new Date(row[0]).getTime();
+    // Fila caducada: no debe mantener al cliente en "Confirmando" para siempre.
+    if (!Number.isNaN(at) && at < staleBefore) return false;
+    return true;
+  });
 }
 
 
 function doPost(e) {
   let payload = {};
   let pendingId = '';
+  let lock = null;
   try {
     payload = JSON.parse(e.postData.contents || '{}');
     requireToken_(payload.token || '');
+    // Ruta rápida sin bloqueo para operaciones ya confirmadas (evita serializar la
+    // tormenta de reintentos que dispara el cliente).
+    if (payload.clientOpId && wasClientOpProcessed_(payload.clientOpId)) {
+      return json_({ ok: true, duplicate: true });
+    }
+    // Serializa las mutaciones: al borrar una cuenta con movimientos futuros el
+    // cliente encola dos operaciones a la vez (reassignFutureMovementsAccount +
+    // deleteAccount) que llegan en peticiones concurrentes. Sin bloqueo se pisaban
+    // al escribir la hoja "Pendientes" (dejando filas huérfanas que bloqueaban el
+    // reintento para siempre) y la propiedad de operaciones procesadas (perdiendo
+    // la confirmación), y el cliente se quedaba en "Confirmando" en bucle sin que
+    // el cambio llegara a Sheets.
+    lock = LockService.getScriptLock();
+    lock.waitLock(30000);
+    // Reevaluado dentro del lock: ya con el estado consolidado por otra petición.
     if (payload.clientOpId && wasClientOpProcessed_(payload.clientOpId)) {
       return json_({ ok: true, duplicate: true });
     }
@@ -623,6 +651,10 @@ function doPost(e) {
       try { removePendingPost_(pendingId); } catch (cleanupErr) {}
     }
     return json_(errorPayload_(err));
+  } finally {
+    if (lock) {
+      try { lock.releaseLock(); } catch (releaseErr) {}
+    }
   }
 }
 
