@@ -1,7 +1,17 @@
 const ENABLE_TEST_MODE = false;
 const INVESTMENT_DEBUG_PREFIX = "[MM-INV]";
+// Traza de depuración de inversión. Silenciada por defecto en producción; se activa
+// desde la consola con `localStorage.setItem("moneyDebug","1")` o `window.MONEY_DEBUG = true`.
+function investmentDebugEnabled() {
+  try {
+    return Boolean(window.MONEY_DEBUG) || localStorage.getItem("moneyDebug") === "1";
+  } catch (_) {
+    return Boolean(window.MONEY_DEBUG);
+  }
+}
 
 function investmentDebug(step, details = {}) {
+  if (!investmentDebugEnabled()) return;
   console.log(`${INVESTMENT_DEBUG_PREFIX} ${step}`, details);
 }
 
@@ -213,6 +223,8 @@ function wireUi() {
   document.getElementById("saveConfigBtn").addEventListener("click", saveConfigFromForm);
   document.getElementById("retryPendingOpsBtn")?.addEventListener("click", () => retryPendingOps());
   document.getElementById("clearSyncLogsBtn")?.addEventListener("click", clearSyncLogs);
+  document.getElementById("undoSentOpsBtn")?.addEventListener("click", openUndoDialog);
+  document.getElementById("closeUndoDialogBtn")?.addEventListener("click", () => document.getElementById("undoDialog")?.close());
   document.getElementById("summaryYear").addEventListener("change", syncSummaryPeriodAndRender);
   document.getElementById("summaryMonth").addEventListener("change", syncSummaryPeriodAndRender);
   document.getElementById("openMonthSituationBtn").addEventListener("click", () => {
@@ -754,22 +766,43 @@ function staleCacheMessage(cached) {
   return `Datos locales cargados (${formatCacheAge(cacheAgeMs(cached))}). La caché supera 7 días; descarga desde Ajustes solo si quieres reemplazarla desde Sheets.`;
 }
 
+// Aísla cada render de vista: un dato inesperado de Sheets (celda con formato raro,
+// NaN…) que hiciera throw en pleno pintado dejaría la pantalla a medias. Con esto se
+// registra el fallo, se avisa y el resto de la app sigue usable.
+function safeRender(label, fn) {
+  try {
+    fn();
+  } catch (error) {
+    if (typeof notifyGlobalError === "function") {
+      notifyGlobalError(`No se pudo renderizar: ${label}`, error);
+    } else {
+      console.error(`No se pudo renderizar: ${label}`, error);
+    }
+  }
+}
+
 function renderCurrentView(viewId = activeViewId()) {
   if (viewId === "registrar") {
-    syncRegisterMode();
-    renderRegistrarSummaryCompact();
-    renderFutureDueNotice();
+    safeRender("registrar", () => {
+      syncRegisterMode();
+      renderRegistrarSummaryCompact();
+      renderFutureDueNotice();
+    });
   } else if (viewId === "resumen") {
-    renderSummary();
+    safeRender("resumen", renderSummary);
   } else if (viewId === "movimientos") {
-    renderFutureDueNotice();
-    renderMovements();
+    safeRender("movimientos", () => {
+      renderFutureDueNotice();
+      renderMovements();
+    });
   } else if (viewId === "inversiones") {
-    renderInvestments();
+    safeRender("inversiones", renderInvestments);
   } else if (viewId === "ajustes") {
-    syncInvestmentEstimateModeUi();
-    renderSyncSettingsPanel();
-    renderPendingOpsBadge();
+    safeRender("ajustes", () => {
+      syncInvestmentEstimateModeUi();
+      renderSyncSettingsPanel();
+      renderPendingOpsBadge();
+    });
   }
   lucide.createIcons();
 }
@@ -1370,15 +1403,84 @@ function writeDataCache(options = {}) {
         }
       });
     }
-    localStorage.setItem(DATA_CACHE_KEY, JSON.stringify({
+    persistDataCache({
       configKey: dataCacheConfigKey(),
       savedAt: meta.savedAt,
       meta,
       data
-    }));
+    });
     renderSyncSettingsPanel();
   } catch (error) {
     console.warn("No se pudo guardar la caché local", error);
+  }
+}
+
+function isQuotaError(error) {
+  if (!error) return false;
+  return error.name === "QuotaExceededError"
+    || error.name === "NS_ERROR_DOM_QUOTA_REACHED"
+    || error.code === 22
+    || error.code === 1014;
+}
+
+let quotaWarningAt = 0;
+
+// El caché guarda TODAS las transacciones; en históricos largos puede superar la
+// cuota de localStorage (~5 MB). En vez de tragarnos el error en silencio (lo que
+// dejaría el caché inservible sin avisar), podamos progresivamente las secciones
+// más pesadas y reintentamos, avisando en el panel Sync.
+function persistDataCache(record) {
+  const payload = { ...record, data: { ...record.data } };
+  const pruneOrder = [
+    "investmentEstimateLedger",
+    "futureTransactions",
+    "transactions"
+  ];
+  let pruned = false;
+  for (let attempt = 0; attempt < pruneOrder.length + 1; attempt++) {
+    try {
+      localStorage.setItem(DATA_CACHE_KEY, JSON.stringify(payload));
+      if (pruned) warnCacheQuota(true);
+      return;
+    } catch (error) {
+      if (!isQuotaError(error)) throw error;
+      const section = pruneOrder[attempt];
+      if (section && Array.isArray(payload.data[section])) {
+        // Conservamos solo lo más reciente de la sección más pesada.
+        payload.data[section] = trimRecentRows(payload.data[section]);
+        payload.meta = { ...(payload.meta || {}), partial: true };
+        pruned = true;
+        continue;
+      }
+      // Ni podando cabe: soltamos el caché para no dejar datos corruptos a medias.
+      try { localStorage.removeItem(DATA_CACHE_KEY); } catch (_) {}
+      warnCacheQuota(false);
+      return;
+    }
+  }
+}
+
+function trimRecentRows(rows, keep = 400) {
+  if (!Array.isArray(rows) || rows.length <= keep) return rows;
+  const withDate = rows.every(row => row && (row.fecha || row.date));
+  if (withDate) {
+    return [...rows]
+      .sort((a, b) => String(b.fecha || b.date || "").localeCompare(String(a.fecha || a.date || "")))
+      .slice(0, keep);
+  }
+  return rows.slice(-keep);
+}
+
+function warnCacheQuota(recovered) {
+  const now = Date.now();
+  if (now - quotaWarningAt < 60000) return;
+  quotaWarningAt = now;
+  if (recovered) {
+    if (typeof logSyncEvent === "function") logSyncEvent("Caché local llena: se guardó una versión reducida (histórico antiguo se recargará al sincronizar).", "warn");
+    if (typeof showToast === "function") showToast("Caché local casi llena: se guardó una versión reducida. Los datos siguen a salvo en Sheets.", "warn", 3600);
+  } else {
+    if (typeof logSyncEvent === "function") logSyncEvent("Caché local llena: no se pudo guardar copia local; se descargará desde Sheets al abrir.", "warn");
+    if (typeof showToast === "function") showToast("No se pudo guardar la caché local (almacenamiento lleno). La app funcionará descargando desde Sheets.", "warn", 3600);
   }
 }
 
@@ -1613,29 +1715,40 @@ function pendingOpsCount() {
   return readOpQueue().filter(op => op.status !== "done").length;
 }
 
+// Fuente de verdad única para las etiquetas de cada acción de la cola. Antes este
+// diccionario estaba duplicado en 4 sitios y añadir una acción obligaba a tocarlos
+// todos (y era fácil olvidar uno).
+const OP_LABELS = {
+  addMovement: "Movimiento",
+  addFutureMovement: "Movimiento futuro",
+  addMovementsBatch: "Movimientos periódicos",
+  updateMovement: "Editar movimiento",
+  updateInvestment: "Editar inversión",
+  deleteMovement: "Borrar movimiento",
+  deleteMovementsBatch: "Borrar múltiple",
+  deleteInvestment: "Borrar inversión",
+  saveBanks: "Guardar cuentas",
+  saveInvestments: "Guardar inversiones",
+  saveInvestmentCategories: "Guardar categorías inversión",
+  saveInvestmentEstimateRules: "Guardar reglas estimación",
+  clearInvestmentEstimates: "Borrar estimaciones",
+  simulateInvestmentEstimateRule: "Simular estimación",
+  saveInvestmentEstimateAllocations: "Reparto estimación",
+  saveInvestmentModePreference: "Modo inversión",
+  saveInvestmentGoals: "Guardar objetivos",
+  transferBank: "Transferencia",
+  addTransfersBatch: "Transferencias periódicas",
+  renameAccount: "Renombrar cuenta",
+  deleteAccount: "Eliminar cuenta",
+  reassignFutureMovementsAccount: "Reasignar movs. futuros"
+};
+
+function opLabel(action, fallback = "Operación") {
+  return OP_LABELS[action] || action || fallback;
+}
+
 function queueActionStatus(payload = {}) {
-  const map = {
-    addMovement: "Enviando movimiento",
-    addFutureMovement: "Enviando movimiento futuro",
-    addMovementsBatch: "Enviando movimientos periódicos",
-    updateMovement: "Guardando movimiento",
-    updateInvestment: "Guardando inversión",
-    deleteMovement: "Borrando movimiento",
-    deleteMovementsBatch: "Borrando movimientos",
-    saveBanks: "Guardando cuentas",
-    saveInvestments: "Guardando inversiones",
-    saveInvestmentEstimateRules: "Guardando reglas de estimación",
-    clearInvestmentEstimates: "Borrando estimaciones",
-    simulateInvestmentEstimateRule: "Simulando estimación",
-    saveInvestmentModePreference: "Guardando modo de inversión",
-    saveInvestmentGoals: "Guardando objetivos",
-    transferBank: "Enviando transferencia",
-    addTransfersBatch: "Enviando transferencias periódicas",
-    renameAccount: "Renombrando cuenta",
-    deleteAccount: "Eliminando cuenta",
-    reassignFutureMovementsAccount: "Reasignando movimientos futuros"
-  };
-  return `${map[payload.action] || "Enviando cambio"}\nSincronizando Google Sheets`;
+  return `Enviando: ${opLabel(payload.action, "cambio")}\nSincronizando Google Sheets`;
 }
 
 function renderPendingOpsBadge() {
@@ -1654,32 +1767,11 @@ function renderPendingOpsTable(queue = readOpQueue()) {
   const table = document.getElementById("pendingOpsTable");
   if (!table) return;
   const rows = queue.map((op, idx) => {
-    const actionMap = {
-      addMovement: "Movimiento",
-      addFutureMovement: "Movimiento futuro",
-      addMovementsBatch: "Movs. periódicos",
-      updateMovement: "Editar movimiento",
-      updateInvestment: "Editar inversión",
-      deleteMovement: "Borrar movimiento",
-      deleteMovementsBatch: "Borrar múltiple",
-      saveBanks: "Guardar cuentas",
-      saveInvestments: "Guardar inversiones",
-      saveInvestmentEstimateRules: "Guardar reglas estimación",
-      clearInvestmentEstimates: "Borrar estimaciones",
-      simulateInvestmentEstimateRule: "Simular estimación",
-      saveInvestmentModePreference: "Modo inversión",
-      saveInvestmentGoals: "Guardar objetivos",
-      transferBank: "Transferencia",
-      addTransfersBatch: "Transferencias periódicas",
-      renameAccount: "Renombrar cuenta",
-      deleteAccount: "Eliminar cuenta",
-      reassignFutureMovementsAccount: "Reasignar movs. futuros"
-    };
     const statusText = op.status === "sending" ? "Enviando" : op.status === "checking" ? "Confirmando" : "Pendiente (auto cada 5 s)";
     const detail = op.error ? `${statusText}: ${op.error}` : statusText;
     return `<tr>
       <td>${idx + 1}</td>
-      <td>${escapeHtml(actionMap[op.payload?.action] || op.payload?.action || "Operación")}</td>
+      <td>${escapeHtml(opLabel(op.payload?.action))}</td>
       <td>${escapeHtml(detail)}</td>
       <td><button class="mini-edit-btn" type="button" data-retry-op="${escapeAttr(op.id)}">Reintentar ahora</button></td>
     </tr>`;
@@ -1688,36 +1780,199 @@ function renderPendingOpsTable(queue = readOpQueue()) {
   table.querySelectorAll("[data-retry-op]").forEach(btn => btn.addEventListener("click", () => retryPendingOps(btn.dataset.retryOp)));
 }
 
+function sentOpsToday() {
+  return readSentHistory().filter(item => item.day === todayKey());
+}
+
 function renderSentOpsTable() {
   const table = document.getElementById("sentOpsTable");
   if (!table) return;
-  const actionMap = {
-    addMovement: "Movimiento",
-    addFutureMovement: "Movimiento futuro",
-    addMovementsBatch: "Movs. periódicos",
-    updateMovement: "Editar movimiento",
-    updateInvestment: "Editar inversión",
-    deleteMovement: "Borrar movimiento",
-    deleteMovementsBatch: "Borrar múltiple",
-    saveBanks: "Guardar cuentas",
-    saveInvestments: "Guardar inversiones",
-    saveInvestmentEstimateRules: "Guardar reglas estimación",
-    clearInvestmentEstimates: "Borrar estimaciones",
-    simulateInvestmentEstimateRule: "Simular estimación",
-    saveInvestmentEstimateAllocations: "Reparto estimación",
-    saveInvestmentModePreference: "Modo inversión",
-    saveInvestmentGoals: "Guardar objetivos",
-    transferBank: "Transferencia",
-    addTransfersBatch: "Transferencias periódicas",
-    renameAccount: "Renombrar cuenta",
-    deleteAccount: "Eliminar cuenta",
-    reassignFutureMovementsAccount: "Reasignar movs. futuros"
-  };
-  const rows = readSentHistory()
-    .filter(item => item.day === todayKey())
-    .map((op, idx) => `<tr class="sent-row"><td>${idx + 1}</td><td>${escapeHtml(actionMap[op.payload?.action] || op.payload?.action || "Operación")}</td><td>Enviado hoy</td><td></td></tr>`)
+  const rows = sentOpsToday()
+    .map((op, idx) => `<tr class="sent-row"><td>${idx + 1}</td><td>${escapeHtml(opLabel(op.payload?.action))}</td><td>Enviado hoy</td><td></td></tr>`)
     .join("");
   table.innerHTML = `<thead><tr><th>#</th><th>Tipo</th><th>Estado</th><th></th></tr></thead><tbody><tr class="table-section-row"><td colspan="4">Enviados hoy con éxito</td></tr>${rows || `<tr><td class="empty" colspan="4">Sin envíos de hoy.</td></tr>`}</tbody>`;
+  const undoBtn = document.getElementById("undoSentOpsBtn");
+  if (undoBtn) undoBtn.classList.toggle("hidden", !sentOpsToday().length);
+}
+
+// ---------------------------------------------------------------------------
+// Deshacer envíos de hoy
+//
+// El ajuste de saldo por cuenta se decide con un diálogo aparte, así que la
+// cuenta afectada NO viaja en todos los payloads. Por eso el undo automático y
+// exacto solo se ofrece para las operaciones cuyo payload contiene toda la
+// información necesaria (alta de movimiento, alta de movimiento futuro y
+// transferencia). El resto se muestra con su resumen para revisarlo a mano.
+// ---------------------------------------------------------------------------
+
+function undoMovementInfo(serialized) {
+  const movement = normalizeTransaction(serialized);
+  if (!movement) return { lines: [], movement: null };
+  const lines = [
+    `${prettyType(movement.tipo)}${movement.concepto ? ` · ${movement.concepto}` : ""}`,
+    movement.descripcion || "",
+    `${money(movement.amount)}${movement.cuenta ? ` · ${movement.cuenta}` : ""}`,
+    formatDate(movement.date)
+  ].filter(Boolean);
+  return { lines, movement };
+}
+
+function describeSentOp(payload = {}) {
+  const action = payload.action || "";
+  if (["addMovement", "addFutureMovement", "deleteMovement", "updateMovement"].includes(action)) {
+    return undoMovementInfo(payload.movement).lines;
+  }
+  if (action === "transferBank") {
+    return [`${payload.from || "?"} → ${payload.to || "?"}`, money(payload.amount)];
+  }
+  if (action === "addMovementsBatch") {
+    return [`${(payload.movements || []).length} movimiento(s) periódico(s)`];
+  }
+  if (action === "addTransfersBatch") {
+    return [`${payload.from || "?"} → ${payload.to || "?"}`, `${(payload.transfers || []).length} transferencia(s)`, money(payload.amount)];
+  }
+  if (action === "deleteMovementsBatch") {
+    return [`${(payload.movements || []).length} movimiento(s) borrado(s)`];
+  }
+  if (action === "renameAccount") return [`${payload.oldName || "?"} → ${payload.newName || "?"}`];
+  if (action === "deleteAccount") return [payload.account || ""];
+  return [];
+}
+
+// Devuelve { inverse, mirror } si la operación es reversible con exactitud, o null.
+function buildUndo(payload = {}) {
+  const action = payload.action || "";
+  if (action === "addMovement") {
+    const { movement } = undoMovementInfo(payload.movement);
+    if (!movement) return null;
+    return {
+      inverse: {
+        action: "deleteMovement",
+        rowNumber: payload.movement?.rowNumber || movement.rowNumber || null,
+        movement: payload.movement,
+        sheetName: payload.sheetName || state.config.movementSheet
+      },
+      mirror: () => {
+        const idx = state.transactions.findIndex(t => t.sid === movement.sid);
+        if (idx >= 0) state.transactions.splice(idx, 1);
+        if (payload.account) applyBankDelta(payload.account, -movement.amount);
+        applyInvestmentCostDeltaLocal(movement, -1);
+      }
+    };
+  }
+  if (action === "addFutureMovement") {
+    const { movement } = undoMovementInfo(payload.movement);
+    if (!movement) return null;
+    return {
+      inverse: {
+        action: "deleteMovement",
+        rowNumber: payload.movement?.rowNumber || movement.rowNumber || null,
+        movement: payload.movement,
+        sheetName: payload.sheetName || state.config.futureMovementSheet || "Movimientos futuros"
+      },
+      mirror: () => {
+        const idx = state.futureTransactions.findIndex(t => t.sid === movement.sid);
+        if (idx >= 0) state.futureTransactions.splice(idx, 1);
+      }
+    };
+  }
+  if (action === "transferBank") {
+    const amount = Math.abs(Number(payload.amount) || 0);
+    if (!amount || !payload.from || !payload.to) return null;
+    return {
+      inverse: {
+        action: "transferBank",
+        bankSheet: payload.bankSheet || state.config.bankSheet || "Bancos",
+        from: payload.to,
+        to: payload.from,
+        amount
+      },
+      mirror: () => {
+        // La transferencia movió dinero from→to; al revertir, from recupera y to cede.
+        applyBankDelta(payload.from, amount);
+        applyBankDelta(payload.to, -amount);
+      }
+    };
+  }
+  return null;
+}
+
+function undoReasonFor(action) {
+  const map = {
+    updateMovement: "La edición se revierte a mano desde el propio movimiento.",
+    deleteMovement: "Vuelve a registrarlo desde la pantalla Registrar.",
+    deleteMovementsBatch: "Vuelve a registrarlos desde la pantalla Registrar.",
+    addMovementsBatch: "Bórralos desde Movimientos (edición múltiple).",
+    addTransfersBatch: "Revísalo desde Movimientos.",
+    saveBanks: "Ajusta el saldo de nuevo en Dinero.",
+    saveInvestments: "Corrige las posiciones en Inversión.",
+    updateInvestment: "Corrige la posición en Inversión.",
+    saveInvestmentGoals: "Vuelve a editar los objetivos.",
+    renameAccount: "Renómbrala de nuevo en Dinero.",
+    deleteAccount: "Vuelve a crearla en Dinero."
+  };
+  return map[action] || "Revísalo manualmente en su pantalla.";
+}
+
+function openUndoDialog() {
+  renderUndoDialogList();
+  document.getElementById("undoDialog")?.showModal();
+}
+
+function renderUndoDialogList() {
+  const container = document.getElementById("undoDialogList");
+  if (!container) return;
+  const entries = sentOpsToday();
+  if (!entries.length) {
+    container.innerHTML = `<p class="empty">No hay envíos de hoy.</p>`;
+    return;
+  }
+  container.innerHTML = entries.map(entry => {
+    const payload = entry.payload || {};
+    const reversible = Boolean(buildUndo(payload));
+    const detail = describeSentOp(payload).map(line => `<span>${escapeHtml(line)}</span>`).join("");
+    const action = reversible
+      ? `<button class="btn danger undo-row-btn" type="button" data-undo-id="${escapeAttr(entry.id)}"><i data-lucide="undo-2"></i> Deshacer</button>`
+      : `<span class="undo-reason">${escapeHtml(undoReasonFor(payload.action))}</span>`;
+    return `<div class="undo-item${reversible ? "" : " not-reversible"}">
+      <div class="undo-item-main">
+        <strong>${escapeHtml(opLabel(payload.action))}</strong>
+        <div class="undo-item-detail">${detail}</div>
+      </div>
+      <div class="undo-item-action">${action}</div>
+    </div>`;
+  }).join("");
+  container.querySelectorAll("[data-undo-id]").forEach(btn =>
+    btn.addEventListener("click", () => undoSentOp(btn.dataset.undoId)));
+  if (window.lucide?.createIcons) lucide.createIcons();
+}
+
+async function undoSentOp(entryId) {
+  const entry = readSentHistory().find(item => item && item.id === entryId);
+  if (!entry) return;
+  const undo = buildUndo(entry.payload || {});
+  if (!undo) {
+    setNotice("Esta operación no se puede deshacer automáticamente.", "warn");
+    return;
+  }
+  const label = opLabel(entry.payload?.action);
+  const confirmed = await confirmDialog(`¿Deshacer "${label}"? Se encolará la operación inversa y se sincronizará con Sheets.`, "Deshacer");
+  if (!confirmed) return;
+  try {
+    undo.mirror();
+    // Quitamos la entrada del histórico de hoy para no deshacerla dos veces.
+    writeSentHistory(readSentHistory().filter(item => item && item.id !== entryId));
+    queueOp(undo.inverse);
+    logSyncEvent(`Deshacer: ${label}.`, "");
+    renderSummary();
+    renderDataScope("movements");
+    renderUndoDialogList();
+    renderPendingOpsBadge();
+    if (!sentOpsToday().length) document.getElementById("undoDialog")?.close();
+    setNotice(`Deshaciendo "${label}".`, "ok");
+  } catch (error) {
+    setNotice(`No se pudo deshacer: ${error.message}`, "warn");
+  }
 }
 
 function queuePayloadSections(payload = {}) {
@@ -1755,29 +2010,7 @@ function sleep(ms) {
 }
 
 function queuedOpLabel(payload = {}) {
-  const actionMap = {
-    addMovement: "Movimiento",
-    addFutureMovement: "Movimiento futuro",
-    addMovementsBatch: "Movimientos periódicos",
-    updateMovement: "Editar movimiento",
-    updateInvestment: "Editar inversión",
-    deleteMovement: "Borrar movimiento",
-    deleteMovementsBatch: "Borrar múltiple",
-    saveBanks: "Guardar cuentas",
-    saveInvestments: "Guardar inversiones",
-    saveInvestmentEstimateRules: "Guardar reglas estimación",
-    clearInvestmentEstimates: "Borrar estimaciones",
-    simulateInvestmentEstimateRule: "Simular estimación",
-    saveInvestmentEstimateAllocations: "Reparto estimación",
-    saveInvestmentModePreference: "Modo inversión",
-    saveInvestmentGoals: "Guardar objetivos",
-    transferBank: "Transferencia",
-    addTransfersBatch: "Transferencias periódicas",
-    renameAccount: "Renombrar cuenta",
-    deleteAccount: "Eliminar cuenta",
-    reassignFutureMovementsAccount: "Reasignar movs. futuros"
-  };
-  return actionMap[payload.action] || payload.action || "Operación";
+  return opLabel(payload.action);
 }
 
 async function recoverInterruptedSendingOps() {
@@ -2163,13 +2396,28 @@ async function fetchAppsScriptData(options = {}) {
   return jsonp(`${state.config.scriptUrl}?${params.toString()}`);
 }
 
-function jsonp(url) {
+const JSONP_TIMEOUT_MS = 20000;
+
+function jsonp(url, { timeoutMs = JSONP_TIMEOUT_MS } = {}) {
   return new Promise((resolve, reject) => {
     const cb = `moneyJsonp_${Date.now()}_${Math.random().toString(36).slice(2)}`;
     const script = document.createElement("script");
     const sep = url.includes("?") ? "&" : "?";
-    window[cb] = data => { resolve(data); script.remove(); delete window[cb]; };
-    script.onerror = () => { reject(new Error("no se pudo leer Apps Script")); script.remove(); delete window[cb]; };
+    let timer = null;
+    const cleanup = () => {
+      if (timer) { window.clearTimeout(timer); timer = null; }
+      script.remove();
+      delete window[cb];
+    };
+    window[cb] = data => { cleanup(); resolve(data); };
+    script.onerror = () => { cleanup(); reject(new Error("no se pudo leer Apps Script")); };
+    // Sin este timeout una respuesta que nunca llega (red que cuelga, Apps Script
+    // atascado) dejaría la promesa viva para siempre y filtraría el <script>/callback,
+    // colgando la confirmación de operaciones y la UI en "Confirmando…".
+    timer = window.setTimeout(() => {
+      cleanup();
+      reject(new Error("Apps Script no respondió a tiempo"));
+    }, timeoutMs);
     script.src = `${url}${sep}callback=${cb}`;
     document.body.appendChild(script);
   });
@@ -4304,14 +4552,23 @@ async function saveBanks() {
   }
 }
 
+const POST_TIMEOUT_MS = 20000;
+
 async function fireAppsScript(payload) {
   if (navigator.onLine === false) throw new Error("Sin conexión");
   const finalPayload = withClientOpId(payload || {});
-  await fetch(state.config.scriptUrl, {
-    method: "POST",
-    mode: "no-cors",
-    headers: { "Content-Type": "text/plain;charset=utf-8" },
-    body: JSON.stringify({
+  // Con mode:"no-cors" no leemos la respuesta, pero sin timeout un POST colgado
+  // dejaría la operación en estado "sending" indefinidamente. Abortamos para que
+  // la cola la marque como "retry" y la reintente en el siguiente ciclo.
+  const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+  const timer = controller ? window.setTimeout(() => controller.abort(), POST_TIMEOUT_MS) : null;
+  try {
+    await fetch(state.config.scriptUrl, {
+      method: "POST",
+      mode: "no-cors",
+      signal: controller ? controller.signal : undefined,
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify({
       token: state.config.appToken,
       dataSheet: state.config.dataSheet || "Datos",
       investmentSheet: state.config.investmentSheet || "Inversiones",
@@ -4322,8 +4579,14 @@ async function fireAppsScript(payload) {
       movementSheet: state.config.movementSheet || "Control Finanzas",
       futureMovementSheet: state.config.futureMovementSheet || "Movimientos futuros",
       ...finalPayload
-    })
-  });
+      })
+    });
+  } catch (error) {
+    if (error && error.name === "AbortError") throw new Error("El envío tardó demasiado; se reintentará");
+    throw error;
+  } finally {
+    if (timer) window.clearTimeout(timer);
+  }
   return finalPayload;
 }
 
