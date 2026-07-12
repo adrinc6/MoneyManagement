@@ -189,6 +189,32 @@ La app está pensada para GitHub Pages o cualquier hosting estático.
 3. Publica la web estática.
 4. Conecta la URL de Apps Script desde Ajustes.
 
+## Deshacer envíos de hoy
+
+En `Ajustes > Conexión`, sobre la lista de envíos correctos del día, hay un botón **Deshacer** que abre una ventana con el resumen de cada operación enviada hoy. Desde ahí puedes revertir las altas de movimiento, las altas de movimiento futuro y las transferencias (se encola la operación inversa y se sincroniza con Sheets). El resto de operaciones se muestran con su detalle e indican cómo revertirlas manualmente.
+
+## Robustez
+
+- Las lecturas (JSONP) y escrituras (POST) tienen timeout: una petición colgada ya no bloquea la cola ni la interfaz, se reintenta sola.
+- Si `localStorage` se llena, la caché se poda de forma automática y se avisa, en vez de fallar en silencio.
+- Cada vista se renderiza de forma aislada: un dato inesperado no rompe la pantalla completa.
+- Service worker con app-shell: la app abre sin conexión y es instalable como PWA. Los datos en vivo (Apps Script) nunca se cachean.
+- Versión de librerías de CDN fijada para que un cambio externo no rompa la app.
+
+## Desarrollo y calidad
+
+Requisitos: Node 18+.
+
+```bash
+npm install     # dependencias de desarrollo (ESLint)
+npm run check   # comprobación de sintaxis de app.js y sw.js
+npm test        # tests de las funciones de cálculo (node --test)
+npm run lint    # ESLint sobre los archivos nuevos
+npm run verify  # check + test
+```
+
+Los tests cargan el `app.js` real en un contexto aislado (`node:vm`) y verifican las funciones puras de dinero (parseo de importes, redondeo, clasificación de movimientos, fechas, etiquetas y la lógica de deshacer) sin necesidad de navegador. La CI de GitHub Actions ejecuta `check`, `test` y `lint` en cada push y pull request.
+
 ## Notas
 
 - La interfaz está optimizada para móvil.

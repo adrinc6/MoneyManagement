@@ -2154,6 +2154,58 @@ TABLAS DE INVERSIONES: ajuste mínimo sin scroll horizontal
   margin-top: 12px;
 }
 .settings-log-toolbar .settings-subtitle { margin: 0; }
+
+/* Deshacer envíos de hoy */
+.sent-ops-toolbar {
+  margin-top: 12px;
+  align-items: center;
+}
+.sent-ops-toolbar .settings-subtitle { margin: 0; }
+.undo-sent-btn {
+  margin-left: auto;
+  gap: 6px;
+  font-weight: 600;
+  padding: 9px 16px;
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.undo-sent-btn i { width: 18px; height: 18px; }
+.undo-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 6px;
+}
+.undo-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+}
+.undo-item.not-reversible { opacity: .82; }
+.undo-item-main { min-width: 0; }
+.undo-item-main strong { display: block; font-size: .92rem; }
+.undo-item-detail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: .76rem;
+}
+.undo-item-action { flex-shrink: 0; }
+.undo-row-btn { gap: 6px; white-space: nowrap; }
+.undo-reason {
+  display: block;
+  max-width: 180px;
+  color: var(--muted);
+  font-size: .72rem;
+  text-align: right;
+}
 .sync-log-wrap {
   max-height: 260px;
 }

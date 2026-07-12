@@ -13,7 +13,7 @@
   <link rel="apple-touch-icon" sizes="180x180" href="images/apple-touch-icon.png" />
   <link rel="manifest" href="site.webmanifest" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
-  <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+  <script src="https://unpkg.com/lucide@1.24.0/dist/umd/lucide.min.js"></script>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
@@ -236,6 +236,12 @@
             <div class="table-wrap pending-ops-wrap">
               <table id="pendingOpsTable"></table>
             </div>
+            <div class="section-toolbar sent-ops-toolbar">
+              <h3 class="settings-subtitle">Enviados hoy con éxito</h3>
+              <button class="btn undo-sent-btn hidden" id="undoSentOpsBtn" type="button" aria-label="Deshacer un envío de hoy" title="Deshacer un envío de hoy">
+                <i data-lucide="undo-2"></i><span>Deshacer</span>
+              </button>
+            </div>
             <div class="table-wrap pending-ops-wrap">
               <table id="sentOpsTable"></table>
             </div>
@@ -417,6 +423,17 @@
     </form>
   </dialog>
 
+  <dialog id="undoDialog" class="wide-dialog">
+    <div class="dialog-head">
+      <h2>Deshacer envíos de hoy</h2>
+      <button class="icon-btn" id="closeUndoDialogBtn" type="button" aria-label="Cerrar"><i data-lucide="x"></i></button>
+    </div>
+    <div class="panel-body">
+      <p class="dialog-help">Selecciona un movimiento enviado hoy para revertirlo. Se encolará la operación inversa y se sincronizará con Sheets.</p>
+      <div id="undoDialogList" class="undo-list"></div>
+    </div>
+  </dialog>
+
   <nav class="bottom-nav" aria-label="Navegación principal">
     <button data-view-button="movimientos"><i data-lucide="list-filter"></i><span>Movs</span></button>
     <button data-view-button="resumen"><i data-lucide="layout-dashboard"></i><span>Resumen</span></button>
@@ -585,6 +602,13 @@
     </form>
   </dialog>
 
-  <script src="app.js?v=20260628-local-mirror-v19"></script>
+  <script src="app.js?v=20260712-v20"></script>
+  <script>
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => {
+        navigator.serviceWorker.register("sw.js").catch(err => console.warn("SW no registrado", err));
+      });
+    }
+  </script>
 </body>
 </html>
