@@ -238,8 +238,8 @@
             </div>
             <div class="section-toolbar sent-ops-toolbar">
               <h3 class="settings-subtitle">Enviados hoy con éxito</h3>
-              <button class="btn undo-sent-btn hidden" id="undoSentOpsBtn" type="button" aria-label="Deshacer un envío de hoy" title="Deshacer un envío de hoy">
-                <i data-lucide="undo-2"></i><span>Deshacer</span>
+              <button class="btn mini-edit-btn hidden" id="undoSentOpsBtn" type="button" aria-label="Deshacer un envío de hoy" title="Deshacer un envío de hoy">
+                <i data-lucide="undo-2"></i>
               </button>
             </div>
             <div class="table-wrap pending-ops-wrap">
@@ -429,7 +429,6 @@
       <button class="icon-btn" id="closeUndoDialogBtn" type="button" aria-label="Cerrar"><i data-lucide="x"></i></button>
     </div>
     <div class="panel-body">
-      <p class="dialog-help">Selecciona un movimiento enviado hoy para revertirlo. Se encolará la operación inversa y se sincronizará con Sheets.</p>
       <div id="undoDialogList" class="undo-list"></div>
     </div>
   </dialog>

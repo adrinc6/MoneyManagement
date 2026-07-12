@@ -1790,7 +1790,7 @@ function renderSentOpsTable() {
   const rows = sentOpsToday()
     .map((op, idx) => `<tr class="sent-row"><td>${idx + 1}</td><td>${escapeHtml(opLabel(op.payload?.action))}</td><td>Enviado hoy</td><td></td></tr>`)
     .join("");
-  table.innerHTML = `<thead><tr><th>#</th><th>Tipo</th><th>Estado</th><th></th></tr></thead><tbody><tr class="table-section-row"><td colspan="4">Enviados hoy con éxito</td></tr>${rows || `<tr><td class="empty" colspan="4">Sin envíos de hoy.</td></tr>`}</tbody>`;
+  table.innerHTML = `<thead><tr><th>#</th><th>Tipo</th><th>Estado</th><th></th></tr></thead><tbody><tr class="table-section-row"><td colspan="4"></td></tr>${rows || `<tr><td class="empty" colspan="4">Sin envíos de hoy.</td></tr>`}</tbody>`;
   const undoBtn = document.getElementById("undoSentOpsBtn");
   if (undoBtn) undoBtn.classList.toggle("hidden", !sentOpsToday().length);
 }
@@ -3427,7 +3427,7 @@ function renderSettingsPanelTabs() {
   const labels = {
     sync: ["Sincronización", "Estado de caché, secciones y logs internos."],
     connection: ["Conexión", "Peticiones pendientes y envíos confirmados de hoy."],
-    params: ["Parámetros", "Estimación, tema, URL de Apps Script y token opcional."]
+    params: ["Parámetros", ""]
   };
   document.querySelectorAll("#settingsPanelSwitch [data-settings-panel]").forEach(btn => {
     btn.classList.toggle("active", btn.dataset.settingsPanel === panel);

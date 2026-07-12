@@ -2160,16 +2160,10 @@ TABLAS DE INVERSIONES: ajuste mínimo sin scroll horizontal
   margin-top: 12px;
   align-items: center;
 }
-.sent-ops-toolbar .settings-subtitle { margin: 0; }
-.undo-sent-btn {
-  margin-left: auto;
-  gap: 6px;
-  font-weight: 600;
-  padding: 9px 16px;
-  border-color: var(--accent);
-  color: var(--accent);
+
+.sent-ops-toolbar .settings-subtitle {
+  margin: 0;
 }
-.undo-sent-btn i { width: 18px; height: 18px; }
 .undo-list {
   display: flex;
   flex-direction: column;
@@ -2198,7 +2192,7 @@ TABLAS DE INVERSIONES: ajuste mínimo sin scroll horizontal
   font-size: .76rem;
 }
 .undo-item-action { flex-shrink: 0; }
-.undo-row-btn { gap: 6px; white-space: nowrap; }
+.undo-row-btn { gap: 6px; white-space: nowrap; font-size: 0.72rem;}
 .undo-reason {
   display: block;
   max-width: 180px;
