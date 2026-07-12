@@ -10,6 +10,10 @@ var DEFAULT_INVESTMENT_ESTIMATE_LEDGER_SHEET = 'Inversiones Estimación Movimien
 var INVESTMENT_ESTIMATE_BASELINE_PREFIX = 'moneyInvestmentEstimateBaseline:';
 var INVESTMENT_MODE_PREFERENCE_KEY = 'moneyInvestmentModePreference';
 var DEFAULT_PENDING_SHEET = 'Pendientes';
+// Una fila "Pendientes" que sobreviva más de este tiempo se considera huérfana
+// (ejecución interrumpida/cortada antes de limpiarla) y deja de bloquear los
+// reintentos, para que la operación pueda volver a enviarse y llegar a Sheets.
+var PENDING_OP_STALE_MS = 90 * 1000;
 var SECTION_REV_PREFIX = 'moneySectionRev:';
 var PROCESSED_CLIENT_OPS_KEY = 'moneyProcessedClientOps';
 var MOVEMENT_CHANGELOG_KEY = 'moneyMovementChangelog';
@@ -482,17 +486,41 @@ function wasClientOpProcessed_(clientOpId) {
 function isClientOpPending_(clientOpId) {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(DEFAULT_PENDING_SHEET);
   if (!sheet || sheet.getLastRow() < 2) return false;
-  const values = sheet.getRange(2, 4, sheet.getLastRow() - 1, 1).getValues();
-  return values.some(row => String(row[0] || '').indexOf(clientOpId) !== -1);
+  // Columnas: Fecha (2) y Payload (4).
+  const values = sheet.getRange(2, 2, sheet.getLastRow() - 1, 3).getValues();
+  const staleBefore = Date.now() - PENDING_OP_STALE_MS;
+  return values.some(row => {
+    if (String(row[2] || '').indexOf(clientOpId) === -1) return false;
+    const at = row[0] instanceof Date ? row[0].getTime() : new Date(row[0]).getTime();
+    // Fila caducada: no debe mantener al cliente en "Confirmando" para siempre.
+    if (!Number.isNaN(at) && at < staleBefore) return false;
+    return true;
+  });
 }
 
 
 function doPost(e) {
   let payload = {};
   let pendingId = '';
+  let lock = null;
   try {
     payload = JSON.parse(e.postData.contents || '{}');
     requireToken_(payload.token || '');
+    // Ruta rápida sin bloqueo para operaciones ya confirmadas (evita serializar la
+    // tormenta de reintentos que dispara el cliente).
+    if (payload.clientOpId && wasClientOpProcessed_(payload.clientOpId)) {
+      return json_({ ok: true, duplicate: true });
+    }
+    // Serializa las mutaciones: al borrar una cuenta con movimientos futuros el
+    // cliente encola dos operaciones a la vez (reassignFutureMovementsAccount +
+    // deleteAccount) que llegan en peticiones concurrentes. Sin bloqueo se pisaban
+    // al escribir la hoja "Pendientes" (dejando filas huérfanas que bloqueaban el
+    // reintento para siempre) y la propiedad de operaciones procesadas (perdiendo
+    // la confirmación), y el cliente se quedaba en "Confirmando" en bucle sin que
+    // el cambio llegara a Sheets.
+    lock = LockService.getScriptLock();
+    lock.waitLock(30000);
+    // Reevaluado dentro del lock: ya con el estado consolidado por otra petición.
     if (payload.clientOpId && wasClientOpProcessed_(payload.clientOpId)) {
       return json_({ ok: true, duplicate: true });
     }
@@ -623,6 +651,10 @@ function doPost(e) {
       try { removePendingPost_(pendingId); } catch (cleanupErr) {}
     }
     return json_(errorPayload_(err));
+  } finally {
+    if (lock) {
+      try { lock.releaseLock(); } catch (releaseErr) {}
+    }
   }
 }
 
@@ -1592,36 +1624,15 @@ function renameAccountInMovementSheet_(sheetName, oldName, newName) {
 }
 
 function reassignFutureMovementsAccount_(sheetName, sids, oldName, newName) {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
-  if (!sheet) return 0;
-  const rowCount = sheet.getLastRow() - 1;
-  if (rowCount <= 0 || sheet.getLastColumn() < 9) return 0;
-  const sidCol = ensureMovementSidColumn_(sheet);
-  if (!sidCol) return 0;
-  const sidSet = {};
-  (sids || []).forEach(function(sid) { const trimmed = String(sid || '').trim(); if (trimmed) sidSet[trimmed] = true; });
-  if (!Object.keys(sidSet).length) return 0;
-  const sidValues = sheet.getRange(2, sidCol, rowCount, 1).getValues();
-  const accountRange = sheet.getRange(2, 9, rowCount, 1);
-  const accountValues = accountRange.getValues();
-  const descRange = sheet.getRange(2, 7, rowCount, 1);
-  const descValues = descRange.getValues();
-  let changed = 0;
-  for (let i = 0; i < rowCount; i++) {
-    const sid = String(sidValues[i][0] || '').trim();
-    if (!sid || !sidSet[sid]) continue;
-    const accountResult = renameAccountTextValue_(accountValues[i][0], oldName, newName);
-    if (!accountResult.changed) continue;
-    accountValues[i][0] = accountResult.value;
-    const descResult = renameAccountTextValue_(descValues[i][0], oldName, newName);
-    if (descResult.changed) descValues[i][0] = descResult.value;
-    changed++;
-  }
-  if (changed) {
-    accountRange.setValues(accountValues);
-    descRange.setValues(descValues);
-  }
-  return changed;
+  // La reasignación mueve TODOS los movimientos futuros de la cuenta antigua a la
+  // nueva (es lo que pide el diálogo al borrar la cuenta). Los `sids` llegan como
+  // pista del cliente, pero no dependemos de ellos: hacerlo por texto de cuenta
+  // migra también filas sin SID (creadas a mano o antes de existir la columna),
+  // evitando que el cambio quede aplicado en caché pero no en Sheets.
+  const normalizedOld = String(oldName || '').trim();
+  const normalizedNew = String(newName || '').trim();
+  if (!normalizedOld || !normalizedNew || normalizedOld === normalizedNew) return 0;
+  return renameAccountInMovementSheet_(sheetName, normalizedOld, normalizedNew);
 }
 
 function renameAccount_(bankSheetName, movementSheetName, futureMovementSheetName, oldName, newName) {
