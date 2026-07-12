@@ -1624,36 +1624,15 @@ function renameAccountInMovementSheet_(sheetName, oldName, newName) {
 }
 
 function reassignFutureMovementsAccount_(sheetName, sids, oldName, newName) {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
-  if (!sheet) return 0;
-  const rowCount = sheet.getLastRow() - 1;
-  if (rowCount <= 0 || sheet.getLastColumn() < 9) return 0;
-  const sidCol = ensureMovementSidColumn_(sheet);
-  if (!sidCol) return 0;
-  const sidSet = {};
-  (sids || []).forEach(function(sid) { const trimmed = String(sid || '').trim(); if (trimmed) sidSet[trimmed] = true; });
-  if (!Object.keys(sidSet).length) return 0;
-  const sidValues = sheet.getRange(2, sidCol, rowCount, 1).getValues();
-  const accountRange = sheet.getRange(2, 9, rowCount, 1);
-  const accountValues = accountRange.getValues();
-  const descRange = sheet.getRange(2, 7, rowCount, 1);
-  const descValues = descRange.getValues();
-  let changed = 0;
-  for (let i = 0; i < rowCount; i++) {
-    const sid = String(sidValues[i][0] || '').trim();
-    if (!sid || !sidSet[sid]) continue;
-    const accountResult = renameAccountTextValue_(accountValues[i][0], oldName, newName);
-    if (!accountResult.changed) continue;
-    accountValues[i][0] = accountResult.value;
-    const descResult = renameAccountTextValue_(descValues[i][0], oldName, newName);
-    if (descResult.changed) descValues[i][0] = descResult.value;
-    changed++;
-  }
-  if (changed) {
-    accountRange.setValues(accountValues);
-    descRange.setValues(descValues);
-  }
-  return changed;
+  // La reasignación mueve TODOS los movimientos futuros de la cuenta antigua a la
+  // nueva (es lo que pide el diálogo al borrar la cuenta). Los `sids` llegan como
+  // pista del cliente, pero no dependemos de ellos: hacerlo por texto de cuenta
+  // migra también filas sin SID (creadas a mano o antes de existir la columna),
+  // evitando que el cambio quede aplicado en caché pero no en Sheets.
+  const normalizedOld = String(oldName || '').trim();
+  const normalizedNew = String(newName || '').trim();
+  if (!normalizedOld || !normalizedNew || normalizedOld === normalizedNew) return 0;
+  return renameAccountInMovementSheet_(sheetName, normalizedOld, normalizedNew);
 }
 
 function renameAccount_(bankSheetName, movementSheetName, futureMovementSheetName, oldName, newName) {

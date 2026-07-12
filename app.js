@@ -1630,7 +1630,10 @@ function queueActionStatus(payload = {}) {
     saveInvestmentModePreference: "Guardando modo de inversión",
     saveInvestmentGoals: "Guardando objetivos",
     transferBank: "Enviando transferencia",
-    addTransfersBatch: "Enviando transferencias periódicas"
+    addTransfersBatch: "Enviando transferencias periódicas",
+    renameAccount: "Renombrando cuenta",
+    deleteAccount: "Eliminando cuenta",
+    reassignFutureMovementsAccount: "Reasignando movimientos futuros"
   };
   return `${map[payload.action] || "Enviando cambio"}\nSincronizando Google Sheets`;
 }
@@ -1667,7 +1670,10 @@ function renderPendingOpsTable(queue = readOpQueue()) {
       saveInvestmentModePreference: "Modo inversión",
       saveInvestmentGoals: "Guardar objetivos",
       transferBank: "Transferencia",
-      addTransfersBatch: "Transferencias periódicas"
+      addTransfersBatch: "Transferencias periódicas",
+      renameAccount: "Renombrar cuenta",
+      deleteAccount: "Eliminar cuenta",
+      reassignFutureMovementsAccount: "Reasignar movs. futuros"
     };
     const statusText = op.status === "sending" ? "Enviando" : op.status === "checking" ? "Confirmando" : "Pendiente (auto cada 5 s)";
     const detail = op.error ? `${statusText}: ${op.error}` : statusText;
@@ -1702,7 +1708,10 @@ function renderSentOpsTable() {
     saveInvestmentModePreference: "Modo inversión",
     saveInvestmentGoals: "Guardar objetivos",
     transferBank: "Transferencia",
-    addTransfersBatch: "Transferencias periódicas"
+    addTransfersBatch: "Transferencias periódicas",
+    renameAccount: "Renombrar cuenta",
+    deleteAccount: "Eliminar cuenta",
+    reassignFutureMovementsAccount: "Reasignar movs. futuros"
   };
   const rows = readSentHistory()
     .filter(item => item.day === todayKey())
@@ -1726,6 +1735,8 @@ function queuePayloadSections(payload = {}) {
     return sheetName === (state.config.futureMovementSheet || "Movimientos futuros") ? ["futureTransactions"] : ["transactions", "investmentTotals"];
   }
   if (["transferBank", "saveBanks", "addTransfersBatch"].includes(action)) return action === "addTransfersBatch" ? ["futureTransactions", "banks"] : ["banks"];
+  if (["renameAccount", "deleteAccount"].includes(action)) return ["banks", "transactions", "futureTransactions"];
+  if (action === "reassignFutureMovementsAccount") return ["futureTransactions"];
   if (["saveInvestments", "updateInvestment", "deleteInvestment"].includes(action)) return ["investments", "investmentTotals", "investmentEstimateLedger"];
   if (action === "saveInvestmentCategories") return ["categories", "investments", "investmentTotals", "transactions", "futureTransactions"];
   if (["saveInvestmentEstimateRules"].includes(action)) return ["investmentEstimateRules", "investmentEstimateLedger"];
@@ -1761,7 +1772,10 @@ function queuedOpLabel(payload = {}) {
     saveInvestmentModePreference: "Modo inversión",
     saveInvestmentGoals: "Guardar objetivos",
     transferBank: "Transferencia",
-    addTransfersBatch: "Transferencias periódicas"
+    addTransfersBatch: "Transferencias periódicas",
+    renameAccount: "Renombrar cuenta",
+    deleteAccount: "Eliminar cuenta",
+    reassignFutureMovementsAccount: "Reasignar movs. futuros"
   };
   return actionMap[payload.action] || payload.action || "Operación";
 }
@@ -1880,7 +1894,7 @@ async function sendQueuedOp(opId) {
   setSyncStatus(queueActionStatus(item.payload), "");
   try {
     await fireAppsScript(item.payload);
-    markOpStatus(opId, { status: "checking", lastSentAt: Date.now() });
+    markOpStatus(opId, { status: "checking", error: null, lastSentAt: Date.now() });
   } catch (error) {
     markOpStatus(opId, { status: "retry", error: String(error.message || error), lastSentAt: Date.now() });
     logSyncEvent(`No se pudo enviar (se reintentará en 5 s): ${item.payload?.action || "cambio"}.`, "warn", error.message || String(error));
