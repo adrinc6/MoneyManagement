@@ -15,9 +15,11 @@ jobs:
           node-version: "20"
           cache: "npm"
       - run: npm ci
-      - name: Syntax check (app.js, sw.js)
+      - name: Syntax check (app.js, sw.js, apps-script.gs)
         run: npm run check
+      - name: Versiones de assets alineadas (sw.js / index.html)
+        run: npm run check:versions
       - name: Unit tests
         run: npm test
-      - name: Lint (archivos nuevos)
+      - name: Lint
         run: npm run lint
