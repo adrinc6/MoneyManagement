@@ -22,7 +22,7 @@ function notifyGlobalError(message, detail) {
   if (message === lastGlobalErrorNotice.message && now - lastGlobalErrorNotice.at < 4000) return;
   lastGlobalErrorNotice = { message, at: now };
   if (typeof logSyncEvent === "function") logSyncEvent(message, "warn", String(detail?.message || detail || ""));
-  if (typeof showToast === "function") showToast("Ha ocurrido un error inesperado. Revisa Ajustes > Sync si se repite.", "warn");
+  setNotice("Ha ocurrido un error inesperado. Revisa Ajustes > Sync si se repite.", "warn");
 }
 
 window.addEventListener("error", event => {
@@ -40,11 +40,11 @@ window.addEventListener("unhandledrejection", event => {
 });
 
 window.addEventListener("offline", () => {
-  if (typeof showToast === "function") showToast("Sin conexión. Los cambios se guardan en cola y se enviarán al volver.", "warn", 3200);
+  setNotice("Sin conexión. Los cambios se guardan en cola y se enviarán al volver.", "warn", 3200);
   if (typeof logSyncEvent === "function") logSyncEvent("Sin conexión", "warn");
 });
 window.addEventListener("online", () => {
-  if (typeof showToast === "function") showToast("Conexión recuperada.", "ok");
+  setNotice("Conexión recuperada.", "ok");
   if (typeof logSyncEvent === "function") logSyncEvent("Conexión recuperada", "ok");
 });
 
@@ -128,12 +128,6 @@ function safeSetItem(key, value) {
     }
   }
 }
-const SYSTEM_GOAL_LABELS = {
-  expenseMonthly: "Gasto mensual",
-  investmentMonthly: "Inversión mensual",
-  yearly: "Inversión anual",
-  total: "Inversión total"
-};
 const DATA_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const DATA_CACHE_VERSION = 3;
 const CACHE_SECTION_KEYS = ["transactions", "futureTransactions", "investments", "investmentTotals", "investmentEstimateRules", "investmentEstimateLedger", "banks", "investmentGoals", "categories"];
@@ -169,7 +163,6 @@ const state = {
   banks: [],
   categories: { types: STATIC_TYPES, concepts: STATIC_CONCEPTS, investmentTypes: INVESTMENT_TYPES },
   charts: {},
-  filtered: [],
   movementDrill: { level: "entries", year: String(new Date().getFullYear()), month: currentMonthKey() },
   summaryModes: { situation: "ingresos", investmentMoney: "invested", moneyMix: "types", bankMoney: "summary", investmentOverviewType: null, investmentOverviewMode: "invested", investmentPanel: "current", settingsPanel: "sync" },
   descriptionSuggestions: {},
@@ -181,7 +174,6 @@ const state = {
   evolutionRange: loadEvolutionRange(),
   accountGroups: loadAccountGroups(),
   cacheMeta: defaultCacheMeta(),
-  opQueueRunning: false,
   investmentNotificationsSending: false,
   pendingInvestmentAllocationPrompts: [],
   currentInvestmentAllocationPrompt: null,
@@ -435,7 +427,6 @@ function refreshActiveViewData() {
   return refreshData({
     force: true,
     manualRefresh: true,
-    disableIncremental: true,
     showProgress: true,
     userRefresh: true,
     cacheOnly: true,
@@ -448,7 +439,6 @@ function forceFullRefreshFromSettings() {
   return refreshData({
     force: true,
     manualRefresh: true,
-    disableIncremental: true,
     scope: "all",
     showProgress: true,
     successMessage: "Descarga completa ALL realizada desde Sheets."
@@ -872,10 +862,6 @@ function renderDataScope(scope = "all") {
   renderCurrentView(activeViewId());
 }
 
-async function downloadMovementSectionOptimized(kind, section, label, cached, options = {}) {
-  return downloadMovementPages(kind, label, { showProgress: options.showProgress });
-}
-
 function syncedSectionsFromData(data = {}) {
   const sections = [];
   if (Object.prototype.hasOwnProperty.call(data, "transactions")) sections.push("transactions");
@@ -1146,12 +1132,12 @@ async function refreshDataImpl(options = {}) {
           syncStatusStep(showProgress, movementReconciliationNeeded ? "Reconciliando movimientos" : "Descargando movimientos", "");
           const movementDownloads = [];
           if (neededSections.includes("transactions") || movementReconciliationNeeded) {
-            movementDownloads.push(downloadMovementSectionOptimized("realized", "transactions", "movimientos", cached, { showProgress, disableIncremental: true }));
+            movementDownloads.push(downloadMovementPages("realized", "movimientos", { showProgress }));
           } else {
             movementDownloads.push(Promise.resolve(null));
           }
           if (neededSections.includes("futureTransactions") || movementReconciliationNeeded) {
-            movementDownloads.push(downloadMovementSectionOptimized("future", "futureTransactions", "movimientos futuros", cached, { showProgress, disableIncremental: true }));
+            movementDownloads.push(downloadMovementPages("future", "movimientos futuros", { showProgress }));
           } else {
             movementDownloads.push(Promise.resolve(null));
           }
@@ -1335,17 +1321,6 @@ function setRefreshLoading(loading) {
     btn.classList.toggle("loading", loading);
     btn.disabled = loading;
   }
-}
-
-async function refreshDataInPlace() {
-  const activeView = document.querySelector(".view.active");
-  const activeViewId = activeView?.id || "";
-  const scrollTop = activeView?.scrollTop || 0;
-  await refreshData({ force: true, scope: refreshScopeForView(activeViewId) });
-  requestAnimationFrame(() => {
-    const currentView = activeViewId ? document.getElementById(activeViewId) : null;
-    if (currentView) currentView.scrollTop = scrollTop;
-  });
 }
 
 function markButtonSaved(button, label = "Guardado") {
@@ -1643,10 +1618,10 @@ function warnCacheQuota(recovered) {
   quotaWarningAt = now;
   if (recovered) {
     if (typeof logSyncEvent === "function") logSyncEvent("Caché local llena: se guardó una versión reducida (histórico antiguo se recargará al sincronizar).", "warn");
-    if (typeof showToast === "function") showToast("Caché local casi llena: se guardó una versión reducida. Los datos siguen a salvo en Sheets.", "warn", 3600);
+    setNotice("Caché local casi llena: se guardó una versión reducida. Los datos siguen a salvo en Sheets.", "warn", 3600);
   } else {
     if (typeof logSyncEvent === "function") logSyncEvent("Caché local llena: no se pudo guardar copia local; se descargará desde Sheets al abrir.", "warn");
-    if (typeof showToast === "function") showToast("No se pudo guardar la caché local (almacenamiento lleno). La app funcionará descargando desde Sheets.", "warn", 3600);
+    setNotice("No se pudo guardar la caché local (almacenamiento lleno). La app funcionará descargando desde Sheets.", "warn", 3600);
   }
 }
 
@@ -3558,7 +3533,6 @@ function getSituationBreakdown(month, mode) {
 
 function renderMoneyCharts(summary) {
   const bankRows = adjustedBankChartRows().map((row, idx) => ({ label: row.label, value: row.value, color: chartColor(PIE_CHART_COLORS, idx) }));
-  const bankTotal = sum(bankRows.map(row => row.value));
   upsertChart("bankDistributionChart", "doughnut", {
     labels: bankRows.length ? bankRows.map(row => row.label) : ["Banco"],
     datasets: [{ data: bankRows.length ? bankRows.map(row => row.value) : [Math.max(summary.bank, 0)], backgroundColor: bankRows.length ? bankRows.map(row => row.color) : [chartColor(PIE_CHART_COLORS, 0)], borderColor: chartSurfaceColor(), borderWidth: 2 }]
@@ -3584,7 +3558,6 @@ function renderMoneyCharts(summary) {
     rows = investmentTypes().map((type, idx) => ({ label: type, value: summary.investedByType[type] || 0, color: chartColor(PIE_CHART_COLORS, idx + 2) })).filter(row => row.value > 0);
     title = "Tipos de inversión";
   }
-  const total = sum(rows.map(row => row.value));
   upsertChart("moneyVsInvestedChart", "doughnut", {
     labels: rows.map(row => row.label),
     datasets: [{ data: rows.map(row => row.value), backgroundColor: rows.map(row => row.color), borderColor: chartSurfaceColor(), borderWidth: 2 }]
@@ -3664,7 +3637,6 @@ function renderMovementYears() {
     state.movementDrill = { level: "months", year: btn.dataset.year, month: null };
     renderMovements();
   }));
-  state.filtered = source;
 }
 
 function renderMovementMonths(year) {
@@ -3693,7 +3665,6 @@ function renderMovementMonths(year) {
     state.movementDrill = { level: "entries", year, month: btn.dataset.month };
     renderMovements();
   }));
-  state.filtered = source.filter(t => String(t.date.getFullYear()) === year);
 }
 function renderMovementEntries(year, month) {
   const source = getDisplayedMovements();
@@ -3715,7 +3686,6 @@ function renderMovementEntries(year, month) {
       <div class="table-wrap movement-table-wrap"><table id="movementTable"></table></div>
     </article>`;
   renderMovementTable(rows);
-  state.filtered = rows;
 }
 
 function renderMovementTable(rows) {
@@ -6966,10 +6936,6 @@ function numericMonthLabel(key) {
   return `${key.slice(5, 7)}-${key.slice(2, 4)}`;
 }
 
-function shortWeekday(date) {
-  return ["dom", "lun", "mar", "mie", "jue", "vie", "sab"][date.getDay()];
-}
-
 function tag(value) { return `<span class="tag">${escapeHtml(value || "Sin tipo")}</span>`; }
 function amountCell(value) { return `<span class="amount ${value >= 0 ? "positive" : "negative"}">${money(value)}</span>`; }
 function gainPct(value, invested) { return invested ? (value - invested) / invested : 0; }
@@ -7129,11 +7095,7 @@ function setSyncStatus(message, type = "") {
   el.classList.toggle("warn", type === "warn");
 }
 
-function setNotice(message, type, durationMs) {
-  showToast(message, type, durationMs);
-}
-
-function showToast(message, type = "", durationMs = 2000) {
+function setNotice(message, type = "", durationMs = 2000) {
   if (!message) return;
   const container = document.getElementById("toastContainer");
   if (!container) return;
