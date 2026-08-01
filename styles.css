@@ -1508,6 +1508,12 @@ dialog::backdrop { background: rgba(15, 23, 42, .5); }
 .sent-row td {
   opacity: .9;
 }
+
+/* Operación detenida tras agotar los reintentos: el motivo tiene que verse. */
+.op-error-row td {
+  color: var(--bad);
+  font-weight: 600;
+}
 .section-toolbar p {
   margin: 4px 0 0;
   font-size: 0.775rem;

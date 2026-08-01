@@ -284,6 +284,14 @@ function processedClientOpsKey_() {
   return 'moneyProcessedClientOps';
 }
 
+function failedClientOpsKey_() {
+  return 'moneyFailedClientOps';
+}
+
+function appliedBatchSidsKey_() {
+  return 'moneyAppliedBatchSids';
+}
+
 function movementSidHeader_() {
   return 'SID';
 }
@@ -455,32 +463,120 @@ function recordMovedFutureChanges_(movements, rev, previousRevs) {
 
 function buildClientOpStatusPayload_(clientOpId) {
   if (!clientOpId) return { ok: true, completed: false, pending: false };
-  return { ok: true, completed: wasClientOpProcessed_(clientOpId), pending: isClientOpPending_(clientOpId) };
+  if (wasClientOpProcessed_(clientOpId)) return { ok: true, completed: true, pending: false };
+  // "pending" gana al último error: si hay un reintento en curso, el error anterior
+  // ya no describe el estado actual de la operación.
+  if (isClientOpPending_(clientOpId)) return { ok: true, completed: false, pending: true };
+  const failure = clientOpFailure_(clientOpId);
+  if (failure) return { ok: true, completed: false, pending: false, failed: true, error: failure };
+  return { ok: true, completed: false, pending: false };
+}
+
+// Guarda una lista acotada en DocumentProperties (límite de 9 KB por valor),
+// recortando las entradas más antiguas hasta que quepa la actual.
+function storeBoundedList_(key, items) {
+  let list = items;
+  let serialized = JSON.stringify(list);
+  while (serialized.length > 9000 && list.length > 1) {
+    list = list.slice(1);
+    serialized = JSON.stringify(list);
+  }
+  PropertiesService.getDocumentProperties().setProperty(key, serialized);
+}
+
+function readBoundedList_(key) {
+  try {
+    const raw = PropertiesService.getDocumentProperties().getProperty(key);
+    const list = JSON.parse(raw || '[]');
+    return Array.isArray(list) ? list : [];
+  } catch (err) {
+    return [];
+  }
 }
 
 function rememberProcessedClientOp_(clientOpId) {
   if (!clientOpId) return;
   try {
-    const props = PropertiesService.getDocumentProperties();
-    let items = JSON.parse(props.getProperty(processedClientOpsKey_()) || '[]')
+    const items = readBoundedList_(processedClientOpsKey_())
       .filter(item => item && item.id !== clientOpId);
     items.push({ id: clientOpId, at: new Date().toISOString() });
-    // PropertiesService limita cada valor a 9 KB; si excede el límite se recorta
-    // hasta que quepa, para no perder nunca la confirmación de la operación actual.
-    let serialized = JSON.stringify(items);
-    while (serialized.length > 9000 && items.length > 1) {
-      items = items.slice(1);
-      serialized = JSON.stringify(items);
-    }
-    props.setProperty(processedClientOpsKey_(), serialized);
+    storeBoundedList_(processedClientOpsKey_(), items);
+    // La operación ya está confirmada: ni el último error ni el registro de saldos
+    // aplicados a medias tienen sentido y solo ocuparían sitio.
+    forgetClientOpFailure_(clientOpId);
+    forgetAppliedBatchSids_(clientOpId);
   } catch (err) {
     // No dejar que un fallo aquí oculte que la operación sí se completó.
   }
 }
 
+// El POST del cliente va con mode:"no-cors", así que no puede leer la respuesta ni el
+// error. Sin esto un fallo del servidor era invisible y la operación se quedaba
+// reintentándose en bucle mostrando "Enviando/Confirmando" para siempre.
+function rememberClientOpFailure_(clientOpId, message) {
+  if (!clientOpId) return;
+  try {
+    // Un reintento que choca con el lock (o que llega mientras la ejecución original
+    // sigue viva) no es un fallo de la operación: no debe marcarla como errónea.
+    if (wasClientOpProcessed_(clientOpId) || isClientOpPending_(clientOpId)) return;
+    const items = readBoundedList_(failedClientOpsKey_())
+      .filter(item => item && item.id !== clientOpId);
+    items.push({ id: clientOpId, at: new Date().toISOString(), error: String(message || 'Error desconocido').slice(0, 300) });
+    storeBoundedList_(failedClientOpsKey_(), items);
+  } catch (err) {
+    // Un fallo registrando el fallo no debe romper la respuesta de error.
+  }
+}
+
+function forgetClientOpFailure_(clientOpId) {
+  if (!clientOpId) return;
+  const items = readBoundedList_(failedClientOpsKey_());
+  const next = items.filter(item => item && item.id !== clientOpId);
+  if (next.length !== items.length) storeBoundedList_(failedClientOpsKey_(), next);
+}
+
+function clientOpFailure_(clientOpId) {
+  const found = readBoundedList_(failedClientOpsKey_()).find(item => item && item.id === clientOpId);
+  return found ? String(found.error || 'Error desconocido') : '';
+}
+
+// Los saldos de "Bancos" se ajustan con sumas, no son idempotentes: si un lote falla
+// a medias y el cliente lo reintenta, el dinero se movería dos veces. Registramos qué
+// sids de un lote ya movieron saldo para saltarlos en el reintento.
+function appliedBatchSids_(clientOpId) {
+  if (!clientOpId) return {};
+  const found = readBoundedList_(appliedBatchSidsKey_()).find(item => item && item.id === clientOpId);
+  const map = {};
+  ((found && found.sids) || []).forEach(sid => map[sid] = true);
+  return map;
+}
+
+function rememberAppliedBatchSids_(clientOpId, sids) {
+  if (!clientOpId || !sids || !sids.length) return;
+  try {
+    const items = readBoundedList_(appliedBatchSidsKey_());
+    const existing = items.find(item => item && item.id === clientOpId);
+    if (existing) {
+      existing.sids = (existing.sids || []).concat(sids);
+    } else {
+      items.push({ id: clientOpId, at: new Date().toISOString(), sids: sids.slice() });
+    }
+    storeBoundedList_(appliedBatchSidsKey_(), items);
+  } catch (err) {
+    // Si no se puede registrar, el reintento reaplicaría saldos: se prefiere no romper
+    // la operación en curso, que ya se ha aplicado correctamente.
+  }
+}
+
+function forgetAppliedBatchSids_(clientOpId) {
+  if (!clientOpId) return;
+  const items = readBoundedList_(appliedBatchSidsKey_());
+  const next = items.filter(item => item && item.id !== clientOpId);
+  if (next.length !== items.length) storeBoundedList_(appliedBatchSidsKey_(), next);
+}
+
 function wasClientOpProcessed_(clientOpId) {
-  const items = JSON.parse(PropertiesService.getDocumentProperties().getProperty(processedClientOpsKey_()) || '[]');
-  return items.some(item => item && item.id === clientOpId);
+  return readBoundedList_(processedClientOpsKey_()).some(item => item && item.id === clientOpId);
 }
 
 function isClientOpPending_(clientOpId) {
@@ -528,6 +624,8 @@ function doPost(e) {
       return json_({ ok: true, pending: true });
     }
     pendingId = appendPendingPost_(payload);
+    // Nuevo intento en marcha: el error registrado en el intento anterior ya no aplica.
+    forgetClientOpFailure_(payload.clientOpId || '');
     if (payload.action === 'addMovement') {
       addMovement_(Object.assign({}, payload.movement || {}, { cuenta: payload.account || payload.movement && payload.movement.cuenta || '' }), payload.sheetName || DEFAULT_MOVEMENT_SHEET);
       adjustInvestmentCostFromMovement_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.dataSheet || 'Datos', payload.investmentSheet || DEFAULT_INVESTMENT_SHEET, payload.sheetName || DEFAULT_MOVEMENT_SHEET, payload.movement, 1);
@@ -540,17 +638,15 @@ function doPost(e) {
       return finishPost_(pendingId, payload, { ok: true });
     }
     if (payload.action === 'addMovementsBatch') {
-      addMovementsBatch_(payload.movements || [], payload.movementSheet || DEFAULT_MOVEMENT_SHEET, payload.futureMovementSheet || DEFAULT_FUTURE_MOVEMENT_SHEET, payload.bankSheet || DEFAULT_BANK_SHEET, payload.account || '');
-      (payload.movements || []).forEach(function(movement) {
-        const d = new Date(movement && (movement.date || movement.fecha));
-        const today = new Date(); today.setHours(23, 59, 59, 999);
-        if (!Number.isNaN(d.getTime()) && d <= today) adjustInvestmentCostFromMovement_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.dataSheet || 'Datos', payload.investmentSheet || DEFAULT_INVESTMENT_SHEET, payload.movementSheet || DEFAULT_MOVEMENT_SHEET, movement, 1);
+      const appliedMovements = addMovementsBatch_(payload.movements || [], payload.movementSheet || DEFAULT_MOVEMENT_SHEET, payload.futureMovementSheet || DEFAULT_FUTURE_MOVEMENT_SHEET, payload.bankSheet || DEFAULT_BANK_SHEET, payload.account || '', payload.clientOpId || '');
+      appliedMovements.forEach(function(movement) {
+        adjustInvestmentCostFromMovement_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.dataSheet || 'Datos', payload.investmentSheet || DEFAULT_INVESTMENT_SHEET, payload.movementSheet || DEFAULT_MOVEMENT_SHEET, movement, 1);
       });
       syncInvestmentTotalsSheet_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.dataSheet || 'Datos', payload.investmentSheet || DEFAULT_INVESTMENT_SHEET, payload.movementSheet || DEFAULT_MOVEMENT_SHEET);
       return finishPost_(pendingId, payload, { ok: true });
     }
     if (payload.action === 'addTransfersBatch') {
-      addTransfersBatch_(payload.transfers || [], payload.futureMovementSheet || DEFAULT_FUTURE_MOVEMENT_SHEET, payload.bankSheet || DEFAULT_BANK_SHEET, payload.from || '', payload.to || '', Number(payload.amount || 0));
+      addTransfersBatch_(payload.transfers || [], payload.futureMovementSheet || DEFAULT_FUTURE_MOVEMENT_SHEET, payload.bankSheet || DEFAULT_BANK_SHEET, payload.from || '', payload.to || '', Number(payload.amount || 0), payload.clientOpId || '');
       return finishPost_(pendingId, payload, { ok: true });
     }
     if (payload.action === 'updateMovement') {
@@ -650,6 +746,9 @@ function doPost(e) {
     if (pendingId) {
       try { removePendingPost_(pendingId); } catch (cleanupErr) {}
     }
+    // El cliente no puede leer esta respuesta (no-cors): dejamos el error registrado
+    // para que lo recoja checkClientOp y lo muestre en vez de reintentar sin fin.
+    rememberClientOpFailure_(payload && payload.clientOpId || '', err && err.message || err);
     return json_(errorPayload_(err));
   } finally {
     if (lock) {
@@ -751,6 +850,54 @@ function writeMovementRow_(sheet, rowNumber, movement, sid, account) {
   sheet.getRange(rowNumber, 1, 1, 8).setValues([[date, `=YEAR(A${rowNumber})`, `=MONTH(A${rowNumber})`, `=DAY(A${rowNumber})`, movement.tipo || '', movement.concepto || '', movement.descripcion || '', amount]]);
   if (sheet.getLastColumn() >= 9) sheet.getRange(rowNumber, 9).setValue(account ?? movement.cuenta ?? movement.account ?? '');
   if (sidCol) sheet.getRange(rowNumber, sidCol).setValue(sid || movementSidFrom_(movement));
+}
+
+// Añade varios movimientos con UNA sola lectura de la columna SID y UNA sola
+// escritura de rango. La versión fila a fila (writeMovementRow_) vuelve a llamar a
+// ensureMovementSidColumn_ en cada iteración, que lee la columna SID entera: un lote
+// periódico de decenas de fechas tardaba minutos y superaba el timeout del cliente,
+// dejando la operación reintentándose en bucle. Además omite los sid que ya están en
+// la hoja, así que reintentar un lote aplicado a medias no duplica filas.
+function appendMovementRows_(sheet, entries) {
+  if (!sheet || !entries || !entries.length) return 0;
+  const sidCol = ensureMovementSidColumn_(sheet);
+  const lastRow = sheet.getLastRow();
+  const existingSids = {};
+  if (sidCol && lastRow >= 2) {
+    sheet.getRange(2, sidCol, lastRow - 1, 1).getValues().forEach(row => {
+      const sid = String(row[0] || '').trim();
+      if (sid) existingSids[sid] = true;
+    });
+  }
+  const width = Math.max(sheet.getLastColumn(), sidCol, 8);
+  const rows = [];
+  entries.forEach(entry => {
+    const movement = entry && entry.movement;
+    if (!movement) return;
+    const date = new Date(movement.date || movement.fecha);
+    if (Number.isNaN(date.getTime())) throw new Error('Invalid date');
+    const amount = Number(movement.amount || movement.importe);
+    if (!Number.isFinite(amount)) throw new Error('Invalid amount');
+    const sid = String(entry.sid || movementSidFrom_(movement));
+    if (existingSids[sid]) return;
+    existingSids[sid] = true;
+    const rowNumber = lastRow + 1 + rows.length;
+    const row = new Array(width).fill('');
+    row[0] = date;
+    row[1] = `=YEAR(A${rowNumber})`;
+    row[2] = `=MONTH(A${rowNumber})`;
+    row[3] = `=DAY(A${rowNumber})`;
+    row[4] = movement.tipo || '';
+    row[5] = movement.concepto || '';
+    row[6] = movement.descripcion || '';
+    row[7] = amount;
+    if (width >= 9) row[8] = entry.account != null ? entry.account : (movement.cuenta || movement.account || '');
+    if (sidCol) row[sidCol - 1] = sid;
+    rows.push(row);
+  });
+  if (!rows.length) return 0;
+  sheet.getRange(lastRow + 1, 1, rows.length, width).setValues(rows);
+  return rows.length;
 }
 
 function findMovementRowBySid_(sheet, sid, sidCol) {
@@ -903,44 +1050,107 @@ function movementMatchesSheetRow_(sheet, row, movement) {
     && Math.abs(rowAmount - movementAmount) < 0.005;
 }
 
+function futureMovementHeaders_() {
+  return ['FECHA', 'AÑO', 'MES', 'DIA', 'TIPO', 'CONCEPTO', 'DESCRIPCION', 'IMPORTE', 'Cuenta', movementSidHeader_()];
+}
+
 function addFutureMovement_(movement, sheetName, account) {
   if (!movement) throw new Error('Missing movement');
-  const sheet = getOrCreateSheet_(sheetName, ['FECHA', 'AÑO', 'MES', 'DIA', 'TIPO', 'CONCEPTO', 'DESCRIPCION', 'IMPORTE', 'Cuenta', movementSidHeader_()]);
+  const sheet = getOrCreateSheet_(sheetName, futureMovementHeaders_());
   ensureMovementSidColumn_(sheet);
   const row = sheet.getLastRow() + 1;
   writeMovementRow_(sheet, row, movement, movementSidFrom_(movement), account || movement.account || movement.cuenta || '');
 }
 
-function addMovementsBatch_(movements, movementSheet, futureSheet, bankSheet, account) {
-  const today = new Date();
-  today.setHours(23, 59, 59, 999);
-  movements.forEach(movement => {
-    const date = new Date(movement.date || movement.fecha);
-    if (Number.isNaN(date.getTime())) return;
-    if (date <= today) {
-      addMovement_(Object.assign({}, movement || {}, { cuenta: account || movement && movement.cuenta || '' }), movementSheet);
-      if (account) adjustBank_(bankSheet, account, Number(movement.amount || movement.importe || 0));
-    } else {
-      addFutureMovement_(movement, futureSheet, account);
-    }
+// Aplica los deltas agregados por cuenta (una escritura por cuenta en vez de una por
+// movimiento) y registra los sids ya aplicados, para que un reintento del mismo lote no
+// vuelva a mover el dinero.
+function applyBatchBankDeltas_(bankSheet, deltasByAccount, clientOpId, appliedSids) {
+  Object.keys(deltasByAccount).forEach(account => {
+    const delta = deltasByAccount[account];
+    if (delta) adjustBank_(bankSheet, account, delta);
   });
+  rememberAppliedBatchSids_(clientOpId, appliedSids);
 }
 
-function addTransfersBatch_(transfers, futureSheet, bankSheet, defaultFrom, defaultTo, defaultAmount) {
+function addMovementsBatch_(movements, movementSheet, futureSheet, bankSheet, account, clientOpId) {
   const today = new Date();
   today.setHours(23, 59, 59, 999);
-  transfers.forEach(transfer => {
+  const alreadyApplied = appliedBatchSids_(clientOpId);
+  const realizedEntries = [];
+  const futureEntries = [];
+  const deltas = {};
+  const appliedSids = [];
+  const newlyRealized = [];
+  (movements || []).forEach(movement => {
+    if (!movement) return;
+    const date = new Date(movement.date || movement.fecha);
+    if (Number.isNaN(date.getTime())) return;
+    const cuenta = account || movement.cuenta || '';
+    const sid = movementSidFrom_(movement);
+    const entry = { movement: Object.assign({}, movement, { cuenta }), sid, account: cuenta };
+    if (date > today) {
+      futureEntries.push(entry);
+      return;
+    }
+    realizedEntries.push(entry);
+    if (alreadyApplied[sid]) return;
+    appliedSids.push(sid);
+    newlyRealized.push(movement);
+    if (account) deltas[account] = (deltas[account] || 0) + Number(movement.amount || movement.importe || 0);
+  });
+  const movementTargetSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(movementSheet);
+  if (realizedEntries.length && !movementTargetSheet) throw new Error(`Sheet not found: ${movementSheet}`);
+  appendMovementRows_(movementTargetSheet, realizedEntries);
+  if (futureEntries.length) {
+    appendMovementRows_(getOrCreateSheet_(futureSheet, futureMovementHeaders_()), futureEntries);
+  }
+  applyBatchBankDeltas_(bankSheet, deltas, clientOpId, appliedSids);
+  // Los movimientos que este intento sí ha aplicado, para que el coste de inversión
+  // tampoco se recalcule dos veces si el lote se reintenta.
+  return newlyRealized;
+}
+
+function addTransfersBatch_(transfers, futureSheet, bankSheet, defaultFrom, defaultTo, defaultAmount, clientOpId) {
+  const today = new Date();
+  today.setHours(23, 59, 59, 999);
+  const alreadyApplied = appliedBatchSids_(clientOpId);
+  const futureEntries = [];
+  const deltas = {};
+  const appliedSids = [];
+  (transfers || []).forEach(transfer => {
+    if (!transfer) return;
     const date = new Date(transfer.date || transfer.fecha);
     if (Number.isNaN(date.getTime())) return;
     const accounts = transferAccountsFromMovement_(transfer, defaultFrom, defaultTo);
     const amount = Math.abs(Number(transfer.amount || transfer.importe || defaultAmount || 0));
     if (!accounts.from || !accounts.to || accounts.from === accounts.to || !Number.isFinite(amount) || amount <= 0) return;
-    if (date <= today) {
-      transferBank_(bankSheet, accounts.from, accounts.to, amount);
-    } else {
-      addFutureTransfer_(transfer, futureSheet, accounts.from, accounts.to, amount);
+    const sid = movementSidFrom_(transfer);
+    if (date > today) {
+      const accountText = `${accounts.from} → ${accounts.to}`;
+      futureEntries.push({
+        sid,
+        account: accountText,
+        movement: {
+          fecha: transfer.fecha || transfer.date,
+          tipo: 'Transferencia',
+          concepto: 'Transferencia',
+          descripcion: accountText,
+          importe: amount,
+          cuenta: accountText
+        }
+      });
+      return;
     }
+    if (alreadyApplied[sid]) return;
+    deltas[accounts.from] = (deltas[accounts.from] || 0) - amount;
+    deltas[accounts.to] = (deltas[accounts.to] || 0) + amount;
+    appliedSids.push(sid);
   });
+  if (futureEntries.length) {
+    appendMovementRows_(getOrCreateSheet_(futureSheet, futureMovementHeaders_()), futureEntries);
+  }
+  applyBatchBankDeltas_(bankSheet, deltas, clientOpId, appliedSids);
 }
 
 function addFutureTransfer_(transfer, sheetName, from, to, amount) {

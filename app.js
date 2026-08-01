@@ -1767,9 +1767,15 @@ function renderPendingOpsTable(queue = readOpQueue()) {
   const table = document.getElementById("pendingOpsTable");
   if (!table) return;
   const rows = queue.map((op, idx) => {
-    const statusText = op.status === "sending" ? "Enviando" : op.status === "checking" ? "Confirmando" : "Pendiente (auto cada 5 s)";
+    const attempts = Number(op.attempts || 0);
+    const statusText = op.status === "error"
+      ? "Error (no se reintenta solo)"
+      : op.status === "sending" ? "Enviando"
+        : op.status === "checking" ? "Confirmando"
+          : attempts ? `Pendiente (reintento ${attempts + 1} en ${Math.max(1, Math.round((Number(op.nextAttemptAt || 0) - Date.now()) / 1000))} s)`
+            : "Pendiente (auto cada 5 s)";
     const detail = op.error ? `${statusText}: ${op.error}` : statusText;
-    return `<tr>
+    return `<tr${op.status === "error" ? ` class="op-error-row"` : ""}>
       <td>${idx + 1}</td>
       <td>${escapeHtml(opLabel(op.payload?.action))}</td>
       <td>${escapeHtml(detail)}</td>
@@ -2041,6 +2047,7 @@ async function recoverInterruptedSendingOps() {
   refreshedQueue.forEach(op => {
     if (op.status !== "sending") return;
     op.status = "retry";
+    op.nextAttemptAt = 0;
     op.error = op.error || "Envío interrumpido al cerrar la app; se reintentará automáticamente.";
     changed = true;
   });
@@ -2053,7 +2060,7 @@ async function recoverInterruptedSendingOps() {
 function queueOp(payload) {
   const queue = readOpQueue();
   const queuedPayload = withClientOpId(payload || {});
-  queue.push({ id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, createdAt: Date.now(), status: "queued", payload: queuedPayload });
+  queue.push({ id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, createdAt: Date.now(), status: "queued", attempts: 0, nextAttemptAt: 0, payload: queuedPayload });
   logSyncEvent(`Operación en cola: ${queuedPayload.action || "cambio"}.`, "");
   markCacheSectionsDirty(queuePayloadSections(queuedPayload));
   writeDataCache({ dirtySections: queuePayloadSections(queuedPayload) });
@@ -2066,6 +2073,11 @@ function queueOp(payload) {
 }
 
 const OP_POLL_INTERVAL_MS = 5000;
+const OP_MAX_BACKOFF_MS = 60000;
+// Sin tope, una operación que el servidor nunca confirma se reenvía cada 5 s para
+// siempre: cada reenvío abre una ejecución de Apps Script que se encola detrás del
+// script lock, satura el proyecto y hace que ni el POST ni la confirmación respondan.
+const OP_MAX_ATTEMPTS = 8;
 let opQueuePollerHandle = null;
 const opsInFlight = new Set();
 
@@ -2074,18 +2086,56 @@ function ensureOpQueuePoller() {
   opQueuePollerHandle = window.setInterval(() => pollPendingOps(), OP_POLL_INTERVAL_MS);
 }
 
+function opBackoffMs(attempts) {
+  return Math.min(OP_POLL_INTERVAL_MS * Math.pow(2, Math.max(0, attempts - 1)), OP_MAX_BACKOFF_MS);
+}
+
+function isOpActionable(op, now = Date.now()) {
+  if (!op || op.status === "done" || op.status === "error") return false;
+  return !(op.nextAttemptAt && op.nextAttemptAt > now);
+}
+
+// Un intento fallido no vuelve a lanzarse inmediatamente: el retardo crece
+// 5 s → 10 → 20 → 40 → 60 s y, tras OP_MAX_ATTEMPTS, la operación queda en "error"
+// con el motivo a la vista en lugar de reintentarse en bucle.
+function failQueuedOp(opId, error) {
+  const queue = readOpQueue();
+  const target = queue.find(op => op.id === opId);
+  if (!target) return;
+  const attempts = Number(target.attempts || 0) + 1;
+  target.attempts = attempts;
+  target.error = String(error || "").trim() || "Error desconocido";
+  if (attempts >= OP_MAX_ATTEMPTS) {
+    target.status = "error";
+    target.nextAttemptAt = 0;
+    logSyncEvent(`Operación detenida tras ${attempts} intentos: ${target.payload?.action || "cambio"}.`, "warn", target.error);
+  } else {
+    target.status = "retry";
+    target.nextAttemptAt = Date.now() + opBackoffMs(attempts);
+  }
+  writeOpQueue(queue);
+}
+
 async function pollPendingOps() {
   if (!state.config.scriptUrl) return;
   const queue = readOpQueue();
-  const pending = queue.filter(op => op.status !== "done");
+  const pending = queue.filter(op => op.status !== "done" && op.status !== "error");
   if (!pending.length) return;
+  const now = Date.now();
+  let waiting = false;
   for (const op of pending) {
+    if (!isOpActionable(op, now)) {
+      waiting = true;
+      continue;
+    }
     if (op.status === "sending" || op.status === "checking") {
       checkQueuedOp(op.id);
     } else {
       sendQueuedOp(op.id);
     }
   }
+  // Refresca la cuenta atrás del próximo reintento en la tabla de Conexión.
+  if (waiting) renderPendingOpsTable();
 }
 
 function markOpStatus(opId, patch) {
@@ -2120,17 +2170,18 @@ async function sendQueuedOp(opId) {
   if (!state.config.scriptUrl) return;
   const queue = readOpQueue();
   const item = queue.find(op => op.id === opId);
-  if (!item || item.status === "done" || item.status === "sending" || item.status === "checking") return;
+  if (!item || item.status === "done" || item.status === "error" || item.status === "sending" || item.status === "checking") return;
   opsInFlight.add(opId);
   ensureOpQueuePoller();
-  markOpStatus(opId, { status: "sending", error: null });
+  markOpStatus(opId, { status: "sending", error: null, nextAttemptAt: 0 });
   setSyncStatus(queueActionStatus(item.payload), "");
   try {
     await fireAppsScript(item.payload);
-    markOpStatus(opId, { status: "checking", error: null, lastSentAt: Date.now() });
+    markOpStatus(opId, { status: "checking", error: null, nextAttemptAt: 0, lastSentAt: Date.now() });
   } catch (error) {
-    markOpStatus(opId, { status: "retry", error: String(error.message || error), lastSentAt: Date.now() });
-    logSyncEvent(`No se pudo enviar (se reintentará en 5 s): ${item.payload?.action || "cambio"}.`, "warn", error.message || String(error));
+    markOpStatus(opId, { lastSentAt: Date.now() });
+    failQueuedOp(opId, error.message || error);
+    logSyncEvent(`No se pudo enviar (se reintentará): ${item.payload?.action || "cambio"}.`, "warn", error.message || String(error));
   } finally {
     opsInFlight.delete(opId);
     renderPendingOpsBadge();
@@ -2141,7 +2192,7 @@ async function checkQueuedOp(opId) {
   if (opsInFlight.has(opId)) return;
   const queue = readOpQueue();
   const item = queue.find(op => op.id === opId);
-  if (!item || item.status === "done") return;
+  if (!item || item.status === "done" || item.status === "error") return;
   const clientOpId = item.payload?.clientOpId;
   if (!clientOpId) return;
   opsInFlight.add(opId);
@@ -2151,13 +2202,22 @@ async function checkQueuedOp(opId) {
       completeQueuedOp(item);
       return;
     }
-    if (result?.ok && result.pending) {
-      markOpStatus(opId, { status: "checking", error: null });
+    // El servidor registró un error real para esta operación: reintentarla sola solo
+    // repetiría el fallo, así que se para y se muestra el motivo.
+    if (result?.ok && result.failed) {
+      markOpStatus(opId, { status: "error", error: result.error || "Apps Script rechazó la operación.", nextAttemptAt: 0 });
+      logSyncEvent(`Apps Script devolvió un error: ${item.payload?.action || "cambio"}.`, "warn", result.error || "");
+      setSyncStatus("Error al enviar\nRevisa Ajustes › Conexión", "warn");
       return;
     }
-    markOpStatus(opId, { status: "retry", error: "Sin confirmación todavía; se reintentará." });
+    // El servidor sigue trabajando en ella: no cuenta como intento fallido.
+    if (result?.ok && result.pending) {
+      markOpStatus(opId, { status: "checking", error: null, nextAttemptAt: 0 });
+      return;
+    }
+    failQueuedOp(opId, "Sin confirmación todavía; se reintentará.");
   } catch (error) {
-    markOpStatus(opId, { status: "retry", error: String(error.message || error) });
+    failQueuedOp(opId, error.message || error);
   } finally {
     opsInFlight.delete(opId);
     renderPendingOpsBadge();
@@ -2166,17 +2226,24 @@ async function checkQueuedOp(opId) {
 
 function kickOpQueue() {
   ensureOpQueuePoller();
-  const queue = readOpQueue();
+  const now = Date.now();
+  const queue = readOpQueue().filter(op => isOpActionable(op, now));
   queue.filter(op => op.status === "queued" || op.status === "retry").forEach(op => sendQueuedOp(op.id));
   queue.filter(op => op.status === "checking").forEach(op => checkQueuedOp(op.id));
 }
 
+// Reintento manual ("Reintentar ahora"): reactiva también las operaciones detenidas en
+// "error" y reinicia el contador de intentos y el backoff.
 async function retryPendingOps(opId = null, { recoverSending = true } = {}) {
   if (recoverSending) await recoverInterruptedSendingOps();
   const queue = readOpQueue();
   const targets = opId ? queue.filter(op => op.id === opId) : queue.filter(op => op.status !== "done");
   const wasChecking = new Map(targets.map(op => [op.id, op.status === "checking"]));
-  targets.forEach(op => { if (op.status !== "checking") op.status = "retry"; });
+  targets.forEach(op => {
+    op.attempts = 0;
+    op.nextAttemptAt = 0;
+    if (op.status !== "checking") op.status = "retry";
+  });
   writeOpQueue(queue);
   ensureOpQueuePoller();
   await Promise.all(targets.map(op => wasChecking.get(op.id) ? checkQueuedOp(op.id) : sendQueuedOp(op.id)));
@@ -2190,7 +2257,9 @@ async function flushOpQueueBeforeDownload({ showProgress = false } = {}) {
   await retryPendingOps();
   const pendingAfter = readOpQueue().filter(op => op.status !== "done");
   if (pendingAfter.length) {
-    const detail = pendingAfter.map(op => queuedOpLabel(op.payload)).join(", ");
+    const detail = pendingAfter
+      .map(op => op.status === "error" ? `${queuedOpLabel(op.payload)} (error: ${op.error || "sin detalle"})` : queuedOpLabel(op.payload))
+      .join(", ");
     setNotice(lineMessage(
       "No se descargan datos para evitar desincronización: quedan cambios pendientes de subir.",
       detail
@@ -4552,7 +4621,10 @@ async function saveBanks() {
   }
 }
 
-const POST_TIMEOUT_MS = 20000;
+// Los lotes grandes (transferencias/movimientos periódicos) tardan más que una
+// operación suelta. Abortar demasiado pronto no cancela la ejecución en Apps Script:
+// solo provoca un reenvío que se encola detrás de la anterior y satura el proyecto.
+const POST_TIMEOUT_MS = 60000;
 
 async function fireAppsScript(payload) {
   if (navigator.onLine === false) throw new Error("Sin conexión");
