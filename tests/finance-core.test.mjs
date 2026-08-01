@@ -105,3 +105,47 @@ test("buildUndo invierte una transferencia y descarta lo no reversible", () => {
   assert.equal(app.buildUndo({ action: "saveBanks" }), null);
   assert.equal(app.buildUndo({ action: "renameAccount" }), null);
 });
+
+test("opBackoffMs crece exponencialmente y se topa en 60 s", () => {
+  assert.equal(app.opBackoffMs(1), 5000);
+  assert.equal(app.opBackoffMs(2), 10000);
+  assert.equal(app.opBackoffMs(3), 20000);
+  assert.equal(app.opBackoffMs(4), 40000);
+  assert.equal(app.opBackoffMs(5), 60000);
+  assert.equal(app.opBackoffMs(20), 60000);
+});
+
+test("isOpActionable respeta el backoff y descarta las operaciones detenidas", () => {
+  const now = 1_000_000;
+  assert.equal(app.isOpActionable({ status: "queued" }, now), true);
+  assert.equal(app.isOpActionable({ status: "retry", nextAttemptAt: now + 5000 }, now), false);
+  assert.equal(app.isOpActionable({ status: "retry", nextAttemptAt: now - 1 }, now), true);
+  assert.equal(app.isOpActionable({ status: "error" }, now), false);
+  assert.equal(app.isOpActionable({ status: "done" }, now), false);
+  assert.equal(app.isOpActionable(null, now), false);
+});
+
+test("failQueuedOp aplica backoff y detiene la operación al agotar los intentos", () => {
+  app.writeOpQueue([{ id: "op-1", status: "sending", payload: { action: "addTransfersBatch" } }]);
+
+  app.failQueuedOp("op-1", "El envío tardó demasiado");
+  let op = app.readOpQueue()[0];
+  assert.equal(op.status, "retry");
+  assert.equal(op.attempts, 1);
+  assert.equal(op.error, "El envío tardó demasiado");
+  assert.ok(op.nextAttemptAt > Date.now());
+
+  for (let i = 0; i < 6; i++) app.failQueuedOp("op-1", "sigue fallando");
+  op = app.readOpQueue()[0];
+  assert.equal(op.attempts, 7);
+  assert.equal(op.status, "retry");
+
+  app.failQueuedOp("op-1", "sigue fallando");
+  op = app.readOpQueue()[0];
+  assert.equal(op.attempts, 8);
+  assert.equal(op.status, "error", "tras 8 intentos deja de reintentarse sola");
+  assert.equal(op.nextAttemptAt, 0);
+  assert.equal(app.isOpActionable(op), false);
+
+  app.writeOpQueue([]);
+});
