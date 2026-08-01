@@ -3,13 +3,24 @@
  * pero sin SW no arrancaba sin conexión. Aquí cacheamos el shell y las librerías
  * de CDN, y SIEMPRE dejamos pasar las peticiones a Apps Script (datos en vivo).
  */
-const CACHE_VERSION = "mm-20260801-v22";
-const APP_SHELL = [
+// Una sola fuente de versión: el nombre de la caché y las URLs con ?v= salían de
+// literales distintos y se desincronizaron (v22 vs v20), así que el ?v= no invalidaba
+// nada. index.html debe usar este mismo valor; scripts/check-versions.mjs lo verifica.
+const ASSET_VERSION = "20260801-v23";
+const CACHE_VERSION = `mm-${ASSET_VERSION}`;
+
+// Sin estos recursos la app no arranca: si alguno falla, la instalación falla y el
+// service worker anterior sigue sirviendo una copia completa.
+const CORE_SHELL = [
   "./",
   "./index.html",
-  "./app.js?v=20260712-v20",
-  "./styles.css",
-  "./site.webmanifest",
+  `./app.js?v=${ASSET_VERSION}`,
+  `./styles.css?v=${ASSET_VERSION}`,
+  "./site.webmanifest"
+];
+
+// Accesorios: que falte un icono no debe impedir la instalación.
+const OPTIONAL_SHELL = [
   "./images/logo.png",
   "./images/favicon-16x16.png",
   "./images/favicon-32x32.png",
@@ -28,9 +39,10 @@ const LIVE_DATA_HOSTS = [
 self.addEventListener("install", event => {
   event.waitUntil(
     caches.open(CACHE_VERSION).then(cache =>
-      // addAll falla en bloque si un recurso da error; los añadimos best-effort
-      // para no dejar la instalación a medias por un icono que falte.
-      Promise.allSettled(APP_SHELL.map(url => cache.add(url)))
+      // El núcleo con addAll (todo o nada): antes un fallo aquí se toleraba y se
+      // activaba una caché sin app.js, dejando la app en blanco al abrirla sin red.
+      cache.addAll(CORE_SHELL)
+        .then(() => Promise.allSettled(OPTIONAL_SHELL.map(url => cache.add(url))))
     ).then(() => self.skipWaiting())
   );
 });
@@ -68,7 +80,9 @@ self.addEventListener("fetch", event => {
           cachePut(request, response.clone());
           return response;
         })
-        .catch(() => caches.match("./index.html").then(cached => cached || caches.match("./")))
+        .catch(() => caches.match("./index.html")
+          .then(cached => cached || caches.match("./"))
+          .then(cached => cached || offlineResponse()))
     );
     return;
   }
@@ -79,7 +93,7 @@ self.addEventListener("fetch", event => {
       caches.match(request).then(cached => cached || fetch(request).then(response => {
         cachePut(request, response.clone());
         return response;
-      }).catch(() => cached))
+      }).catch(() => offlineResponse()))
     );
     return;
   }
@@ -90,11 +104,21 @@ self.addEventListener("fetch", event => {
       const network = fetch(request).then(response => {
         cachePut(request, response.clone());
         return response;
-      }).catch(() => cached);
+      }).catch(() => cached || offlineResponse());
       return cached || network;
     })
   );
 });
+
+// respondWith(undefined) provoca un TypeError y el navegador reporta un error de
+// red opaco. Sin conexión y sin copia en caché, mejor una respuesta 503 explícita.
+function offlineResponse() {
+  return new Response("Sin conexión", {
+    status: 503,
+    statusText: "Offline",
+    headers: { "Content-Type": "text/plain; charset=utf-8" }
+  });
+}
 
 function cachePut(request, response) {
   if (!response || !response.ok || response.type === "opaque") return;

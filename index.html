@@ -12,9 +12,13 @@
   <link rel="icon" type="image/png" sizes="32x32" href="images/favicon-32x32.png" />
   <link rel="apple-touch-icon" sizes="180x180" href="images/apple-touch-icon.png" />
   <link rel="manifest" href="site.webmanifest" />
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
-  <script src="https://unpkg.com/lucide@1.24.0/dist/umd/lucide.min.js"></script>
-  <link rel="stylesheet" href="styles.css" />
+  <!-- defer: no bloquean el parseo y se ejecutan en orden de documento (Chart, lucide,
+       app.js). crossorigin hace que las respuestas no sean opacas, así el service
+       worker sí puede cachearlas para funcionar sin conexión. Si un CDN no carga,
+       app.js degrada (sin iconos ni gráficas) en vez de romperse. -->
+  <script defer crossorigin="anonymous" src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+  <script defer crossorigin="anonymous" src="https://unpkg.com/lucide@1.24.0/dist/umd/lucide.min.js"></script>
+  <link rel="stylesheet" href="styles.css?v=20260801-v23" />
 </head>
 <body>
   <main class="app">
@@ -601,11 +605,22 @@
     </form>
   </dialog>
 
-  <script src="app.js?v=20260712-v20"></script>
+  <script defer src="app.js?v=20260801-v23"></script>
   <script>
     if ("serviceWorker" in navigator) {
       window.addEventListener("load", () => {
         navigator.serviceWorker.register("sw.js").catch(err => console.warn("SW no registrado", err));
+      });
+      // El service worker hace skipWaiting + clients.claim, así que al desplegar una
+      // versión nueva toma el control a mitad de sesión mientras sigue corriendo el
+      // app.js anterior. Recargamos una sola vez para que HTML y JS sean de la misma
+      // versión, salvo que haya un diálogo abierto (se perderían datos del formulario).
+      let swReloaded = false;
+      navigator.serviceWorker.addEventListener("controllerchange", () => {
+        if (swReloaded) return;
+        if (document.querySelector("dialog[open]")) return;
+        swReloaded = true;
+        location.reload();
       });
     }
   </script>
