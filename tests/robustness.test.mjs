@@ -148,6 +148,38 @@ test("una cola corrupta se vacía dejando copia de seguridad", () => {
   resetQueue();
 });
 
+test("refreshData no solapa descargas pero no descarta acciones del usuario", async () => {
+  const previousImpl = app.refreshDataImpl;
+  try {
+    const started = [];
+    let releaseFirst;
+    const firstDone = new Promise(resolve => { releaseFirst = resolve; });
+
+    app.refreshDataImpl = async options => {
+      started.push(options);
+      if (started.length === 1) await firstDone;
+      return true;
+    };
+
+    const background = app.refreshData({ scope: "all", cacheOnly: true });
+    // Una segunda petición de fondo se engancha a la que ya está en vuelo.
+    const duplicate = app.refreshData({ scope: "all", cacheOnly: true });
+    assert.equal(started.length, 1, "las peticiones de fondo equivalentes no se duplican");
+
+    // Una acción del usuario hace un trabajo distinto: debe ejecutarse igualmente.
+    const userAction = app.refreshData({ updateInvestments: true });
+    assert.equal(started.length, 1, "espera a que termine la que está en vuelo");
+
+    releaseFirst();
+    await Promise.all([background, duplicate, userAction]);
+
+    assert.equal(started.length, 2, "la acción del usuario se ejecuta después, no se descarta");
+    assert.equal(started[1].updateInvestments, true);
+  } finally {
+    app.refreshDataImpl = previousImpl;
+  }
+});
+
 test("failQueuedOp aplica backoff creciente y se detiene tras el máximo de intentos", () => {
   resetQueue([{ id: "op-backoff", status: "queued", attempts: 0, nextAttemptAt: 0, payload: { action: "addMovement", clientOpId: "c-b" } }]);
   for (let i = 0; i < app.OP_MAX_ATTEMPTS; i++) {

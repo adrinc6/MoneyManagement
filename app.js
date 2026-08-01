@@ -892,13 +892,32 @@ function syncedSectionsFromData(data = {}) {
 }
 
 // Evita descargas simultáneas: dos refresh a la vez aplicaban snapshots y escribían
-// la caché entrelazados. Si ya hay uno en vuelo, los siguientes esperan a ese mismo.
+// la caché entrelazados, y el primero en terminar apagaba el indicador de carga
+// mientras el otro seguía descargando.
+//
+// Una petición de fondo equivalente se engancha a la que ya está en vuelo. Una
+// acción del usuario (forzar, actualizar precios, notificar) NO puede engancharse:
+// haría un trabajo distinto, así que espera su turno y se ejecuta después.
 let refreshInFlight = null;
 
 function refreshData(options = {}) {
-  if (refreshInFlight) return refreshInFlight;
-  refreshInFlight = refreshDataImpl(options).finally(() => { refreshInFlight = null; });
-  return refreshInFlight;
+  const mustRunOnItsOwn = Boolean(options.force || options.manualRefresh || options.userRefresh
+    || options.updateInvestments || options.sendNotifications);
+  const start = () => {
+    const run = refreshDataImpl(options).finally(() => {
+      if (refreshInFlight === run) refreshInFlight = null;
+    });
+    refreshInFlight = run;
+    return run;
+  };
+  if (!refreshInFlight) return start();
+  if (!mustRunOnItsOwn) return refreshInFlight;
+  // Encadenada: el catch evita que un fallo previo tumbe esta petición.
+  const chained = refreshInFlight.catch(() => {}).then(() => refreshDataImpl(options)).finally(() => {
+    if (refreshInFlight === chained) refreshInFlight = null;
+  });
+  refreshInFlight = chained;
+  return chained;
 }
 
 async function refreshDataImpl(options = {}) {
@@ -4613,6 +4632,9 @@ function movementsFromRecurrenceForm() {
   const { dates, truncated } = recurrenceDatesFromForm();
   if (truncated) throw new Error(`el rango genera más de ${MAX_RECURRENCE_OCCURRENCES} movimientos; acórtalo`);
   const base = movementFromFormBase();
+  // Se valida aquí el importe: si no, todas las fechas se descartarían al normalizar
+  // y el usuario recibiría un aviso sobre las fechas en vez de sobre el importe.
+  if (!Number.isFinite(base.importe) || !base.importe) throw new Error("introduce un importe distinto de 0");
   return dates.map(d => normalizeTransaction({ ...base, fecha: formatDate(d) })).filter(Boolean);
 }
 
