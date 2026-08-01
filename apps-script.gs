@@ -103,65 +103,85 @@ function doGet(e) {
       }
       payload = buildAllDataPayload_(movementSheet, futureMovementSheet, investmentSheet, bankSheet, objectiveSheet, dataSheet, movedFutureMovements, investmentTotalsSheet, investmentEstimateRulesSheet, investmentEstimateLedgerSheet);
     } else if (action === 'updateInvestment') {
-      const targetSheet = params.sheetName || investmentSheet;
-      const investment = params.investment ? JSON.parse(params.investment) : {};
-      const previousInvestment = params.previousInvestment ? JSON.parse(params.previousInvestment) : null;
-      updateInvestment_(investment, targetSheet, previousInvestment);
-      if (params.newInvestment === '1' && !isCashInvestment_(investment)) {
-        updateInvestmentQuotesFromYahoo(targetSheet);
-      }
-      syncInvestmentTotalsSheet_(investmentTotalsSheet, dataSheet, targetSheet, movementSheet);
-      bumpSections_('investments', 'investmentTotals');
-      payload = buildInvestmentDataPayload_(targetSheet, objectiveSheet, movementSheet, futureMovementSheet, bankSheet, dataSheet, investmentTotalsSheet, investmentEstimateRulesSheet, investmentEstimateLedgerSheet);
-      payload.investmentUpdated = true;
+      payload = withScriptLock_(function() {
+        const targetSheet = params.sheetName || investmentSheet;
+        const investment = params.investment ? parseJsonParam_(params.investment, 'investment') || {} : {};
+        const previousInvestment = params.previousInvestment ? parseJsonParam_(params.previousInvestment, 'previousInvestment') : null;
+        updateInvestment_(investment, targetSheet, previousInvestment);
+        if (params.newInvestment === '1' && !isCashInvestment_(investment)) {
+          updateInvestmentQuotesFromYahoo(targetSheet);
+        }
+        syncInvestmentTotalsSheet_(investmentTotalsSheet, dataSheet, targetSheet, movementSheet);
+        bumpSections_('investments', 'investmentTotals');
+        const result = buildInvestmentDataPayload_(targetSheet, objectiveSheet, movementSheet, futureMovementSheet, bankSheet, dataSheet, investmentTotalsSheet, investmentEstimateRulesSheet, investmentEstimateLedgerSheet);
+        result.investmentUpdated = true;
+        return result;
+      });
     } else if (action === 'deleteInvestment') {
-      const targetSheet = params.sheetName || investmentSheet;
-      const investment = params.investment ? JSON.parse(params.investment) : {};
-      deleteInvestment_(investment, targetSheet, params.rowNumber || 0);
-      syncInvestmentTotalsSheet_(investmentTotalsSheet, dataSheet, targetSheet, movementSheet);
-      bumpSections_('investments', 'investmentTotals');
-      payload = buildInvestmentDataPayload_(targetSheet, objectiveSheet, movementSheet, futureMovementSheet, bankSheet, dataSheet, investmentTotalsSheet, investmentEstimateRulesSheet, investmentEstimateLedgerSheet);
-      payload.investmentDeleted = true;
+      payload = withScriptLock_(function() {
+        const targetSheet = params.sheetName || investmentSheet;
+        const investment = params.investment ? parseJsonParam_(params.investment, 'investment') || {} : {};
+        deleteInvestment_(investment, targetSheet, params.rowNumber || 0);
+        syncInvestmentTotalsSheet_(investmentTotalsSheet, dataSheet, targetSheet, movementSheet);
+        bumpSections_('investments', 'investmentTotals');
+        const result = buildInvestmentDataPayload_(targetSheet, objectiveSheet, movementSheet, futureMovementSheet, bankSheet, dataSheet, investmentTotalsSheet, investmentEstimateRulesSheet, investmentEstimateLedgerSheet);
+        result.investmentDeleted = true;
+        return result;
+      });
     } else if (action === 'saveInvestmentCategories') {
-      const targetSheet = params.sheetName || investmentSheet;
-      const investmentTypes = params.investmentTypes ? JSON.parse(params.investmentTypes) : [];
-      const renames = params.renames ? JSON.parse(params.renames) : {};
-      saveInvestmentCategories_(dataSheet, targetSheet, investmentTypes, renames, movementSheet, futureMovementSheet, investmentTotalsSheet);
-      syncInvestmentTotalsSheet_(investmentTotalsSheet, dataSheet, targetSheet, movementSheet);
-      bumpSections_('categories', 'investments', 'investmentTotals', 'transactions', 'futureTransactions');
-      payload = buildInvestmentDataPayload_(targetSheet, objectiveSheet, movementSheet, futureMovementSheet, bankSheet, dataSheet, investmentTotalsSheet, investmentEstimateRulesSheet, investmentEstimateLedgerSheet);
-      payload.categoriesUpdated = true;
+      payload = withScriptLock_(function() {
+        const targetSheet = params.sheetName || investmentSheet;
+        const investmentTypes = params.investmentTypes ? parseJsonParam_(params.investmentTypes, 'investmentTypes') || [] : [];
+        const renames = params.renames ? parseJsonParam_(params.renames, 'renames') || {} : {};
+        saveInvestmentCategories_(dataSheet, targetSheet, investmentTypes, renames, movementSheet, futureMovementSheet, investmentTotalsSheet);
+        syncInvestmentTotalsSheet_(investmentTotalsSheet, dataSheet, targetSheet, movementSheet);
+        bumpSections_('categories', 'investments', 'investmentTotals', 'transactions', 'futureTransactions');
+        const result = buildInvestmentDataPayload_(targetSheet, objectiveSheet, movementSheet, futureMovementSheet, bankSheet, dataSheet, investmentTotalsSheet, investmentEstimateRulesSheet, investmentEstimateLedgerSheet);
+        result.categoriesUpdated = true;
+        return result;
+      });
     } else if (action === 'updateInvestmentPrices') {
-      const priceUpdateResult = updateInvestmentQuotesFromYahoo(investmentSheet);
-      // Los precios han cambiado: aquí sí hay que recalcular la hoja de totales, porque
-      // los payloads de descarga ya no la sincronizan por su cuenta.
-      syncInvestmentTotalsSheet_(investmentTotalsSheet, dataSheet, investmentSheet, movementSheet);
-      bumpSections_('investments', 'investmentTotals');
-      payload = buildInvestmentDataPayload_(investmentSheet, objectiveSheet, movementSheet, futureMovementSheet, bankSheet, dataSheet, investmentTotalsSheet, investmentEstimateRulesSheet, investmentEstimateLedgerSheet);
-      payload.pricesUpdated = true;
-      payload.priceUpdateResult = priceUpdateResult;
+      payload = withScriptLock_(function() {
+        const priceUpdateResult = updateInvestmentQuotesFromYahoo(investmentSheet);
+        // Los precios han cambiado: aquí sí hay que recalcular la hoja de totales, porque
+        // los payloads de descarga ya no la sincronizan por su cuenta.
+        syncInvestmentTotalsSheet_(investmentTotalsSheet, dataSheet, investmentSheet, movementSheet);
+        bumpSections_('investments', 'investmentTotals');
+        const result = buildInvestmentDataPayload_(investmentSheet, objectiveSheet, movementSheet, futureMovementSheet, bankSheet, dataSheet, investmentTotalsSheet, investmentEstimateRulesSheet, investmentEstimateLedgerSheet);
+        result.pricesUpdated = true;
+        result.priceUpdateResult = priceUpdateResult;
+        return result;
+      });
     } else if (action === 'downloadInvestmentEstimateRules') {
       ensureInvestmentEstimateSheets_(investmentEstimateRulesSheet, investmentEstimateLedgerSheet, movementSheet);
       payload = { ok: true, investmentEstimateRules: readInvestmentEstimateRules_(investmentEstimateRulesSheet), investmentEstimateLedger: readInvestmentEstimateLedger_(investmentEstimateLedgerSheet) };
     } else if (action === 'clearInvestmentEstimates') {
-      clearInvestmentEstimates_(investmentEstimateLedgerSheet, movementSheet);
-      bumpSections_('investmentEstimateLedger');
-      payload = { ok: true, estimatesCleared: true, investmentEstimateLedger: [] };
-    } else if (action === 'simulateInvestmentEstimateRule') {
-      const created = simulateInvestmentEstimateRule_(investmentEstimateRulesSheet, investmentEstimateLedgerSheet, investmentSheet, params.ruleId || '', parseNumber_(params.simulationAmount), params.simulationDate || '');
-      bumpSections_('investmentEstimateLedger');
-      payload = { ok: true, estimateCreated: true, createdEstimate: created, investmentEstimateLedger: readInvestmentEstimateLedger_(investmentEstimateLedgerSheet) };
-    } else if (action === 'saveInvestmentEstimateAllocations') {
-      const entries = params.entries ? JSON.parse(params.entries) : [];
-      const saved = saveInvestmentEstimateAllocations_(investmentEstimateLedgerSheet, entries);
-      bumpSections_('investmentEstimateLedger');
-      payload = { ok: true, estimatesSaved: saved.length, investmentEstimateLedger: readInvestmentEstimateLedger_(investmentEstimateLedgerSheet) };
-    } else if (action === 'sendDailyNotifications') {
-      const notificationRequestId = String(params.notificationRequestId || '').trim();
-      const notificationResult = sendInvestmentNotificationsOnce_(notificationRequestId, function() {
-        sendInvestmentNotificationMessages_(investmentSheet, { mode: investmentMode, rulesSheet: investmentEstimateRulesSheet, ledgerSheet: investmentEstimateLedgerSheet, movementSheet: movementSheet, investmentTotalsSheet: investmentTotalsSheet });
+      payload = withScriptLock_(function() {
+        clearInvestmentEstimates_(investmentEstimateLedgerSheet, movementSheet);
+        bumpSections_('investmentEstimateLedger');
+        return { ok: true, estimatesCleared: true, investmentEstimateLedger: [] };
       });
-      payload = { ok: true, notificationsSent: notificationResult.sent, duplicate: notificationResult.duplicate, pricesUpdated: false, investmentMode: investmentMode }; 
+    } else if (action === 'simulateInvestmentEstimateRule') {
+      payload = withScriptLock_(function() {
+        const created = simulateInvestmentEstimateRule_(investmentEstimateRulesSheet, investmentEstimateLedgerSheet, investmentSheet, params.ruleId || '', parseNumber_(params.simulationAmount), params.simulationDate || '');
+        bumpSections_('investmentEstimateLedger');
+        return { ok: true, estimateCreated: true, createdEstimate: created, investmentEstimateLedger: readInvestmentEstimateLedger_(investmentEstimateLedgerSheet) };
+      });
+    } else if (action === 'saveInvestmentEstimateAllocations') {
+      payload = withScriptLock_(function() {
+        const entries = params.entries ? parseJsonParam_(params.entries, 'entries') || [] : [];
+        const saved = saveInvestmentEstimateAllocations_(investmentEstimateLedgerSheet, entries);
+        bumpSections_('investmentEstimateLedger');
+        return { ok: true, estimatesSaved: saved.length, investmentEstimateLedger: readInvestmentEstimateLedger_(investmentEstimateLedgerSheet) };
+      });
+    } else if (action === 'sendDailyNotifications') {
+      payload = withScriptLock_(function() {
+        const notificationRequestId = String(params.notificationRequestId || '').trim();
+        const notificationResult = sendInvestmentNotificationsOnce_(notificationRequestId, function() {
+          sendInvestmentNotificationMessages_(investmentSheet, { mode: investmentMode, rulesSheet: investmentEstimateRulesSheet, ledgerSheet: investmentEstimateLedgerSheet, movementSheet: movementSheet, investmentTotalsSheet: investmentTotalsSheet });
+        });
+        return { ok: true, notificationsSent: notificationResult.sent, duplicate: notificationResult.duplicate, pricesUpdated: false, investmentMode: investmentMode };
+      });
     } else {
       payload = { ok: false, error: 'Unknown action' };
     }
@@ -474,7 +494,12 @@ function buildClientOpStatusPayload_(clientOpId) {
   // ya no describe el estado actual de la operación.
   if (isClientOpPending_(clientOpId)) return { ok: true, completed: false, pending: true };
   const failure = clientOpFailure_(clientOpId);
-  if (failure) return { ok: true, completed: false, pending: false, failed: true, error: failure };
+  if (failure) {
+    // retryable: fallos transitorios (lock ocupado) que el cliente debe reintentar
+    // con su backoff normal en vez de detener la operación con error terminal.
+    const retryable = String(failure).indexOf('LOCK_TIMEOUT') === 0;
+    return { ok: true, completed: false, pending: false, failed: true, retryable, error: failure };
+  }
   return { ok: true, completed: false, pending: false };
 }
 
@@ -606,7 +631,11 @@ function doPost(e) {
   let pendingId = '';
   let lock = null;
   try {
-    payload = JSON.parse(e.postData.contents || '{}');
+    try {
+      payload = JSON.parse(e && e.postData && e.postData.contents || '{}');
+    } catch (parseErr) {
+      throw new Error('VALIDATION: el cuerpo de la petición no es JSON válido.');
+    }
     requireToken_(payload.token || '');
     // Ruta rápida sin bloqueo para operaciones ya confirmadas (evita serializar la
     // tormenta de reintentos que dispara el cliente).
@@ -621,7 +650,14 @@ function doPost(e) {
     // la confirmación), y el cliente se quedaba en "Confirmando" en bucle sin que
     // el cambio llegara a Sheets.
     lock = LockService.getScriptLock();
-    lock.waitLock(30000);
+    try {
+      lock.waitLock(30000);
+    } catch (lockErr) {
+      lock = null;
+      // Un choque con el lock es transitorio: se marca como reintentable para que el
+      // cliente lo reintente solo, en vez de registrarlo como fallo permanente.
+      throw new Error('LOCK_TIMEOUT: el servidor está ocupado con otra operación; reintenta en unos segundos.');
+    }
     // Reevaluado dentro del lock: ya con el estado consolidado por otra petición.
     if (payload.clientOpId && wasClientOpProcessed_(payload.clientOpId)) {
       return json_({ ok: true, duplicate: true });
@@ -759,7 +795,12 @@ function doPost(e) {
     }
     // El cliente no puede leer esta respuesta (no-cors): dejamos el error registrado
     // para que lo recoja checkClientOp y lo muestre en vez de reintentar sin fin.
-    rememberClientOpFailure_(payload && payload.clientOpId || '', err && err.message || err);
+    // Excepción: un timeout de lock NO es un fallo de la operación — si se registrara,
+    // el cliente la marcaría como error terminal por una colisión transitoria.
+    const message = String(err && err.message || err || '');
+    if (message.indexOf('LOCK_TIMEOUT') !== 0) {
+      rememberClientOpFailure_(payload && payload.clientOpId || '', message);
+    }
     return json_(errorPayload_(err));
   } finally {
     if (lock) {
@@ -768,9 +809,43 @@ function doPost(e) {
   }
 }
 
+// El token es OBLIGATORIO: sin él, cualquiera con la URL /exec podía leer y
+// modificar todas las finanzas. Configura APP_TOKEN arriba y el mismo valor en
+// Ajustes de la app.
 function requireToken_(token) {
-  if (APP_TOKEN && token !== APP_TOKEN) {
-    throw new Error('Invalid app token');
+  if (!APP_TOKEN) {
+    throw new Error('AUTH: configura APP_TOKEN en el Apps Script (es obligatorio) y en Ajustes de la app.');
+  }
+  if (token !== APP_TOKEN) {
+    throw new Error('AUTH: Invalid app token');
+  }
+}
+
+// Serializa también las mutaciones que llegan por GET (JSONP): sin lock, dos
+// pestañas moviendo futuros vencidos a la vez duplicaban movimientos y aplicaban
+// dos veces los ajustes de saldo.
+// JSON de parámetros de la petición con error limpio: un valor malformado devolvía
+// antes el mensaje interno del parser al caller.
+function parseJsonParam_(raw, what) {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch (err) {
+    throw new Error('VALIDATION: el parámetro ' + what + ' no es JSON válido.');
+  }
+}
+
+function withScriptLock_(fn) {
+  const lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(30000);
+  } catch (err) {
+    throw new Error('LOCK_TIMEOUT: el servidor está ocupado con otra operación; reintenta en unos segundos.');
+  }
+  try {
+    return fn();
+  } finally {
+    try { lock.releaseLock(); } catch (releaseErr) {}
   }
 }
 
@@ -1224,7 +1299,31 @@ function readFutureMovements_(sheetName) {
   return page.rows;
 }
 
+// Comprobación barata y de solo lectura: ¿hay algún futuro vencido? Permite que la
+// carga normal (sin nada que mover) no tenga que esperar el script lock.
+function hasDueFutureMovements_(futureSheetName) {
+  const futureSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(futureSheetName);
+  if (!futureSheet || futureSheet.getLastRow() < 2) return false;
+  const dates = futureSheet.getRange(2, 1, futureSheet.getLastRow() - 1, 1).getValues();
+  const today = new Date();
+  today.setHours(23, 59, 59, 999);
+  return dates.some(function(row) {
+    const date = parseMovementDate_(row[0]);
+    return date && date <= today;
+  });
+}
+
+// Mueve los futuros vencidos DENTRO del script lock: la relectura dentro del lock
+// hace la operación segura ante dos peticiones simultáneas (la segunda ya no
+// encuentra las filas movidas por la primera).
 function moveDueFutureMovements_(futureSheetName, movementSheetName, bankSheetName, skipSids) {
+  if (!hasDueFutureMovements_(futureSheetName)) return [];
+  return withScriptLock_(function() {
+    return moveDueFutureMovementsLocked_(futureSheetName, movementSheetName, bankSheetName, skipSids);
+  });
+}
+
+function moveDueFutureMovementsLocked_(futureSheetName, movementSheetName, bankSheetName, skipSids) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const futureSheet = ss.getSheetByName(futureSheetName);
   if (!futureSheet) return [];

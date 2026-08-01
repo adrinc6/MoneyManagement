@@ -2538,6 +2538,12 @@ async function checkQueuedOp(opId) {
     // El servidor registró un error real para esta operación: reintentarla sola solo
     // repetiría el fallo, así que se para y se muestra el motivo.
     if (result?.ok && result.failed) {
+      // Fallo transitorio en el servidor (p. ej. lock ocupado): reintentar con el
+      // backoff normal en vez de detener la operación como error terminal.
+      if (result.retryable) {
+        failQueuedOp(opId, result.error || "Servidor ocupado; se reintentará.");
+        return;
+      }
       markOpStatus(opId, { status: "error", error: result.error || "Apps Script rechazó la operación.", nextAttemptAt: 0 });
       logSyncEvent(`Apps Script devolvió un error: ${item.payload?.action || "cambio"}.`, "warn", result.error || "");
       setSyncStatus("Error al enviar\nRevisa Ajustes › Conexión", "warn");
