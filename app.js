@@ -111,7 +111,9 @@ const SYSTEM_GOAL_LABELS = {
 const DATA_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const DATA_CACHE_VERSION = 3;
 const CACHE_SECTION_KEYS = ["transactions", "futureTransactions", "investments", "investmentTotals", "investmentEstimateRules", "investmentEstimateLedger", "banks", "investmentGoals", "categories"];
-const MOVEMENT_PAGE_SIZE = 500;
+// El servidor lo limita a 1000. Cuantas menos páginas, menos veces se re-escanea la
+// columna SID de la hoja entera (readMovementsPage_ la asegura en cada petición).
+const MOVEMENT_PAGE_SIZE = 1000;
 
 const TEST_TRANSACTIONS = ENABLE_TEST_MODE ? [
   ["2026-05-10", "Ingreso", "Otros", "Nomina", 2100],
@@ -995,7 +997,7 @@ async function refreshData(options = {}) {
 
       if (updateInvestments || (onlyInvestments && !needsMovements)) {
         syncStatusStep(showProgress, investmentRequestStatus({ updateInvestments, sendNotifications }), "");
-        const payload = await fetchAppsScriptData({ updateInvestments, scope: "investments" });
+        const payload = await fetchDownloadData({ updateInvestments, scope: "investments" }, { label: "inversiones", showProgress });
         assertPayloadOk(payload);
         freshData = {
           ...freshData,
@@ -1017,7 +1019,7 @@ async function refreshData(options = {}) {
         if (needsCore || moveDueNow) {
           const coreAction = moveDueNow ? "moveDueFutureMovements" : "downloadCoreData";
           syncStatusStep(showProgress, moveDueNow ? "Moviendo futuros vencidos\nDescargando datos base" : "Descargando datos base", "");
-          core = await fetchAppsScriptData({ action: coreAction, skipFutureSids: moveSkipSids });
+          core = await fetchDownloadData({ action: coreAction, skipFutureSids: moveSkipSids }, { label: "datos base", showProgress });
           assertPayloadOk(core);
           movedFutureMovements = core.movedFutureMovements || [];
           freshData = {
@@ -1188,12 +1190,12 @@ async function downloadMovementPages(kind, label, options = {}) {
       const knownTotalPages = Math.max(1, Math.ceil(total / MOVEMENT_PAGE_SIZE));
       syncStatusStep(options.showProgress, `Descargando ${label}\nPágina ${pageNumber}/${knownTotalPages}`, "");
     }
-    const payload = await fetchAppsScriptData({
+    const payload = await fetchDownloadData({
       action: "downloadMovementsPage",
       movementKind: kind,
       offset,
       limit: MOVEMENT_PAGE_SIZE
-    });
+    }, { label: `${label} (página ${pageNumber})`, showProgress: options.showProgress });
     assertPayloadOk(payload);
     const pageRows = kind === "future" ? (payload.futureTransactions || []) : (payload.transactions || []);
     rows.push(...pageRows);
@@ -2462,7 +2464,35 @@ async function fetchAppsScriptData(options = {}) {
   if (options.movementKind) params.set("movementKind", options.movementKind);
   if (Number.isFinite(Number(options.offset))) params.set("offset", String(Number(options.offset)));
   if (Number.isFinite(Number(options.limit))) params.set("limit", String(Number(options.limit)));
-  return jsonp(`${state.config.scriptUrl}?${params.toString()}`);
+  return jsonp(`${state.config.scriptUrl}?${params.toString()}`, { timeoutMs: options.timeoutMs });
+}
+
+// Las descargas son mucho más caras que un checkClientOp: la primera llamada del arranque
+// puede tener que sincronizar la hoja de totales y leer varias hojas enteras. Con el techo
+// corto de JSONP_TIMEOUT_MS se abandonaba a los 20 s aunque el servidor fuese a responder.
+const DOWNLOAD_TIMEOUT_MS = 180000;
+const DOWNLOAD_MAX_ATTEMPTS = 3;
+const DOWNLOAD_RETRY_DELAYS_MS = [3000, 8000];
+
+// Reintenta una descarga ante fallos de red o de timeout. Merece la pena porque el intento
+// que expira NO cancela la ejecución de Apps Script: normalmente termina el trabajo caro
+// (sincronizar totales, rellenar la columna SID) y el siguiente intento va mucho más
+// rápido. Un payload con ok:false no se reintenta: lo valida assertPayloadOk en el llamante.
+async function fetchDownloadData(options = {}, { label = "datos", showProgress = false } = {}) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= DOWNLOAD_MAX_ATTEMPTS; attempt++) {
+    try {
+      return await fetchAppsScriptData({ ...options, timeoutMs: DOWNLOAD_TIMEOUT_MS });
+    } catch (error) {
+      lastError = error;
+      if (attempt === DOWNLOAD_MAX_ATTEMPTS) break;
+      const delay = DOWNLOAD_RETRY_DELAYS_MS[attempt - 1] ?? DOWNLOAD_RETRY_DELAYS_MS[DOWNLOAD_RETRY_DELAYS_MS.length - 1];
+      logSyncEvent(`Reintentando descarga de ${label} (intento ${attempt + 1} de ${DOWNLOAD_MAX_ATTEMPTS}).`, "warn", error.message || String(error));
+      syncStatusStep(showProgress, `Reintentando descarga\nIntento ${attempt + 1} de ${DOWNLOAD_MAX_ATTEMPTS}`, "warn");
+      await sleep(delay);
+    }
+  }
+  throw lastError || new Error("No se pudo descargar");
 }
 
 const JSONP_TIMEOUT_MS = 20000;
