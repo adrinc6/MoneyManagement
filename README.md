@@ -175,10 +175,14 @@ En modo CSV público no podrás guardar cambios en la hoja.
 1. Abre tu Google Sheet.
 2. Ve a `Extensiones > Apps Script`.
 3. Pega el contenido de `apps-script.gs`.
-4. Opcionalmente, define tu propio `APP_TOKEN`.
+4. **Define tu propio `APP_TOKEN`** (obligatorio: es la única protección del endpoint).
 5. Despliega como `Aplicación web`.
 6. Copia la URL `/exec`.
-7. Abre la app, entra en `Ajustes`, pega la URL y guarda.
+7. Abre la app, entra en `Ajustes`, pega la URL y **el mismo token**, y guarda.
+
+> El token es obligatorio. Sin él, cualquiera que conozca tu URL `/exec` podría
+> leer y modificar tus finanzas. Si dejas `APP_TOKEN` vacío, el backend rechaza
+> todas las peticiones.
 
 ## Publicación
 
@@ -195,6 +199,14 @@ En `Ajustes > Conexión`, sobre la lista de envíos correctos del día, hay un b
 
 ## Robustez
 
+- El endpoint exige token: sin `APP_TOKEN` configurado no se sirve ninguna petición.
+- Las mutaciones que llegan por GET (mover futuros vencidos, inversiones, precios) se serializan con el script lock: dos pestañas a la vez ya no duplican movimientos ni aplican dos veces los ajustes de saldo.
+- Un choque transitorio con el bloqueo se reintenta solo en vez de detener la operación con un error definitivo.
+- Las escrituras toleran las reglas de validación de datos de la hoja: si un desplegable rechaza el valor de una fila nueva (por ejemplo `Origen → Destino` en `CUENTA`), se limpia la validación de esa fila y se reintenta.
+- Los importes ilegibles se rechazan con aviso en vez de convertirse en `0 €` en silencio; los miles en formato español (`1.234`) se interpretan correctamente.
+- Las recurrencias están acotadas (máximo 366 fechas) y piden confirmación por encima de 50 movimientos.
+- La edición y el borrado de movimientos localizan la fila por identificador estable: actualizar los datos mientras tienes un movimiento abierto ya no edita el equivocado.
+- Si un CDN no carga, la app arranca igual (sin iconos ni gráficas) en vez de quedarse en blanco.
 - Las lecturas (JSONP) y escrituras (POST) tienen timeout: una petición colgada ya no bloquea la cola ni la interfaz, se reintenta sola.
 - Si `localStorage` se llena, la caché se poda de forma automática y se avisa, en vez de fallar en silencio.
 - Cada vista se renderiza de forma aislada: un dato inesperado no rompe la pantalla completa.

@@ -175,13 +175,13 @@ function doGet(e) {
         return { ok: true, estimatesSaved: saved.length, investmentEstimateLedger: readInvestmentEstimateLedger_(investmentEstimateLedgerSheet) };
       });
     } else if (action === 'sendDailyNotifications') {
-      payload = withScriptLock_(function() {
-        const notificationRequestId = String(params.notificationRequestId || '').trim();
-        const notificationResult = sendInvestmentNotificationsOnce_(notificationRequestId, function() {
-          sendInvestmentNotificationMessages_(investmentSheet, { mode: investmentMode, rulesSheet: investmentEstimateRulesSheet, ledgerSheet: investmentEstimateLedgerSheet, movementSheet: movementSheet, investmentTotalsSheet: investmentTotalsSheet });
-        });
-        return { ok: true, notificationsSent: notificationResult.sent, duplicate: notificationResult.duplicate, pricesUpdated: false, investmentMode: investmentMode };
+      // Sin withScriptLock_: sendInvestmentNotificationsOnce_ ya toma el script lock
+      // internamente y el lock no es reentrante (se bloquearía contra sí mismo).
+      const notificationRequestId = String(params.notificationRequestId || '').trim();
+      const notificationResult = sendInvestmentNotificationsOnce_(notificationRequestId, function() {
+        sendInvestmentNotificationMessages_(investmentSheet, { mode: investmentMode, rulesSheet: investmentEstimateRulesSheet, ledgerSheet: investmentEstimateLedgerSheet, movementSheet: movementSheet, investmentTotalsSheet: investmentTotalsSheet });
       });
+      payload = { ok: true, notificationsSent: notificationResult.sent, duplicate: notificationResult.duplicate, pricesUpdated: false, investmentMode: investmentMode };
     } else {
       payload = { ok: false, error: 'Unknown action' };
     }
@@ -380,7 +380,11 @@ function readMovementChangeLog_() {
 }
 
 function writeMovementChangeLog_(items) {
-  PropertiesService.getDocumentProperties().setProperty(movementChangelogKey_(), JSON.stringify((items || []).slice(-MOVEMENT_CHANGELOG_LIMIT)));
+  // storeBoundedList_ respeta el límite de 9 KB por propiedad: escribir la lista
+  // entera hacía que, pasadas ~35 entradas, CADA mutación lanzara una excepción al
+  // registrar el cambio. Si se desalojan entradas antiguas no pasa nada: el cliente
+  // cuyo sinceRev quedó fuera del log recibe incremental:false y re-descarga entera.
+  storeBoundedList_(movementChangelogKey_(), (items || []).slice(-MOVEMENT_CHANGELOG_LIMIT));
 }
 
 function appendMovementChanges_(changes) {
@@ -637,6 +641,13 @@ function doPost(e) {
       throw new Error('VALIDATION: el cuerpo de la petición no es JSON válido.');
     }
     requireToken_(payload.token || '');
+    // Tope de tamaño de lote: por encima del máximo que genera la app legítimamente
+    // (366 fechas por recurrencia) solo puede ser un error o un abuso.
+    ['movements', 'transfers', 'investments', 'entries', 'banks', 'sids'].forEach(function(field) {
+      if (Array.isArray(payload[field]) && payload[field].length > 500) {
+        throw new Error('VALIDATION: demasiados elementos en ' + field + ' (máximo 500).');
+      }
+    });
     // Ruta rápida sin bloqueo para operaciones ya confirmadas (evita serializar la
     // tormenta de reintentos que dispara el cliente).
     if (payload.clientOpId && wasClientOpProcessed_(payload.clientOpId)) {
@@ -658,6 +669,9 @@ function doPost(e) {
       // cliente lo reintente solo, en vez de registrarlo como fallo permanente.
       throw new Error('LOCK_TIMEOUT: el servidor está ocupado con otra operación; reintenta en unos segundos.');
     }
+    // Esta ejecución ya posee el lock: los helpers que usan withScriptLock_ deben
+    // ejecutarse directamente en vez de intentar adquirirlo otra vez.
+    scriptLockHeld_ = true;
     // Reevaluado dentro del lock: ya con el estado consolidado por otra petición.
     if (payload.clientOpId && wasClientOpProcessed_(payload.clientOpId)) {
       return json_({ ok: true, duplicate: true });
@@ -677,7 +691,17 @@ function doPost(e) {
         adjustInvestmentCostFromMovement_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.dataSheet || 'Datos', payload.investmentSheet || DEFAULT_INVESTMENT_SHEET, payload.sheetName || DEFAULT_MOVEMENT_SHEET, payload.movement, 1);
         syncInvestmentTotalsSheet_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.dataSheet || 'Datos', payload.investmentSheet || DEFAULT_INVESTMENT_SHEET, payload.sheetName || DEFAULT_MOVEMENT_SHEET);
       }
-      if (payload.account) adjustBank_(payload.bankSheet || DEFAULT_BANK_SHEET, payload.account, Number(payload.movement && (payload.movement.amount || payload.movement.importe) || 0));
+      if (payload.account) {
+        // El ajuste de saldo es una suma, no es idempotente: si el registro del
+        // clientOpId procesado se desalojó de la lista acotada, un reintento
+        // volvería a mover el dinero. El sid del movimiento hace de marcador.
+        const movementSid = String(payload.movement && payload.movement.sid || '').trim();
+        const alreadyApplied = movementSid && payload.clientOpId && appliedBatchSids_(payload.clientOpId)[movementSid];
+        if (!alreadyApplied) {
+          adjustBank_(payload.bankSheet || DEFAULT_BANK_SHEET, payload.account, Number(payload.movement && (payload.movement.amount || payload.movement.importe) || 0));
+          if (movementSid && payload.clientOpId) rememberAppliedBatchSids_(payload.clientOpId, [movementSid]);
+        }
+      }
       return finishPost_(pendingId, payload, { ok: true });
     }
     if (payload.action === 'addFutureMovement') {
@@ -804,6 +828,7 @@ function doPost(e) {
     return json_(errorPayload_(err));
   } finally {
     if (lock) {
+      scriptLockHeld_ = false;
       try { lock.releaseLock(); } catch (releaseErr) {}
     }
   }
@@ -835,16 +860,24 @@ function parseJsonParam_(raw, what) {
   }
 }
 
+// Guard de reentrada: el script lock no es fiablemente reentrante, así que una
+// llamada anidada (una acción bloqueada que invoca otro helper bloqueado) podría
+// quedarse esperándose a sí misma hasta el timeout. Como la ejecución ya posee el
+// lock, la anidada se limita a ejecutar el cuerpo.
+var scriptLockHeld_ = false;
 function withScriptLock_(fn) {
+  if (scriptLockHeld_) return fn();
   const lock = LockService.getScriptLock();
   try {
     lock.waitLock(30000);
   } catch (err) {
     throw new Error('LOCK_TIMEOUT: el servidor está ocupado con otra operación; reintenta en unos segundos.');
   }
+  scriptLockHeld_ = true;
   try {
     return fn();
   } finally {
+    scriptLockHeld_ = false;
     try { lock.releaseLock(); } catch (releaseErr) {}
   }
 }
@@ -852,8 +885,32 @@ function withScriptLock_(fn) {
 function appendPendingPost_(payload) {
   const id = Utilities.getUuid();
   const sheet = getOrCreateSheet_(DEFAULT_PENDING_SHEET, ['ID', 'Fecha', 'Accion', 'Payload']);
+  purgeStalePendingRows_(sheet);
   sheet.appendRow([id, new Date(), payload.action || '', JSON.stringify(sanitizePendingPayload_(payload))]);
   return id;
+}
+
+// Las filas huérfanas de "Pendientes" (ejecuciones cortadas antes de limpiar) se
+// acumulaban para siempre y isClientOpPending_ las recorría todas en cada POST.
+// Se purgan las caducadas como mucho una vez cada hora; un fallo aquí nunca
+// bloquea la operación en curso.
+function purgeStalePendingRows_(sheet) {
+  try {
+    const props = PropertiesService.getDocumentProperties();
+    const lastPurge = Number(props.getProperty('moneyPendingLastPurge') || 0);
+    if (Date.now() - lastPurge < 60 * 60 * 1000) return;
+    props.setProperty('moneyPendingLastPurge', String(Date.now()));
+    const lastRow = sheet.getLastRow();
+    if (lastRow < 2) return;
+    const dates = sheet.getRange(2, 2, lastRow - 1, 1).getValues();
+    const staleBefore = Date.now() - Math.max(PENDING_OP_STALE_MS * 10, 15 * 60 * 1000);
+    for (let i = dates.length - 1; i >= 0; i--) {
+      const at = dates[i][0] instanceof Date ? dates[i][0].getTime() : new Date(dates[i][0]).getTime();
+      if (!Number.isNaN(at) && at < staleBefore) sheet.deleteRow(i + 2);
+    }
+  } catch (err) {
+    // La purga es oportunista.
+  }
 }
 
 function finishPost_(pendingId, requestPayload, responsePayload) {
@@ -910,6 +967,20 @@ function movementSidColumn_(sheet) {
   return headers.indexOf('sid') + 1;
 }
 
+// Memo por ejecución: ensureMovementSidColumn_ lee (y a veces reescribe) la columna
+// SID entera. Los bucles que la llamaban por fila hacían O(n²) llamadas a la API de
+// Sheets y con unos miles de movimientos chocaban con el límite de 6 minutos.
+// Cada ejecución de Apps Script es aislada, así que la caché vive solo esta petición.
+var movementSidColumnCache_ = {};
+function ensureMovementSidColumnCached_(sheet) {
+  if (!sheet) return 0;
+  const key = String(sheet.getSheetId());
+  if (!(key in movementSidColumnCache_)) {
+    movementSidColumnCache_[key] = ensureMovementSidColumn_(sheet);
+  }
+  return movementSidColumnCache_[key];
+}
+
 function ensureMovementSidColumn_(sheet) {
   if (!sheet) return 0;
   const lastCol = Math.max(sheet.getLastColumn(), 1);
@@ -934,15 +1005,48 @@ function ensureMovementSidColumn_(sheet) {
   return sidCol;
 }
 
+// Neutraliza la inyección de fórmulas: un texto de usuario que empiece por '='
+// (u otro prefijo activo) se escribiría como fórmula viva en la hoja. El apóstrofo
+// inicial es invisible en la celda y Sheets lo quita al leer.
+function sanitizeCell_(value) {
+  if (typeof value === 'string' && /^[=+@\t\r]/.test(value)) return "'" + value;
+  return value;
+}
+
+// Escritura tolerante a las reglas de validación de datos de la hoja. Caso real:
+// la columna CUENTA con un desplegable rechaza el texto "Origen → Destino" de las
+// transferencias periódicas y la operación fallaba PARA SIEMPRE (cada reintento
+// escribía el mismo valor). Si la escritura choca con una validación, se limpia la
+// validación SOLO del rango recién escrito (heredada por autofill de la fila
+// anterior; el resto de la hoja no se toca) y se reintenta una vez.
+function setRangeValuesSafe_(range, values) {
+  try {
+    range.setValues(values);
+  } catch (err) {
+    const message = String(err && err.message || err || '');
+    if (!/validaci|validation/i.test(message)) throw err;
+    range.clearDataValidations();
+    try {
+      range.setValues(values);
+    } catch (retryErr) {
+      throw new Error('VALIDATION: una regla de validación de datos de la hoja rechaza el valor a escribir (' + message + '). Relaja esa regla en la hoja.');
+    }
+  }
+}
+
+function setCellValueSafe_(range, value) {
+  setRangeValuesSafe_(range, [[value]]);
+}
+
 function writeMovementRow_(sheet, rowNumber, movement, sid, account) {
   const date = new Date(movement.date || movement.fecha);
   if (Number.isNaN(date.getTime())) throw new Error('Invalid date');
   const amount = Number(movement.amount || movement.importe);
   if (!Number.isFinite(amount)) throw new Error('Invalid amount');
-  const sidCol = ensureMovementSidColumn_(sheet);
-  sheet.getRange(rowNumber, 1, 1, 8).setValues([[date, `=YEAR(A${rowNumber})`, `=MONTH(A${rowNumber})`, `=DAY(A${rowNumber})`, movement.tipo || '', movement.concepto || '', movement.descripcion || '', amount]]);
-  if (sheet.getLastColumn() >= 9) sheet.getRange(rowNumber, 9).setValue(account ?? movement.cuenta ?? movement.account ?? '');
-  if (sidCol) sheet.getRange(rowNumber, sidCol).setValue(sid || movementSidFrom_(movement));
+  const sidCol = ensureMovementSidColumnCached_(sheet);
+  setRangeValuesSafe_(sheet.getRange(rowNumber, 1, 1, 8), [[date, `=YEAR(A${rowNumber})`, `=MONTH(A${rowNumber})`, `=DAY(A${rowNumber})`, sanitizeCell_(movement.tipo || ''), sanitizeCell_(movement.concepto || ''), sanitizeCell_(movement.descripcion || ''), amount]]);
+  if (sheet.getLastColumn() >= 9) setCellValueSafe_(sheet.getRange(rowNumber, 9), sanitizeCell_(account ?? movement.cuenta ?? movement.account ?? ''));
+  if (sidCol) setCellValueSafe_(sheet.getRange(rowNumber, sidCol), sid || movementSidFrom_(movement));
 }
 
 // Añade varios movimientos con UNA sola lectura de la columna SID y UNA sola
@@ -953,7 +1057,7 @@ function writeMovementRow_(sheet, rowNumber, movement, sid, account) {
 // la hoja, así que reintentar un lote aplicado a medias no duplica filas.
 function appendMovementRows_(sheet, entries) {
   if (!sheet || !entries || !entries.length) return 0;
-  const sidCol = ensureMovementSidColumn_(sheet);
+  const sidCol = ensureMovementSidColumnCached_(sheet);
   const lastRow = sheet.getLastRow();
   const existingSids = {};
   if (sidCol && lastRow >= 2) {
@@ -980,16 +1084,16 @@ function appendMovementRows_(sheet, entries) {
     row[1] = `=YEAR(A${rowNumber})`;
     row[2] = `=MONTH(A${rowNumber})`;
     row[3] = `=DAY(A${rowNumber})`;
-    row[4] = movement.tipo || '';
-    row[5] = movement.concepto || '';
-    row[6] = movement.descripcion || '';
+    row[4] = sanitizeCell_(movement.tipo || '');
+    row[5] = sanitizeCell_(movement.concepto || '');
+    row[6] = sanitizeCell_(movement.descripcion || '');
     row[7] = amount;
-    if (width >= 9) row[8] = entry.account != null ? entry.account : (movement.cuenta || movement.account || '');
+    if (width >= 9) row[8] = sanitizeCell_(entry.account != null ? entry.account : (movement.cuenta || movement.account || ''));
     if (sidCol) row[sidCol - 1] = sid;
     rows.push(row);
   });
   if (!rows.length) return 0;
-  sheet.getRange(lastRow + 1, 1, rows.length, width).setValues(rows);
+  setRangeValuesSafe_(sheet.getRange(lastRow + 1, 1, rows.length, width), rows);
   return rows.length;
 }
 
@@ -1009,7 +1113,7 @@ function addMovement_(movement, sheetName) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName(sheetName);
   if (!sheet) throw new Error(`Sheet not found: ${sheetName}`);
-  ensureMovementSidColumn_(sheet);
+  ensureMovementSidColumnCached_(sheet);
   const row = sheet.getLastRow() + 1;
   writeMovementRow_(sheet, row, movement, movementSidFrom_(movement), movement.cuenta || movement.account || '');
 }
@@ -1028,7 +1132,7 @@ function readMovementsPage_(sheetName, offset, limit, optional) {
   // ensureMovementSidColumn_ lee (y a veces reescribe) la columna SID entera. Hacerlo en
   // cada página convertía la descarga en O(páginas × filas): con la primera página basta,
   // porque el resto de páginas de la misma descarga ya encuentran la columna rellena.
-  const sidCol = Number(offset || 0) > 0 ? movementSidColumn_(sheet) : ensureMovementSidColumn_(sheet);
+  const sidCol = Number(offset || 0) > 0 ? movementSidColumn_(sheet) : ensureMovementSidColumnCached_(sheet);
   const total = Math.max(0, sheet.getLastRow() - 1);
   const safeOffset = Math.max(0, Math.min(Number(offset || 0), total));
   const requestedLimit = Number(limit || 500);
@@ -1065,7 +1169,7 @@ function updateMovement_(movement, sheetName, previousMovement) {
   if (!movement) throw new Error('Missing movement');
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
   if (!sheet) throw new Error(`Sheet not found: ${sheetName}`);
-  const sidCol = ensureMovementSidColumn_(sheet);
+  const sidCol = ensureMovementSidColumnCached_(sheet);
   const targetSid = String(movement.sid || previousMovement && previousMovement.sid || '').trim();
   let rowNumber = targetSid ? findMovementRowBySid_(sheet, targetSid, sidCol) : Number(movement.rowNumber || 0);
   if (rowNumber < 2 || rowNumber > sheet.getLastRow()) rowNumber = 0;
@@ -1078,7 +1182,7 @@ function updateMovement_(movement, sheetName, previousMovement) {
 function deleteMovement_(rowNumber, sheetName, movement) {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
   if (!sheet) throw new Error(`Sheet not found: ${sheetName}`);
-  const sidCol = ensureMovementSidColumn_(sheet);
+  const sidCol = ensureMovementSidColumnCached_(sheet);
   const sid = String(movement && movement.sid || '').trim();
   let row = sid ? findMovementRowBySid_(sheet, sid, sidCol) : Number(rowNumber || 0);
   if (movement && row >= 2 && row <= sheet.getLastRow() && !movementMatchesSheetRow_(sheet, row, movement)) {
@@ -1096,7 +1200,7 @@ function deleteMovementsBatch_(items, sheetName) {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
   if (!sheet) throw new Error(`Sheet not found: ${sheetName}`);
   const rows = [];
-  const sidCol = ensureMovementSidColumn_(sheet);
+  const sidCol = ensureMovementSidColumnCached_(sheet);
   items.forEach(item => {
     const movement = item && (item.movement || item);
     const sid = String(movement && movement.sid || '').trim();
@@ -1118,7 +1222,7 @@ function findMovementRow_(sheet, movement, excludedRows) {
   const excluded = excludedRows || [];
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) return 0;
-  const sidCol = ensureMovementSidColumn_(sheet);
+  const sidCol = ensureMovementSidColumnCached_(sheet);
   const sid = String(movement && movement.sid || '').trim();
   const sidRow = sid ? findMovementRowBySid_(sheet, sid, sidCol) : 0;
   if (sidRow && excluded.indexOf(sidRow) === -1) return sidRow;
@@ -1130,7 +1234,7 @@ function findMovementRow_(sheet, movement, excludedRows) {
 }
 
 function movementMatchesSheetRow_(sheet, row, movement) {
-  const sidCol = ensureMovementSidColumn_(sheet);
+  const sidCol = ensureMovementSidColumnCached_(sheet);
   const values = sheet.getRange(row, 1, 1, Math.max(sheet.getLastColumn(), sidCol, 8)).getValues()[0];
   const movementSid = String(movement && movement.sid || '').trim();
   const rowSid = sidCol ? String(values[sidCol - 1] || '').trim() : '';
@@ -1153,7 +1257,7 @@ function futureMovementHeaders_() {
 function addFutureMovement_(movement, sheetName, account) {
   if (!movement) throw new Error('Missing movement');
   const sheet = getOrCreateSheet_(sheetName, futureMovementHeaders_());
-  ensureMovementSidColumn_(sheet);
+  ensureMovementSidColumnCached_(sheet);
   const row = sheet.getLastRow() + 1;
   writeMovementRow_(sheet, row, movement, movementSidFrom_(movement), account || movement.account || movement.cuenta || '');
 }
@@ -1330,7 +1434,7 @@ function moveDueFutureMovementsLocked_(futureSheetName, movementSheetName, bankS
   const bankSheet = ss.getSheetByName(bankSheetName);
   const skipSet = {};
   (skipSids || []).forEach(function(sid) { const trimmed = String(sid || '').trim(); if (trimmed) skipSet[trimmed] = true; });
-  const sidCol = ensureMovementSidColumn_(futureSheet);
+  const sidCol = ensureMovementSidColumnCached_(futureSheet);
   const values = futureSheet.getDataRange().getValues();
   const today = new Date();
   today.setHours(23, 59, 59, 999);
@@ -1367,7 +1471,16 @@ function getOrCreateSheet_(sheetName, headers) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   let sheet = ss.getSheetByName(sheetName);
   if (!sheet) {
-    sheet = ss.insertSheet(sheetName);
+    // El nombre viene de la petición: se valida antes de crear nada para que un
+    // caller no pueda sembrar la hoja de cálculo de pestañas basura.
+    const name = String(sheetName || '').trim();
+    if (!name || name.length > 80 || /[\[\]*?:\/\\]/.test(name)) {
+      throw new Error('VALIDATION: nombre de hoja no válido: ' + name);
+    }
+    if (ss.getSheets().length >= 40) {
+      throw new Error('VALIDATION: demasiadas hojas en el documento; no se crea "' + name + '".');
+    }
+    sheet = ss.insertSheet(name);
     sheet.appendRow(headers);
   }
   return sheet;
@@ -1593,7 +1706,7 @@ function applyInvestmentEstimateRulesForNewMovements_(rulesSheetName, ledgerShee
   const baseline = storedBaseline ? Number(storedBaseline) : (processLastIfNoBaseline ? Math.max(1, lastRow - 1) : lastRow);
   if (!storedBaseline && !processLastIfNoBaseline) props.setProperty(baselineKey, String(lastRow));
   if (lastRow <= baseline) return [];
-  const sidCol = ensureMovementSidColumn_(movementSheet);
+  const sidCol = ensureMovementSidColumnCached_(movementSheet);
   const width = Math.max(movementSheet.getLastColumn(), sidCol, 9);
   const values = movementSheet.getRange(baseline + 1, 1, lastRow - baseline, width).getValues();
   const movements = values.map(function(row, index) { return movementObjectFromRow_(row, baseline + 1 + index, sidCol); }).filter(Boolean);
@@ -1875,10 +1988,22 @@ function saveBanks_(banks, sheetName) {
 
   banks.forEach(item => {
     if (!item || !item.cuenta) return;
-    const rowNumber = Number(item.rowNumber || findBankRow_(sheet, item.cuenta) || 0);
-    const values = [[item.cuenta, Number(item.dinero || 0)]];
+    const amount = parseNumber_(item.dinero);
+    if (!Number.isFinite(amount)) return;
+    // El rowNumber del cliente puede estar desfasado si la hoja cambió: se verifica
+    // que esa fila sea de la misma cuenta antes de escribir encima; si no, se busca
+    // por nombre para no machacar una fila ajena.
+    let rowNumber = Number(item.rowNumber || 0);
+    if (rowNumber >= 2 && rowNumber <= sheet.getLastRow()) {
+      const currentAccount = String(sheet.getRange(rowNumber, 1).getValue() || '').trim();
+      if (currentAccount !== String(item.cuenta).trim()) rowNumber = 0;
+    } else {
+      rowNumber = 0;
+    }
+    if (!rowNumber) rowNumber = Number(findBankRow_(sheet, item.cuenta) || 0);
+    const values = [[sanitizeCell_(item.cuenta), amount]];
     if (rowNumber >= 2 && rowNumber <= sheet.getMaxRows()) {
-      sheet.getRange(rowNumber, 1, 1, 2).setValues(values);
+      setRangeValuesSafe_(sheet.getRange(rowNumber, 1, 1, 2), values);
     } else {
       sheet.appendRow(values[0]);
     }
@@ -2211,7 +2336,10 @@ function updateInvestmentQuotesFromYahooOptimized_(sheetName) {
   });
 
   updateCurrencyHelperRow_(sheet, col, rates);
-  return { prices, previous };
+  // Los tickers que no se pudieron consultar viajan en la respuesta para que la app
+  // pueda avisar, en vez de dar por buena una actualización incompleta.
+  const failures = quotes.__failures || [];
+  return { prices, previous, failures, failed: failures.length };
 }
 
 function writeInvestmentVariation_(sheet, row, column, percentagePoints) {
@@ -2294,9 +2422,19 @@ function getYahooQuotes_(tickers) {
   } catch (err) {
     // Fallback individual abajo.
   }
+  // Un ticker que Yahoo no reconoce (o un fallo puntual de red) no debe tumbar la
+  // actualización entera: antes el throw dentro del forEach abortaba también los
+  // que sí se habían resuelto. Los fallos se acumulan y se informan aparte.
+  const failures = [];
   uniqueTickers.forEach(ticker => {
-    if (!out[ticker]) out[ticker] = getYahooQuote_(ticker);
+    if (out[ticker]) return;
+    try {
+      out[ticker] = getYahooQuote_(ticker);
+    } catch (err) {
+      failures.push({ ticker: ticker, error: String(err && err.message || err) });
+    }
   });
+  if (failures.length) out.__failures = failures;
   return out;
 }
 
@@ -2398,9 +2536,7 @@ function sendInvestmentNotificationsOnce_(requestId, sendFn) {
     sendFn();
     return { sent: true, duplicate: false };
   }
-  const lock = LockService.getScriptLock();
-  lock.waitLock(30000);
-  try {
+  return withScriptLock_(function() {
     const props = PropertiesService.getScriptProperties();
     let processed = [];
     try {
@@ -2411,13 +2547,14 @@ function sendInvestmentNotificationsOnce_(requestId, sendFn) {
     if (processed.some(function(item) { return item && item.id === requestId; })) {
       return { sent: false, duplicate: true };
     }
-    sendFn();
+    // La petición se marca como procesada ANTES de enviar: sendFn manda N mensajes
+    // de Telegram y, si fallaba a mitad, el reintento reenviaba los ya entregados.
+    // Para un aviso informativo diario es preferible perderlo una vez a duplicarlo.
     processed.push({ id: requestId, at: new Date().toISOString() });
     props.setProperty(PROCESSED_NOTIFICATION_REQUESTS_KEY, JSON.stringify(processed.slice(-100)));
+    sendFn();
     return { sent: true, duplicate: false };
-  } finally {
-    lock.releaseLock();
-  }
+  });
 }
 
 function setupDailyMoneyManagementNotifications() {
@@ -2961,6 +3098,9 @@ function json_(payload) {
 
 function errorCode_(err) {
   const message = String(err && err.message ? err.message : err || '');
+  if (/^AUTH:/.test(message)) return 'AUTH';
+  if (/^VALIDATION:/.test(message)) return 'VALIDATION';
+  if (/^LOCK_TIMEOUT/.test(message)) return 'BUSY';
   if (/Invalid app token/i.test(message)) return 'AUTH';
   if (/Sheet not found/i.test(message)) return 'SHEET_NOT_FOUND';
   if (/not found/i.test(message)) return 'NOT_FOUND';
@@ -2973,5 +3113,12 @@ function errorCode_(err) {
 
 function errorPayload_(err) {
   const message = String(err && err.message ? err.message : err);
-  return { ok: false, error: message, errorCode: errorCode_(err) };
+  const code = errorCode_(err);
+  // Los errores no clasificados no exponen internos del script al caller: el
+  // detalle queda en el registro de ejecuciones de Apps Script.
+  if (code === 'UNKNOWN') {
+    console.error(err && err.stack || message);
+    return { ok: false, error: 'Error interno del servidor. Revisa el registro de ejecuciones de Apps Script.', errorCode: 'INTERNAL' };
+  }
+  return { ok: false, error: message, errorCode: code };
 }
