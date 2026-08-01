@@ -163,11 +163,19 @@ const state = {
   futureMovementAccountPromptDismissed: false
 };
 
+// Los iconos vienen de un CDN (lucide). Si el CDN falla o no hay red en la primera
+// carga, la llamada directa lanzaba un ReferenceError en pleno arranque y ningún
+// listener llegaba a cablearse: app muerta. Sin iconos la app sigue siendo usable.
+function refreshIcons() {
+  if (!window.lucide?.createIcons) return;
+  try { lucide.createIcons(); } catch (err) { console.warn("lucide.createIcons falló", err); }
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   investmentDebug("app cargada", { version: "local-mirror-v19" });
   applySavedTheme();
   applySavedInvestmentEstimateMode();
-  lucide.createIcons();
+  refreshIcons();
   wireUi();
   hydrateConfigForm();
   setDefaultDate();
@@ -176,9 +184,13 @@ document.addEventListener("DOMContentLoaded", () => {
   renderSyncSettingsPanel();
   renderSettingsPanelTabs();
   syncRefreshButtonLabel("registrar");
-  refreshData({ scope: "all", cacheOnly: true });
+  refreshData({ scope: "all", cacheOnly: true })
+    .catch(err => logSyncEvent("La carga inicial de datos falló.", "warn", String(err?.message || err)));
   ensureOpQueuePoller();
-  window.setTimeout(() => retryPendingOps(null, { recoverSending: true }), 0);
+  window.setTimeout(() => {
+    Promise.resolve(retryPendingOps(null, { recoverSending: true }))
+      .catch(err => console.error("retryPendingOps", err));
+  }, 0);
 });
 
 function wireUi() {
@@ -191,16 +203,16 @@ function wireUi() {
       showView(btn.dataset.viewButton);
     });
   });
-  document.getElementById("refreshBtn").addEventListener("click", refreshActiveViewData);
+  document.getElementById("refreshBtn")?.addEventListener("click", refreshActiveViewData);
   document.getElementById("investmentUpdatePricesBtn")?.addEventListener("click", updateInvestmentPricesFromHeader);
   document.getElementById("investmentSendNotificationsBtn")?.addEventListener("click", sendInvestmentNotificationsFromHeader);
-  document.getElementById("movementForm").addEventListener("submit", submitMovement);
-  document.getElementById("registerModeSwitch").addEventListener("click", setRegisterModeFromClick);
-  document.getElementById("recurrenceType").addEventListener("change", renderRecurrencePicker);
-  document.getElementById("movementModeSwitch").addEventListener("click", setMovementModeFromClick);
-  document.getElementById("investmentPanelSwitch").addEventListener("click", setInvestmentPanelFromClick);
+  document.getElementById("movementForm")?.addEventListener("submit", submitMovement);
+  document.getElementById("registerModeSwitch")?.addEventListener("click", setRegisterModeFromClick);
+  document.getElementById("recurrenceType")?.addEventListener("change", renderRecurrencePicker);
+  document.getElementById("movementModeSwitch")?.addEventListener("click", setMovementModeFromClick);
+  document.getElementById("investmentPanelSwitch")?.addEventListener("click", setInvestmentPanelFromClick);
   document.getElementById("settingsPanelSwitch")?.addEventListener("click", setSettingsPanelFromClick);
-  document.getElementById("editInvestmentGoalsBtn").addEventListener("click", editInvestmentGoals);
+  document.getElementById("editInvestmentGoalsBtn")?.addEventListener("click", editInvestmentGoals);
   document.getElementById("evolutionStartMonth")?.addEventListener("change", saveEvolutionRangeAndRender);
   document.getElementById("evolutionEndMonth")?.addEventListener("change", saveEvolutionRangeAndRender);
   document.getElementById("evolutionSnapshotDay")?.addEventListener("change", saveEvolutionRangeAndRender);
@@ -219,36 +231,36 @@ function wireUi() {
   document.getElementById("closeInvestmentEstimateRulesBtn")?.addEventListener("click", () => document.getElementById("investmentEstimateRulesDialog")?.close());
   document.getElementById("addInvestmentEstimateRuleBtn")?.addEventListener("click", addInvestmentEstimateRule);
   document.getElementById("saveInvestmentEstimateRulesBtn")?.addEventListener("click", saveInvestmentEstimateRules);
-  document.getElementById("formType").addEventListener("change", syncRegistrarMode);
+  document.getElementById("formType")?.addEventListener("change", syncRegistrarMode);
   document.getElementById("formAmount")?.addEventListener("input", enforceTransferPositiveAmount);
   document.getElementById("formAmount")?.addEventListener("change", enforceTransferPositiveAmount);
-  document.getElementById("saveConfigBtn").addEventListener("click", saveConfigFromForm);
+  document.getElementById("saveConfigBtn")?.addEventListener("click", saveConfigFromForm);
   document.getElementById("retryPendingOpsBtn")?.addEventListener("click", () => retryPendingOps());
   document.getElementById("clearSyncLogsBtn")?.addEventListener("click", clearSyncLogs);
   document.getElementById("undoSentOpsBtn")?.addEventListener("click", openUndoDialog);
   document.getElementById("closeUndoDialogBtn")?.addEventListener("click", () => document.getElementById("undoDialog")?.close());
-  document.getElementById("summaryYear").addEventListener("change", syncSummaryPeriodAndRender);
-  document.getElementById("summaryMonth").addEventListener("change", syncSummaryPeriodAndRender);
-  document.getElementById("openMonthSituationBtn").addEventListener("click", () => {
+  document.getElementById("summaryYear")?.addEventListener("change", syncSummaryPeriodAndRender);
+  document.getElementById("summaryMonth")?.addEventListener("change", syncSummaryPeriodAndRender);
+  document.getElementById("openMonthSituationBtn")?.addEventListener("click", () => {
     document.getElementById("monthSituationDialog").showModal();
     renderSummary();
   });
-  document.getElementById("closeMonthSituationBtn").addEventListener("click", () => document.getElementById("monthSituationDialog").close());
-  document.getElementById("closeMoneyDialogBtn").addEventListener("click", () => document.getElementById("moneyDialog").close());
-  document.getElementById("openInvestmentOverviewBtn").addEventListener("click", () => openInvestmentOverview(null));
-  document.getElementById("closeInvestmentOverviewBtn").addEventListener("click", () => document.getElementById("investmentOverviewDialog").close());
-  document.getElementById("movementBackBtn").addEventListener("click", movementBack);
-  document.getElementById("movementBulkEditBtn").addEventListener("click", toggleMovementBulkEdit);
-  document.getElementById("movementBulkDeleteBtn").addEventListener("click", deleteSelectedMovements);
-  document.getElementById("addInvestmentRowBtn").addEventListener("click", addInvestmentRow);
+  document.getElementById("closeMonthSituationBtn")?.addEventListener("click", () => document.getElementById("monthSituationDialog").close());
+  document.getElementById("closeMoneyDialogBtn")?.addEventListener("click", () => document.getElementById("moneyDialog").close());
+  document.getElementById("openInvestmentOverviewBtn")?.addEventListener("click", () => openInvestmentOverview(null));
+  document.getElementById("closeInvestmentOverviewBtn")?.addEventListener("click", () => document.getElementById("investmentOverviewDialog").close());
+  document.getElementById("movementBackBtn")?.addEventListener("click", movementBack);
+  document.getElementById("movementBulkEditBtn")?.addEventListener("click", toggleMovementBulkEdit);
+  document.getElementById("movementBulkDeleteBtn")?.addEventListener("click", deleteSelectedMovements);
+  document.getElementById("addInvestmentRowBtn")?.addEventListener("click", addInvestmentRow);
   document.getElementById("addAccountGroupBtn")?.addEventListener("click", () => openAccountGroupDialog(null));
   document.getElementById("saveInvestmentsBtn")?.classList.add("hidden");
   document.getElementById("saveInvestmentsBtn")?.addEventListener("click", saveInvestments);
   ensureInvestmentCategoryDialog();
-  document.getElementById("formDescription").addEventListener("input", suggestTypeConceptFromDescription);
-  document.getElementById("closeMovementDetailBtn").addEventListener("click", () => document.getElementById("movementDetailDialog").close());
-  document.getElementById("movementDetailForm").addEventListener("submit", saveMovementDetail);
-  document.getElementById("deleteMovementBtn").addEventListener("click", deleteMovementDetail);
+  document.getElementById("formDescription")?.addEventListener("input", suggestTypeConceptFromDescription);
+  document.getElementById("closeMovementDetailBtn")?.addEventListener("click", () => document.getElementById("movementDetailDialog").close());
+  document.getElementById("movementDetailForm")?.addEventListener("submit", saveMovementDetail);
+  document.getElementById("deleteMovementBtn")?.addEventListener("click", deleteMovementDetail);
   document.getElementById("movementDeleteAccountForm")?.addEventListener("submit", confirmMovementDeleteAccount);
   document.getElementById("closeMovementDeleteAccountBtn")?.addEventListener("click", closeMovementAccountPrompt);
   document.getElementById("closeMovementTableControlBtn")?.addEventListener("click", () => document.getElementById("movementTableControlDialog").close());
@@ -286,9 +298,9 @@ function wireUi() {
     dialog.close();
     renderMovementTable(rows);
   });
-  document.getElementById("closeInvestmentDetailBtn").addEventListener("click", () => document.getElementById("investmentDetailDialog").close());
+  document.getElementById("closeInvestmentDetailBtn")?.addEventListener("click", () => document.getElementById("investmentDetailDialog").close());
   document.getElementById("deleteInvestmentBtn")?.addEventListener("click", deleteInvestmentDetail);
-  document.getElementById("investmentDetailForm").addEventListener("submit", saveInvestmentDetail);
+  document.getElementById("investmentDetailForm")?.addEventListener("submit", saveInvestmentDetail);
   document.getElementById("editInvestmentQuantity")?.addEventListener("input", syncInvestmentDetailComputedTotal);
   document.getElementById("editInvestmentName")?.addEventListener("input", syncInvestmentDetailInputLocks);
   document.getElementById("editInvestmentData")?.addEventListener("input", syncInvestmentDetailInputLocks);
@@ -299,7 +311,7 @@ function wireUi() {
   document.getElementById("addExistingInvestmentAllocationRowBtn")?.addEventListener("click", addExistingInvestmentAllocationRow);
   document.getElementById("addNewInvestmentAllocationRowBtn")?.addEventListener("click", addBlankInvestmentAllocationRow);
   document.getElementById("investmentAllocationForm")?.addEventListener("submit", saveInvestmentAllocationPrompt);
-  document.getElementById("monthSituationMode").addEventListener("click", event => {
+  document.getElementById("monthSituationMode")?.addEventListener("click", event => {
     const btn = event.target.closest("[data-situation-mode]");
     if (!btn) return;
     state.summaryModes.situation = btn.dataset.situationMode;
@@ -506,7 +518,7 @@ function formatQuickStatusValue(value) {
 async function updateInvestmentPricesFromHeader() {
   const btn = document.getElementById("investmentUpdatePricesBtn");
   btn?.classList.add("saving");
-  btn.disabled = true;
+  if (btn) btn.disabled = true;
 
   const ok = await refreshData({
     force: true,
@@ -517,7 +529,7 @@ async function updateInvestmentPricesFromHeader() {
 
   btn?.classList.remove("saving");
   btn?.classList.toggle("saved", ok);
-  btn.disabled = false;
+  if (btn) btn.disabled = false;
 
   if (ok) {
     window.setTimeout(() => btn?.classList.remove("saved"), 2200);
@@ -529,7 +541,7 @@ async function sendInvestmentNotificationsFromHeader() {
   state.investmentNotificationsSending = true;
   const btn = document.getElementById("investmentSendNotificationsBtn");
   btn?.classList.add("saving");
-  btn.disabled = true;
+  if (btn) btn.disabled = true;
   const notificationRequestId = typeof crypto?.randomUUID === "function"
     ? crypto.randomUUID()
     : `notification_${Date.now()}_${Math.random().toString(36).slice(2)}`;
@@ -557,7 +569,7 @@ async function sendInvestmentNotificationsFromHeader() {
     return false;
   } finally {
     state.investmentNotificationsSending = false;
-    btn.disabled = false;
+    if (btn) btn.disabled = false;
     setRefreshLoading(false);
     kickOpQueue();
   }
@@ -806,7 +818,7 @@ function renderCurrentView(viewId = activeViewId()) {
       renderPendingOpsBadge();
     });
   }
-  lucide.createIcons();
+  refreshIcons();
 }
 
 function renderDataScope(scope = "all") {
@@ -831,7 +843,17 @@ function syncedSectionsFromData(data = {}) {
   return sections;
 }
 
-async function refreshData(options = {}) {
+// Evita descargas simultáneas: dos refresh a la vez aplicaban snapshots y escribían
+// la caché entrelazados. Si ya hay uno en vuelo, los siguientes esperan a ese mismo.
+let refreshInFlight = null;
+
+function refreshData(options = {}) {
+  if (refreshInFlight) return refreshInFlight;
+  refreshInFlight = refreshDataImpl(options).finally(() => { refreshInFlight = null; });
+  return refreshInFlight;
+}
+
+async function refreshDataImpl(options = {}) {
   const force = Boolean(options.force);
   const updateInvestments = Boolean(options.updateInvestments);
   const sendNotifications = Boolean(options.sendNotifications);
@@ -1179,9 +1201,15 @@ function assertPayloadOk(payload) {
   }
 }
 
+// Tope duro de páginas: con MOVEMENT_PAGE_SIZE filas por página cubre cualquier
+// histórico real, y evita que un backend que repite offset deje la app descargando
+// en bucle infinito con la interfaz bloqueada en "Descargando".
+const MOVEMENT_MAX_PAGES = 200;
+
 async function downloadMovementPages(kind, label, options = {}) {
   let offset = 0;
   let total = null;
+  let pagesFetched = 0;
   const rows = [];
   syncStatusStep(options.showProgress, `Descargando ${label}\nCalculando páginas`, "");
   while (true) {
@@ -1201,9 +1229,13 @@ async function downloadMovementPages(kind, label, options = {}) {
     rows.push(...pageRows);
     total = Number.isFinite(Number(payload.total)) ? Number(payload.total) : rows.length;
     const totalPages = Math.max(1, Math.ceil(total / MOVEMENT_PAGE_SIZE));
+    const previousOffset = offset;
     offset = Number.isFinite(Number(payload.nextOffset)) ? Number(payload.nextOffset) : offset + pageRows.length;
     syncStatusStep(options.showProgress, `Descargando ${label}\nPágina ${pageNumber}/${totalPages} · ${Math.min(rows.length, total)}/${total}`, "");
     if (!payload.hasMore || !pageRows.length) break;
+    pagesFetched += 1;
+    if (offset <= previousOffset) throw new Error(`La paginación de ${label} no avanza (offset repetido).`);
+    if (pagesFetched >= MOVEMENT_MAX_PAGES) throw new Error(`Descarga de ${label} interrumpida: demasiadas páginas (${MOVEMENT_MAX_PAGES}).`);
   }
   return rows;
 }
@@ -1236,14 +1268,14 @@ function markButtonSaved(button, label = "Guardado") {
   button.classList.add("saved");
   button.disabled = true;
   button.innerHTML = `<i data-lucide="check"></i> ${escapeHtml(label)}`;
-  lucide.createIcons();
+  refreshIcons();
   window.setTimeout(() => {
     if (!button.isConnected) return;
     button.classList.remove("saved");
     button.innerHTML = button.dataset.previousHtml || previousHtml;
     delete button.dataset.previousHtml;
     button.disabled = false;
-    lucide.createIcons();
+    refreshIcons();
   }, 2200);
 }
 
@@ -1254,7 +1286,7 @@ function markButtonSaving(button, label = "Guardando") {
   button.classList.add("saving");
   button.disabled = true;
   button.innerHTML = `<i data-lucide="loader-2"></i> ${escapeHtml(label)}`;
-  lucide.createIcons();
+  refreshIcons();
 }
 
 function restoreButton(button) {
@@ -1263,7 +1295,7 @@ function restoreButton(button) {
   button.disabled = false;
   button.innerHTML = button.dataset.previousHtml;
   delete button.dataset.previousHtml;
-  lucide.createIcons();
+  refreshIcons();
 }
 
 function confirmDialog(message, title = "Confirmar") {
@@ -1274,18 +1306,26 @@ function confirmDialog(message, title = "Confirmar") {
     const acceptBtn = document.getElementById("genericConfirmAcceptBtn");
     const cancelBtn = document.getElementById("genericConfirmCancelBtn");
     const closeBtn = document.getElementById("closeGenericConfirmBtn");
+    // "close" cubre Esc y cualquier cierre externo: sin él la promesa quedaba
+    // pendiente para siempre y bloqueaba a quien la esperase (p. ej. refreshData).
+    let settled = false;
     const settle = result => {
+      if (settled) return;
+      settled = true;
       acceptBtn.removeEventListener("click", onAccept);
       cancelBtn.removeEventListener("click", onCancel);
       closeBtn.removeEventListener("click", onCancel);
-      dialog.close();
+      dialog.removeEventListener("close", onClose);
+      if (dialog.open) dialog.close();
       resolve(result);
     };
     const onAccept = () => settle(true);
     const onCancel = () => settle(false);
+    const onClose = () => settle(false);
     acceptBtn.addEventListener("click", onAccept);
     cancelBtn.addEventListener("click", onCancel);
     closeBtn.addEventListener("click", onCancel);
+    dialog.addEventListener("close", onClose);
     dialog.showModal();
   });
 }
@@ -2038,7 +2078,7 @@ function renderUndoDialogList() {
   }).join("");
   container.querySelectorAll("[data-undo-id]").forEach(btn =>
     btn.addEventListener("click", () => undoSentOp(btn.dataset.undoId)));
-  if (window.lucide?.createIcons) lucide.createIcons();
+  refreshIcons();
 }
 
 // Inversas de una entrada del historial. Solo se ofrece deshacer si TODOS sus elementos
@@ -2233,7 +2273,16 @@ async function runOpQueue() {
   opRunnerActive = true;
   try {
     let op;
+    let lastSignature = "";
     while ((op = nextActionableOp())) {
+      // Cortacircuitos: si la misma operación sale dos veces seguidas sin cambiar de
+      // estado, algo no progresa y seguir iterando congelaría la pestaña en bucle.
+      const signature = `${op.id}|${op.status}|${op.nextAttemptAt || 0}`;
+      if (signature === lastSignature) {
+        failQueuedOp(op.id, "La cola no avanza; se reintentará más tarde.");
+        break;
+      }
+      lastSignature = signature;
       if (op.status === "sending" || op.status === "checking") await checkQueuedOp(op.id);
       else await sendQueuedOp(op.id);
     }
@@ -2305,7 +2354,8 @@ function completeQueuedOp(item) {
   setSyncStatus("Cambio enviado\nCaché sincronizada", "ok");
   window.setTimeout(() => setSyncStatus("", ""), 1800);
   if (item.payload?.action === "updateInvestment" && item.payload?.newInvestment) {
-    refreshData({ force: true, scope: "investments", successMessage: "Inversión creada, precios actualizados y datos descargados desde Sheets." });
+    refreshData({ force: true, scope: "investments", successMessage: "Inversión creada, precios actualizados y datos descargados desde Sheets." })
+      .catch(err => logSyncEvent("La actualización tras crear la inversión falló.", "warn", String(err?.message || err)));
   }
 }
 
@@ -2341,7 +2391,13 @@ async function checkQueuedOp(opId) {
   const item = queue.find(op => op.id === opId);
   if (!item || item.status === "done" || item.status === "error") return;
   const clientOpId = item.payload?.clientOpId;
-  if (!clientOpId) return;
+  if (!clientOpId) {
+    // Sin clientOpId no hay forma de confirmarla nunca. Devolver sin tocar el estado
+    // hacía que runOpQueue eligiera esta misma operación en bucle y congelara la pestaña.
+    markOpStatus(opId, { status: "error", error: "Operación sin identificador; no se puede confirmar.", nextAttemptAt: 0 });
+    logSyncEvent("Operación descartada: no tiene identificador de confirmación.", "warn");
+    return;
+  }
   opsInFlight.add(opId);
   try {
     const result = await fetchAppsScriptData({ action: "checkClientOp", clientOpId });
@@ -2375,7 +2431,7 @@ async function checkQueuedOp(opId) {
 
 function kickOpQueue() {
   ensureOpQueuePoller();
-  runOpQueue();
+  runOpQueue().catch(err => console.error("runOpQueue", err));
 }
 
 // Reintento manual ("Reintentar ahora"): reactiva también las operaciones detenidas en
@@ -2734,7 +2790,7 @@ function syncRegistrarMode() {
   document.getElementById("submitMovement").innerHTML = submitLabel;
   syncRegistrarActionButton();
   if (typeof syncRegisterMode === "function") syncRegisterMode();
-  lucide.createIcons();
+  refreshIcons();
 }
 
 function syncRegistrarActionButton() {
@@ -2760,7 +2816,7 @@ function syncRegistrarActionButton() {
     registrarButton.setAttribute("aria-label", "Registrar");
     registrarButton.innerHTML = `<i data-lucide="plus"></i><span>Registrar</span>`;
   }
-  lucide.createIcons();
+  refreshIcons();
 }
 
 function syncSummaryPeriodOptions() {
@@ -2790,6 +2846,10 @@ function syncSummaryPeriodAndRender() {
 
 function fillSelect(id, values, placeholder = null) {
   const el = document.getElementById(id);
+  if (!el) {
+    console.warn(`fillSelect: #${id} no existe`);
+    return;
+  }
   const current = el.value;
 
   const options = [
@@ -2860,7 +2920,7 @@ function renderAll() {
   syncInvestmentEstimateModeUi();
   renderSyncSettingsPanel();
   renderSettingsPanelTabs();
-  lucide.createIcons();
+  refreshIcons();
 }
 
 function getPersonalCardTotal() {
@@ -2943,7 +3003,7 @@ function renderMoneySummary(summary) {
   document.querySelectorAll("[data-account-group-id]").forEach(btn => {
     btn.addEventListener("click", () => openAccountGroupDialog(btn.dataset.accountGroupId));
   });
-  lucide.createIcons();
+  refreshIcons();
 
   document.getElementById("bookMoneyTotal").textContent = money(summary.totalMoneyBook);
   document.getElementById("realizedMoneyTotal").textContent = `${money(summary.totalMoneyRealized)} • ${pct(summary.profitLossPct)} • ${money(summary.profitLoss)}`;
@@ -3035,7 +3095,7 @@ function openMoneyDetail(mode) {
   if (isBank) renderBankDetail(summary);
   document.getElementById("moneyDialog").showModal();
   renderMoneyCharts(summary);
-  lucide.createIcons();
+  refreshIcons();
 }
 
 function renderBankRows() {
@@ -3209,10 +3269,16 @@ function promptFutureMovementAccountResolution({ account, count, otherAccounts }
     ].join("");
     const form = document.getElementById("futureMovementAccountForm");
     const closeBtn = document.getElementById("closeFutureMovementAccountBtn");
+    // Esc dispara "close" sin pasar por los botones: hay que resolver también ahí
+    // para no dejar la promesa (y a deleteAccountManage) colgada para siempre.
+    let settled = false;
     const settle = result => {
+      if (settled) return;
+      settled = true;
       form.removeEventListener("submit", onSubmit);
       closeBtn.removeEventListener("click", onCancel);
-      dialog.close();
+      dialog.removeEventListener("close", onClose);
+      if (dialog.open) dialog.close();
       resolve(result);
     };
     const onSubmit = event => {
@@ -3221,8 +3287,10 @@ function promptFutureMovementAccountResolution({ account, count, otherAccounts }
       settle(value === "__delete__" ? { mode: "delete" } : { mode: "reassign", newAccount: value });
     };
     const onCancel = () => settle(null);
+    const onClose = () => settle(null);
     form.addEventListener("submit", onSubmit);
     closeBtn.addEventListener("click", onCancel);
+    dialog.addEventListener("close", onClose);
     dialog.showModal();
   });
 }
@@ -3368,7 +3436,7 @@ function renderBankDetail(summary) {
   accountsPanel.querySelectorAll("[data-bank-manage-index]").forEach(btn => {
     btn.addEventListener("click", () => openAccountManageDialog(Number(btn.dataset.bankManageIndex)));
   });
-  lucide.createIcons();
+  refreshIcons();
 }
 
 function bankCheckText(accountsAdjustment) {
@@ -3380,8 +3448,9 @@ function bankCheckText(accountsAdjustment) {
 
 function renderMovements() {
   const drill = state.movementDrill;
-  document.querySelector("#movimientos .movement-toolbar").classList.toggle("hidden", drill.level === "years");
-  document.getElementById("movementBackBtn").style.visibility = drill.level === "years" ? "hidden" : "visible";
+  document.querySelector("#movimientos .movement-toolbar")?.classList.toggle("hidden", drill.level === "years");
+  const backBtn = document.getElementById("movementBackBtn");
+  if (backBtn) backBtn.style.visibility = drill.level === "years" ? "hidden" : "visible";
   syncMovementBulkButtons();
   if (drill.level === "years") renderMovementYears();
   if (drill.level === "months") renderMovementMonths(drill.year);
@@ -3552,7 +3621,7 @@ function syncMovementBulkButtons() {
   editBtn.innerHTML = state.movementBulkEdit ? `<i data-lucide="check"></i>` : `<i data-lucide="square-pen"></i> Editar`;
   const count = selectedMovementIndexes().length;
   if (deleteBtn.classList.contains("saving")) {
-    lucide.createIcons();
+    refreshIcons();
     return;
   }
   deleteBtn.disabled = count === 0;
@@ -3560,7 +3629,7 @@ function syncMovementBulkButtons() {
   deleteBtn.setAttribute("aria-label", count ? `Borrar ${count} movimientos seleccionados` : "Borrar movimientos seleccionados");
   deleteBtn.title = count ? `Borrar ${count}` : "Borrar";
   deleteBtn.innerHTML = `<i data-lucide="trash-2"></i>`;
-  lucide.createIcons();
+  refreshIcons();
 }
 
 function selectedMovementIndexes() {
@@ -4157,6 +4226,9 @@ async function submitMovement(event) {
     setNotice("Configura Apps Script antes de enviar movimientos.", "warn");
     return;
   }
+  // Evita el doble envío: un segundo submit (doble toque o botón de navegación)
+  // mientras el primero sigue en marcha duplicaría el movimiento y el ajuste de saldo.
+  if (state.submittingMovement) return;
   const isTransfer = normalizeType(document.getElementById("formType").value) === "transferencia";
   const isRecurring = isRecurringMode();
   const btn = document.getElementById("submitMovement");
@@ -4247,6 +4319,7 @@ async function submitMovement(event) {
       );
     } else {
       const movement = movementFromForm();
+      if (!movement) throw new Error("revisa la fecha y el importe del movimiento");
       const future = movement.date > endOfToday();
       const isInvestmentRegistration = !future && (
         isInvestmentMovement(movement)
@@ -4633,7 +4706,7 @@ function showMovementPopup(title, movement, account = '', extra = '') {
   document.getElementById('movementPopupTitle').textContent = title;
   document.getElementById('movementPopupBody').innerHTML = movementPopupHtml(movement, account, extra);
   if (!dialog.open) dialog.showModal();
-  lucide.createIcons();
+  refreshIcons();
 }
 
 function loadInvestmentGoals() {
@@ -4797,6 +4870,14 @@ function promptMovementDeleteAccount({ title, amount, onConfirm, onCancel }) {
   select.innerHTML = state.banks.map(bank => `<option value="${escapeAttr(bank.cuenta)}">${escapeHtml(bank.cuenta)}</option>`).join("");
   dialog.__onConfirm = onConfirm;
   dialog.__onCancel = onCancel;
+  // Esc cierra el diálogo sin pasar por los botones: si queda un onCancel pendiente
+  // hay que ejecutarlo para no dejar al caller con el botón en "guardando" para siempre.
+  dialog.addEventListener("close", () => {
+    const pendingCancel = dialog.__onCancel;
+    dialog.__onConfirm = null;
+    dialog.__onCancel = null;
+    if (typeof pendingCancel === "function") pendingCancel();
+  }, { once: true });
   dialog.showModal();
 }
 
@@ -5289,6 +5370,10 @@ function investmentTypes() {
 
 function renderTable(id, headers, rows) {
   const table = document.getElementById(id);
+  if (!table) {
+    console.warn(`renderTable: #${id} no existe`);
+    return;
+  }
   if (!rows.length) {
     table.innerHTML = `<tbody><tr><td class="empty" colspan="${headers.length}">Sin datos para mostrar.</td></tr></tbody>`;
     return;
@@ -5297,8 +5382,15 @@ function renderTable(id, headers, rows) {
 }
 
 function upsertChart(canvasId, type, data, options) {
+  // Chart.js viene de un CDN: si no cargó, mejor quedarse sin gráfica que romper la vista.
+  if (typeof Chart === "undefined") {
+    console.warn(`Chart.js no disponible; se omite la gráfica ${canvasId}`);
+    return;
+  }
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return;
   if (state.charts[canvasId]) state.charts[canvasId].destroy();
-  state.charts[canvasId] = new Chart(document.getElementById(canvasId), { type, data, options });
+  state.charts[canvasId] = new Chart(canvas, { type, data, options });
 }
 
 function compactChartOptions(title, options = {}) {
@@ -5413,7 +5505,7 @@ function openInvestmentCategoryDialog() {
   investmentTypes().forEach(type => addInvestmentCategoryRow(type));
   updateInvestmentCategoryMoveButtons();
   document.getElementById("investmentCategoriesDialog").showModal();
-  lucide.createIcons();
+  refreshIcons();
 }
 
 function updateInvestmentCategoryMoveButtons() {
@@ -5464,7 +5556,7 @@ function addInvestmentCategoryRow(value = "") {
   });
   rows.appendChild(row);
   updateInvestmentCategoryMoveButtons();
-  lucide.createIcons();
+  refreshIcons();
 }
 
 async function saveInvestmentCategoriesFromDialog(event) {
@@ -5535,7 +5627,7 @@ function renderInvestmentBreakdownTable(summary) {
     const current = summary.valueByType[type] || 0;
     const dailyPrevious = summary.dailyPreviousByType[type] || 0;
     const dailyPct = dailyPrevious ? (current - dailyPrevious) / dailyPrevious : 0;
-    return `<tr class="clickable-row" data-investment-type="${escapeAttr(type)}"><td class="text-clip col-type">${type}</td><td class="amount col-money">${money(invested)}</td><td class="amount col-money">${money(current)}</td><td class="amount col-money">${amountCell(current - invested)}</td><td class="amount col-pct">${pctCell(gainPct(current, invested))}</td><td class="amount col-pct">${pctCell(dailyPct)}</td></tr>`;
+    return `<tr class="clickable-row" data-investment-type="${escapeAttr(type)}"><td class="text-clip col-type">${escapeHtml(type)}</td><td class="amount col-money">${money(invested)}</td><td class="amount col-money">${money(current)}</td><td class="amount col-money">${amountCell(current - invested)}</td><td class="amount col-pct">${pctCell(gainPct(current, invested))}</td><td class="amount col-pct">${pctCell(dailyPct)}</td></tr>`;
   }).join("");
   document.getElementById("investmentBreakdownTable").innerHTML = `<colgroup><col class="col-type"><col class="col-money"><col class="col-money"><col class="col-money"><col class="col-pct"><col class="col-pct"></colgroup><thead><tr><th class="col-type"></th><th class="col-money">Cost</th><th class="col-money">Value</th><th class="col-money">Gain</th><th class="col-pct">%Gain</th><th class="col-pct">%d</th></tr></thead><tbody>${rows}</tbody>`;
   document.querySelectorAll("#investmentBreakdownTable [data-investment-type]").forEach(row => row.addEventListener("click", () => openInvestmentOverview(row.dataset.investmentType)));
@@ -5772,7 +5864,7 @@ function renderInvestments() {
 function openInvestmentEstimateRulesDialog() {
   renderInvestmentEstimateRulesTable();
   document.getElementById("investmentEstimateRulesDialog")?.showModal();
-  lucide.createIcons();
+  refreshIcons();
 }
 
 function blankInvestmentEstimateRule() {
@@ -5823,7 +5915,7 @@ function renderInvestmentEstimateRulesTable() {
       renderInvestmentEstimateRulesTable();
     });
   });
-  lucide.createIcons();
+  refreshIcons();
 }
 
 function formatOptionalInput(value) {
@@ -6101,7 +6193,7 @@ function openInvestmentAllocationDialog(prompt) {
     renderInvestmentAllocationFallbackRow(amount, movement);
     setNotice(lineMessage("Se abrió un reparto editable sin precargar las reglas.", error.message), "warn");
   }
-  lucide.createIcons();
+  refreshIcons();
 }
 
 function renderInvestmentAllocationFallbackRow(amount, movement) {
@@ -6250,7 +6342,7 @@ function renderInvestmentAllocationTable(rows = []) {
     updateInvestmentAllocationTotals();
   }));
   updateInvestmentAllocationTotals();
-  lucide.createIcons();
+  refreshIcons();
 }
 
 function investmentAllocationRowHtml(row) {
@@ -6332,7 +6424,9 @@ function updateInvestmentAllocationTotals() {
 
 function addExistingInvestmentAllocationRow() {
   const select = document.getElementById("investmentAllocationExistingSelect");
-  const indexes = JSON.parse(select?.dataset.candidateIndexes || "[]");
+  let indexes = [];
+  try { indexes = JSON.parse(select?.dataset.candidateIndexes || "[]"); } catch { indexes = []; }
+  if (!Array.isArray(indexes)) indexes = [];
   const investment = state.investments[indexes[Number(select?.value || 0)]];
   if (!investment) return;
   const remaining = investmentAllocationRemainingAmount();
@@ -6361,7 +6455,7 @@ function appendInvestmentAllocationRow(row) {
   tr.querySelectorAll("input, select").forEach(input => input.addEventListener("input", handleInvestmentAllocationInput));
   tr.querySelector("[data-allocation-delete]")?.addEventListener("click", () => { tr.remove(); updateInvestmentAllocationTotals(); });
   updateInvestmentAllocationTotals();
-  lucide.createIcons();
+  refreshIcons();
 }
 
 function investmentAllocationRemainingAmount() {
@@ -6413,18 +6507,27 @@ async function saveInvestmentAllocationPrompt(event) {
 }
 
 function loadEvolutionRange() {
+  const fallback = { start: "2026-01", end: "2026-12", snapshotDay: 31, income: 1800, expenses: 1250, investment: 750 };
   try {
     const saved = JSON.parse(localStorage.getItem(EVOLUTION_RANGE_KEY) || "{}");
+    // Los meses guardados se validan: un valor corrupto ("20x6-99") haría iterar
+    // monthsBetween miles de veces (o para siempre) y congelaría la pestaña.
+    const validMonth = value => /^\d{4}-(0[1-9]|1[0-2])$/.test(String(value || ""));
+    let start = validMonth(saved.start) ? saved.start : fallback.start;
+    let end = validMonth(saved.end) ? saved.end : fallback.end;
+    if (compareMonthKeys(start, end) > 0) [start, end] = [end, start];
+    // Tope de 120 meses: por encima el render de evolución se vuelve inutilizable.
+    if (monthsBetween(start, end).length > 120) end = addMonthsKey(start, 119);
     return {
-      start: saved.start || "2026-01",
-      end: saved.end || "2026-12",
+      start,
+      end,
       snapshotDay: Number(saved.snapshotDay ?? 31),
       income: Number(saved.income ?? 1800),
       expenses: Number(saved.expenses ?? 1250),
       investment: Number(saved.investment ?? 750)
     };
   } catch {
-    return { start: "2026-01", end: "2026-12", snapshotDay: 31, income: 1800, expenses: 1250, investment: 750 };
+    return fallback;
   }
 }
 
