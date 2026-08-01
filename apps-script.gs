@@ -634,8 +634,13 @@ function doPost(e) {
     forgetClientOpFailure_(payload.clientOpId || '');
     if (payload.action === 'addMovement') {
       addMovement_(Object.assign({}, payload.movement || {}, { cuenta: payload.account || payload.movement && payload.movement.cuenta || '' }), payload.sheetName || DEFAULT_MOVEMENT_SHEET);
-      adjustInvestmentCostFromMovement_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.dataSheet || 'Datos', payload.investmentSheet || DEFAULT_INVESTMENT_SHEET, payload.sheetName || DEFAULT_MOVEMENT_SHEET, payload.movement, 1);
-      syncInvestmentTotalsSheet_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.dataSheet || 'Datos', payload.investmentSheet || DEFAULT_INVESTMENT_SHEET, payload.sheetName || DEFAULT_MOVEMENT_SHEET);
+      // Solo los movimientos de inversión cambian el coste y, con él, la hoja de totales.
+      // Para el resto, resincronizarla era trabajo caro tirado — y ahora que las altas
+      // periódicas llegan de una en una, sería ese coste multiplicado por cada fecha.
+      if (isInvestmentMovement_(payload.movement)) {
+        adjustInvestmentCostFromMovement_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.dataSheet || 'Datos', payload.investmentSheet || DEFAULT_INVESTMENT_SHEET, payload.sheetName || DEFAULT_MOVEMENT_SHEET, payload.movement, 1);
+        syncInvestmentTotalsSheet_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.dataSheet || 'Datos', payload.investmentSheet || DEFAULT_INVESTMENT_SHEET, payload.sheetName || DEFAULT_MOVEMENT_SHEET);
+      }
       if (payload.account) adjustBank_(payload.bankSheet || DEFAULT_BANK_SHEET, payload.account, Number(payload.movement && (payload.movement.amount || payload.movement.importe) || 0));
       return finishPost_(pendingId, payload, { ok: true });
     }
@@ -2622,6 +2627,12 @@ function readInvestmentTotals_(sheetName) {
       order: Number(row[8] || index + 1)
     }))
     .filter(row => row.tipo);
+}
+
+// Guardia barata: solo un movimiento de tipo "Inversión" puede alterar el coste y, por
+// tanto, la hoja de totales. Comprobarlo evita el trabajo caro en el caso general.
+function isInvestmentMovement_(movement) {
+  return Boolean(movement) && normalizeType_(movement.tipo) === 'inversion';
 }
 
 function adjustInvestmentCostFromMovement_(totalsSheetName, dataSheetName, investmentSheetName, movementSheetName, movement, sign) {

@@ -1707,8 +1707,33 @@ function writeSentHistory(history) {
   localStorage.setItem(SENT_HISTORY_KEY, JSON.stringify(next));
 }
 
-function rememberSentOp(payload) {
+// Las operaciones de un mismo lote se acumulan en UNA entrada del historial. Si no, una
+// recurrencia de 52 fechas llenaría "Enviados hoy" con 52 filas y, como writeSentHistory
+// recorta a las últimas 100, empezaría a tirar entradas anteriores en silencio.
+function rememberSentOp(payload, item = null) {
   const history = readSentHistory();
+  if (item?.batchId) {
+    const existing = history.find(entry => entry && entry.batchId === item.batchId && entry.day === todayKey());
+    if (existing) {
+      existing.payloads = (existing.payloads || []).concat([payload]);
+      existing.createdAt = Date.now();
+      writeSentHistory(history);
+      return;
+    }
+    history.push({
+      id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      createdAt: Date.now(),
+      day: todayKey(),
+      status: "ok",
+      batchId: item.batchId,
+      batchLabel: item.batchLabel || opLabel(payload?.action),
+      batchSize: Number(item.batchSize || 1),
+      payloads: [payload],
+      payload
+    });
+    writeSentHistory(history);
+    return;
+  }
   history.push({ id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, createdAt: Date.now(), day: todayKey(), status: "ok", payload });
   writeSentHistory(history);
 }
@@ -1749,7 +1774,10 @@ function opLabel(action, fallback = "Operación") {
   return OP_LABELS[action] || action || fallback;
 }
 
-function queueActionStatus(payload = {}) {
+function queueActionStatus(payload = {}, item = null) {
+  if (item?.batchId && Number(item.batchSize) > 1) {
+    return `Enviando ${Number(item.batchIndex || 0) + 1} de ${item.batchSize}\n${item.batchLabel || opLabel(payload.action, "cambio")}`;
+  }
   return `Enviando: ${opLabel(payload.action, "cambio")}\nSincronizando Google Sheets`;
 }
 
@@ -1765,23 +1793,61 @@ function renderPendingOpsBadge() {
   renderSyncSettingsPanel();
 }
 
+function opStatusText(op) {
+  const attempts = Number(op.attempts || 0);
+  if (op.status === "error") return "Error (no se reintenta solo)";
+  if (op.status === "sending") return "Enviando";
+  if (op.status === "checking") return "Confirmando";
+  if (attempts) return `Pendiente (reintento ${attempts + 1} en ${Math.max(1, Math.round((Number(op.nextAttemptAt || 0) - Date.now()) / 1000))} s)`;
+  return "Pendiente (auto cada 5 s)";
+}
+
+// Un alta periódica son N operaciones en la cola. Se agrupan por batchId para que
+// Conexión muestre una sola fila con su progreso en vez de 52 filas iguales.
+function groupPendingOps(queue = []) {
+  const groups = [];
+  const byBatch = new Map();
+  queue.forEach(op => {
+    if (!op.batchId) {
+      groups.push({ key: op.id, retryId: op.id, label: opLabel(op.payload?.action), ops: [op] });
+      return;
+    }
+    let group = byBatch.get(op.batchId);
+    if (!group) {
+      group = { key: op.batchId, retryId: op.batchId, label: op.batchLabel || opLabel(op.payload?.action), ops: [] };
+      byBatch.set(op.batchId, group);
+      groups.push(group);
+    }
+    group.ops.push(op);
+  });
+  return groups;
+}
+
+function describePendingGroup(group) {
+  const total = Number(group.ops[0]?.batchSize || group.ops.length);
+  const failed = group.ops.filter(op => op.status === "error");
+  const active = group.ops.find(op => op.status === "sending" || op.status === "checking") || group.ops[0];
+  if (group.ops.length === 1 && !group.ops[0].batchId) {
+    return { text: group.ops[0].error ? `${opStatusText(group.ops[0])}: ${group.ops[0].error}` : opStatusText(group.ops[0]), failed: failed.length };
+  }
+  const done = Math.max(0, total - group.ops.length);
+  const progress = `${Math.min(done + 1, total)} de ${total}`;
+  const base = `${opStatusText(active)} ${progress}`;
+  const failedNote = failed.length ? ` · ${failed.length} con error` : "";
+  const detail = active.error ? `: ${active.error}` : "";
+  return { text: `${base}${failedNote}${detail}`, failed: failed.length };
+}
+
 function renderPendingOpsTable(queue = readOpQueue()) {
   const table = document.getElementById("pendingOpsTable");
   if (!table) return;
-  const rows = queue.map((op, idx) => {
-    const attempts = Number(op.attempts || 0);
-    const statusText = op.status === "error"
-      ? "Error (no se reintenta solo)"
-      : op.status === "sending" ? "Enviando"
-        : op.status === "checking" ? "Confirmando"
-          : attempts ? `Pendiente (reintento ${attempts + 1} en ${Math.max(1, Math.round((Number(op.nextAttemptAt || 0) - Date.now()) / 1000))} s)`
-            : "Pendiente (auto cada 5 s)";
-    const detail = op.error ? `${statusText}: ${op.error}` : statusText;
-    return `<tr${op.status === "error" ? ` class="op-error-row"` : ""}>
+  const rows = groupPendingOps(queue).map((group, idx) => {
+    const { text, failed } = describePendingGroup(group);
+    return `<tr${failed ? ` class="op-error-row"` : ""}>
       <td>${idx + 1}</td>
-      <td>${escapeHtml(opLabel(op.payload?.action))}</td>
-      <td>${escapeHtml(detail)}</td>
-      <td><button class="mini-edit-btn" type="button" data-retry-op="${escapeAttr(op.id)}">Reintentar ahora</button></td>
+      <td>${escapeHtml(group.label)}</td>
+      <td>${escapeHtml(text)}</td>
+      <td><button class="mini-edit-btn" type="button" data-retry-op="${escapeAttr(group.retryId)}">Reintentar ahora</button></td>
     </tr>`;
   }).join("");
   table.innerHTML = `<thead><tr><th>#</th><th>Tipo</th><th>Estado</th><th></th></tr></thead><tbody>${rows || `<tr><td class="empty" colspan="4">Sin peticiones pendientes.</td></tr>`}</tbody>`;
@@ -1796,7 +1862,7 @@ function renderSentOpsTable() {
   const table = document.getElementById("sentOpsTable");
   if (!table) return;
   const rows = sentOpsToday()
-    .map((op, idx) => `<tr class="sent-row"><td>${idx + 1}</td><td>${escapeHtml(opLabel(op.payload?.action))}</td><td>Enviado hoy</td><td></td></tr>`)
+    .map((op, idx) => `<tr class="sent-row"><td>${idx + 1}</td><td>${escapeHtml(sentEntryLabel(op))}</td><td>Enviado hoy</td><td></td></tr>`)
     .join("");
   table.innerHTML = `<thead><tr><th>#</th><th>Tipo</th><th>Estado</th><th></th></tr></thead><tbody><tr class="table-section-row"><td colspan="4"></td></tr>${rows || `<tr><td class="empty" colspan="4">Sin envíos de hoy.</td></tr>`}</tbody>`;
   const undoBtn = document.getElementById("undoSentOpsBtn");
@@ -1823,6 +1889,26 @@ function undoMovementInfo(serialized) {
     formatDate(movement.date)
   ].filter(Boolean);
   return { lines, movement };
+}
+
+function sentEntryLabel(entry = {}) {
+  return entry.batchId ? (entry.batchLabel || "Envío múltiple") : opLabel(entry.payload?.action);
+}
+
+// Payloads que componen una entrada del historial: uno suelto, o los N de un lote.
+function sentEntryPayloads(entry = {}) {
+  if (entry.batchId) return (entry.payloads || []).filter(Boolean);
+  return entry.payload ? [entry.payload] : [];
+}
+
+function describeSentEntry(entry = {}) {
+  if (!entry.batchId) return describeSentOp(entry.payload || {});
+  const payloads = sentEntryPayloads(entry);
+  const total = Number(entry.batchSize || payloads.length);
+  const lines = [`${payloads.length} de ${total} ${plural(total, "movimiento", "movimientos")}`];
+  const first = payloads[0];
+  if (first) lines.push(...describeSentOp(first).slice(0, 2));
+  return lines;
 }
 
 function describeSentOp(payload = {}) {
@@ -1937,14 +2023,14 @@ function renderUndoDialogList() {
   }
   container.innerHTML = entries.map(entry => {
     const payload = entry.payload || {};
-    const reversible = Boolean(buildUndo(payload));
-    const detail = describeSentOp(payload).map(line => `<span>${escapeHtml(line)}</span>`).join("");
+    const reversible = sentEntryUndos(entry).length > 0;
+    const detail = describeSentEntry(entry).map(line => `<span>${escapeHtml(line)}</span>`).join("");
     const action = reversible
       ? `<button class="btn danger undo-row-btn" type="button" data-undo-id="${escapeAttr(entry.id)}"><i data-lucide="undo-2"></i> Deshacer</button>`
       : `<span class="undo-reason">${escapeHtml(undoReasonFor(payload.action))}</span>`;
     return `<div class="undo-item${reversible ? "" : " not-reversible"}">
       <div class="undo-item-main">
-        <strong>${escapeHtml(opLabel(payload.action))}</strong>
+        <strong>${escapeHtml(sentEntryLabel(entry))}</strong>
         <div class="undo-item-detail">${detail}</div>
       </div>
       <div class="undo-item-action">${action}</div>
@@ -1955,22 +2041,35 @@ function renderUndoDialogList() {
   if (window.lucide?.createIcons) lucide.createIcons();
 }
 
+// Inversas de una entrada del historial. Solo se ofrece deshacer si TODOS sus elementos
+// son reversibles: deshacer medio lote dejaría los datos peor que antes.
+function sentEntryUndos(entry = {}) {
+  const payloads = sentEntryPayloads(entry);
+  if (!payloads.length) return [];
+  const undos = payloads.map(payload => buildUndo(payload));
+  return undos.every(Boolean) ? undos : [];
+}
+
 async function undoSentOp(entryId) {
   const entry = readSentHistory().find(item => item && item.id === entryId);
   if (!entry) return;
-  const undo = buildUndo(entry.payload || {});
-  if (!undo) {
+  const undos = sentEntryUndos(entry);
+  if (!undos.length) {
     setNotice("Esta operación no se puede deshacer automáticamente.", "warn");
     return;
   }
-  const label = opLabel(entry.payload?.action);
-  const confirmed = await confirmDialog(`¿Deshacer "${label}"? Se encolará la operación inversa y se sincronizará con Sheets.`, "Deshacer");
+  const label = sentEntryLabel(entry);
+  const confirmed = await confirmDialog(
+    undos.length > 1
+      ? `¿Deshacer "${label}" (${undos.length} ${plural(undos.length, "movimiento", "movimientos")})? Se encolarán las operaciones inversas y se sincronizarán con Sheets.`
+      : `¿Deshacer "${label}"? Se encolará la operación inversa y se sincronizará con Sheets.`,
+    "Deshacer");
   if (!confirmed) return;
   try {
-    undo.mirror();
+    undos.forEach(undo => undo.mirror());
     // Quitamos la entrada del histórico de hoy para no deshacerla dos veces.
     writeSentHistory(readSentHistory().filter(item => item && item.id !== entryId));
-    queueOp(undo.inverse);
+    queueOps(undos.map(undo => undo.inverse), { label: `Deshacer ${label}` });
     logSyncEvent(`Deshacer: ${label}.`, "");
     renderSummary();
     renderDataScope("movements");
@@ -2017,10 +2116,6 @@ function sleep(ms) {
   return new Promise(resolve => window.setTimeout(resolve, ms));
 }
 
-function queuedOpLabel(payload = {}) {
-  return opLabel(payload.action);
-}
-
 async function recoverInterruptedSendingOps() {
   const queue = readOpQueue();
   const sending = queue.filter(op => op.status === "sending");
@@ -2033,7 +2128,7 @@ async function recoverInterruptedSendingOps() {
         const payload = await fetchAppsScriptData({ action: "checkClientOp", clientOpId });
         if (payload?.ok && payload.completed) {
           logSyncEvent(`Envío interrumpido ya confirmado: ${op.payload?.action || "cambio"}.`, "ok");
-          rememberSentOp(op.payload);
+          rememberSentOp(op.payload, op);
           const synced = queuePayloadSections(op.payload);
           markCacheSectionsSynced(synced);
           writeDataCache({ syncedSections: synced });
@@ -2060,18 +2155,49 @@ async function recoverInterruptedSendingOps() {
 }
 
 function queueOp(payload) {
+  queueOps([payload]);
+}
+
+// Encola varias operaciones como un grupo. Las altas periódicas ya no viajan en un único
+// payload gigante (que WebKit rechazaba de plano con "Load failed"): se mandan de una en
+// una. El batchId permite mostrarlas como una sola fila con progreso en vez de 52.
+function queueOps(payloads, { label = "" } = {}) {
+  const list = (payloads || []).filter(Boolean);
+  if (!list.length) return null;
   const queue = readOpQueue();
-  const queuedPayload = withClientOpId(payload || {});
-  queue.push({ id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, createdAt: Date.now(), status: "queued", attempts: 0, nextAttemptAt: 0, payload: queuedPayload });
-  logSyncEvent(`Operación en cola: ${queuedPayload.action || "cambio"}.`, "");
-  markCacheSectionsDirty(queuePayloadSections(queuedPayload));
-  writeDataCache({ dirtySections: queuePayloadSections(queuedPayload) });
+  const batchId = list.length > 1 ? createSid("batch") : "";
+  const batchLabel = label || opLabel(list[0].action);
+  const sections = new Set();
+  const createdAt = Date.now();
+  list.forEach((payload, index) => {
+    const queuedPayload = withClientOpId(payload);
+    queuePayloadSections(queuedPayload).forEach(section => sections.add(section));
+    queue.push({
+      id: `${createdAt}-${index}-${Math.random().toString(16).slice(2)}`,
+      createdAt,
+      status: "queued",
+      attempts: 0,
+      nextAttemptAt: 0,
+      batchId,
+      batchLabel,
+      batchIndex: index,
+      batchSize: list.length,
+      payload: queuedPayload
+    });
+    if (payload.action === "saveInvestments") rememberPendingSnapshot("investments");
+    if (payload.action === "saveBanks") rememberPendingSnapshot("banks");
+    if (payload.action === "saveInvestmentGoals") rememberPendingSnapshot("investmentGoals");
+  });
+  logSyncEvent(list.length > 1
+    ? `${list.length} operaciones en cola: ${batchLabel}.`
+    : `Operación en cola: ${list[0].action || "cambio"}.`, "");
+  const dirtySections = [...sections];
+  markCacheSectionsDirty(dirtySections);
+  writeDataCache({ dirtySections });
   writeOpQueue(queue);
-  if (payload?.action === "saveInvestments") rememberPendingSnapshot("investments");
-  if (payload?.action === "saveBanks") rememberPendingSnapshot("banks");
-  if (payload?.action === "saveInvestmentGoals") rememberPendingSnapshot("investmentGoals");
-  setTimeout(() => sendQueuedOp(queue[queue.length - 1].id), 0);
   ensureOpQueuePoller();
+  setTimeout(() => runOpQueue(), 0);
+  return batchId;
 }
 
 const OP_POLL_INTERVAL_MS = 5000;
@@ -2083,9 +2209,37 @@ const OP_MAX_ATTEMPTS = 8;
 let opQueuePollerHandle = null;
 const opsInFlight = new Set();
 
+let opRunnerActive = false;
+
 function ensureOpQueuePoller() {
   if (opQueuePollerHandle) return;
   opQueuePollerHandle = window.setInterval(() => pollPendingOps(), OP_POLL_INTERVAL_MS);
+}
+
+// Primera operación lista para trabajar, en orden de llegada. Salta las detenidas en
+// "error" y las que están esperando su backoff, para que una fecha problemática no
+// bloquee al resto del grupo.
+function nextActionableOp(queue = readOpQueue(), now = Date.now()) {
+  return queue.find(op => isOpActionable(op, now) && !opsInFlight.has(op.id)) || null;
+}
+
+// Procesa la cola ESTRICTAMENTE de una en una. Antes se lanzaban todas las pendientes en
+// paralelo: con una recurrencia de decenas de fechas eso son decenas de peticiones
+// simultáneas contra Apps Script, que las serializa detrás del script lock y acaba
+// atascándose. En serie cada envío es pequeño, independiente y reanudable.
+async function runOpQueue() {
+  if (opRunnerActive) return;
+  if (!state.config.scriptUrl) return;
+  opRunnerActive = true;
+  try {
+    let op;
+    while ((op = nextActionableOp())) {
+      if (op.status === "sending" || op.status === "checking") await checkQueuedOp(op.id);
+      else await sendQueuedOp(op.id);
+    }
+  } finally {
+    opRunnerActive = false;
+  }
 }
 
 function opBackoffMs(attempts) {
@@ -2123,21 +2277,9 @@ async function pollPendingOps() {
   const queue = readOpQueue();
   const pending = queue.filter(op => op.status !== "done" && op.status !== "error");
   if (!pending.length) return;
-  const now = Date.now();
-  let waiting = false;
-  for (const op of pending) {
-    if (!isOpActionable(op, now)) {
-      waiting = true;
-      continue;
-    }
-    if (op.status === "sending" || op.status === "checking") {
-      checkQueuedOp(op.id);
-    } else {
-      sendQueuedOp(op.id);
-    }
-  }
   // Refresca la cuenta atrás del próximo reintento en la tabla de Conexión.
-  if (waiting) renderPendingOpsTable();
+  renderPendingOpsTable(queue);
+  await runOpQueue();
 }
 
 function markOpStatus(opId, patch) {
@@ -2152,7 +2294,7 @@ function completeQueuedOp(item) {
   const next = readOpQueue().filter(op => op.id !== item.id);
   writeOpQueue(next);
   logSyncEvent(`Operación confirmada: ${item.payload?.action || "cambio"}.`, "ok");
-  rememberSentOp(item.payload);
+  rememberSentOp(item.payload, item);
   if (item.payload?.action === "saveInvestments") dropPendingSections("investments");
   if (item.payload?.action === "saveBanks") dropPendingSections("banks");
   if (item.payload?.action === "saveInvestmentGoals") dropPendingSections("investmentGoals");
@@ -2176,14 +2318,17 @@ async function sendQueuedOp(opId) {
   opsInFlight.add(opId);
   ensureOpQueuePoller();
   markOpStatus(opId, { status: "sending", error: null, nextAttemptAt: 0 });
-  setSyncStatus(queueActionStatus(item.payload), "");
+  setSyncStatus(queueActionStatus(item.payload, item), "");
   try {
     await fireAppsScript(item.payload);
-    markOpStatus(opId, { status: "checking", error: null, nextAttemptAt: 0, lastSentAt: Date.now() });
+    // Enviada: se deja madurar antes de confirmar (Apps Script necesita un momento para
+    // registrar la operación) y así el runner pasa a la siguiente en vez de bloquearse
+    // esperando la confirmación de esta.
+    markOpStatus(opId, { status: "checking", error: null, nextAttemptAt: Date.now() + OP_POLL_INTERVAL_MS, lastSentAt: Date.now() });
   } catch (error) {
     markOpStatus(opId, { lastSentAt: Date.now() });
     failQueuedOp(opId, error.message || error);
-    logSyncEvent(`No se pudo enviar (se reintentará): ${item.payload?.action || "cambio"}.`, "warn", error.message || String(error));
+    logSyncEvent(`No se pudo enviar (se reintentará): ${item.payload?.action || "cambio"}.`, "warn", `${error.name || "Error"}: ${error.message || String(error)}`);
   } finally {
     opsInFlight.delete(opId);
     renderPendingOpsBadge();
@@ -2212,9 +2357,11 @@ async function checkQueuedOp(opId) {
       setSyncStatus("Error al enviar\nRevisa Ajustes › Conexión", "warn");
       return;
     }
-    // El servidor sigue trabajando en ella: no cuenta como intento fallido.
+    // El servidor sigue trabajando en ella: no cuenta como intento fallido, pero hay que
+    // dejarla en espera hasta el siguiente ciclo. Sin nextAttemptAt, runOpQueue la
+    // volvería a elegir de inmediato y el bucle giraría en vacío consultando sin parar.
     if (result?.ok && result.pending) {
-      markOpStatus(opId, { status: "checking", error: null, nextAttemptAt: 0 });
+      markOpStatus(opId, { status: "checking", error: null, nextAttemptAt: Date.now() + OP_POLL_INTERVAL_MS });
       return;
     }
     failQueuedOp(opId, "Sin confirmación todavía; se reintentará.");
@@ -2228,19 +2375,18 @@ async function checkQueuedOp(opId) {
 
 function kickOpQueue() {
   ensureOpQueuePoller();
-  const now = Date.now();
-  const queue = readOpQueue().filter(op => isOpActionable(op, now));
-  queue.filter(op => op.status === "queued" || op.status === "retry").forEach(op => sendQueuedOp(op.id));
-  queue.filter(op => op.status === "checking").forEach(op => checkQueuedOp(op.id));
+  runOpQueue();
 }
 
 // Reintento manual ("Reintentar ahora"): reactiva también las operaciones detenidas en
-// "error" y reinicia el contador de intentos y el backoff.
+// "error" y reinicia el contador de intentos y el backoff. El identificador puede ser el
+// de una operación suelta o el batchId de un grupo entero.
 async function retryPendingOps(opId = null, { recoverSending = true } = {}) {
   if (recoverSending) await recoverInterruptedSendingOps();
   const queue = readOpQueue();
-  const targets = opId ? queue.filter(op => op.id === opId) : queue.filter(op => op.status !== "done");
-  const wasChecking = new Map(targets.map(op => [op.id, op.status === "checking"]));
+  const targets = opId
+    ? queue.filter(op => op.id === opId || (op.batchId && op.batchId === opId))
+    : queue.filter(op => op.status !== "done");
   targets.forEach(op => {
     op.attempts = 0;
     op.nextAttemptAt = 0;
@@ -2248,7 +2394,7 @@ async function retryPendingOps(opId = null, { recoverSending = true } = {}) {
   });
   writeOpQueue(queue);
   ensureOpQueuePoller();
-  await Promise.all(targets.map(op => wasChecking.get(op.id) ? checkQueuedOp(op.id) : sendQueuedOp(op.id)));
+  await runOpQueue();
 }
 
 async function flushOpQueueBeforeDownload({ showProgress = false } = {}) {
@@ -2259,8 +2405,11 @@ async function flushOpQueueBeforeDownload({ showProgress = false } = {}) {
   await retryPendingOps();
   const pendingAfter = readOpQueue().filter(op => op.status !== "done");
   if (pendingAfter.length) {
-    const detail = pendingAfter
-      .map(op => op.status === "error" ? `${queuedOpLabel(op.payload)} (error: ${op.error || "sin detalle"})` : queuedOpLabel(op.payload))
+    const detail = groupPendingOps(pendingAfter)
+      .map(group => {
+        const { text } = describePendingGroup(group);
+        return `${group.label} (${text})`;
+      })
       .join(", ");
     setNotice(lineMessage(
       "No se descargan datos para evitar desincronización: quedan cambios pendientes de subir.",
@@ -2269,7 +2418,7 @@ async function flushOpQueueBeforeDownload({ showProgress = false } = {}) {
     syncStatusStep(showProgress, "Pendientes sin enviar\nDescarga cancelada", "warn");
     throw new Error(`Quedan cambios pendientes de subir: ${detail}`);
   }
-  return pendingBefore.map(op => queuedOpLabel(op.payload));
+  return groupPendingOps(pendingBefore).map(group => group.label);
 }
 
 function transactionSignature(row) {
@@ -4033,15 +4182,13 @@ async function submitMovement(event) {
       });
       state.futureTransactions.push(...futureMovs);
       writeDataCache();
-      queueOp({
-        action: "addTransfersBatch",
-        transfers: transfers.map(serializeTransaction),
-        futureMovementSheet: state.config.futureMovementSheet || "Movimientos futuros",
-        bankSheet: state.config.bankSheet || "Bancos",
+      queueOps(recurringTransferOps(transfers, {
         from,
         to,
-        amount
-      });
+        amount,
+        futureMovementSheet: state.config.futureMovementSheet || "Movimientos futuros",
+        bankSheet: state.config.bankSheet || "Bancos"
+      }), { label: "Transferencias periódicas" });
       showMovementPopup("Transferencias periódicas guardadas", futureMovs[0] || realized[0], `${from} → ${to}`, lineMessage(
         `${realized.length} ${plural(realized.length, "activada", "activadas")} y ${futureMovs.length} futuras`,
         realized.length ? lineMessage(`Origen: ${bankChangeText(from, fromBefore)}`, `Destino: ${bankChangeText(to, toBefore)}`) : ""
@@ -4074,7 +4221,12 @@ async function submitMovement(event) {
       };
       scheduleInvestmentAllocationForRegistration(realized, { source: "registro", respectDay: false });
       writeDataCache();
-      queueOp({ action: "addMovementsBatch", movements: movements.map(serializeTransaction), movementSheet: state.config.movementSheet, futureMovementSheet: state.config.futureMovementSheet || "Movimientos futuros", bankSheet: state.config.bankSheet || "Bancos", account });
+      queueOps(recurringMovementOps(movements, {
+        account,
+        movementSheet: state.config.movementSheet,
+        futureMovementSheet: state.config.futureMovementSheet || "Movimientos futuros",
+        bankSheet: state.config.bankSheet || "Bancos"
+      }), { label: "Movimientos periódicos" });
     } else if (isTransfer) {
       const amount = Math.abs(Number(document.getElementById("formAmount").value || 0));
       const from = document.getElementById("formTransferFrom").value;
@@ -4190,6 +4342,53 @@ function movementsFromRecurrenceForm() {
     }
   }
   return out.filter(Boolean);
+}
+
+// ---------------------------------------------------------------------------
+// Altas periódicas: una petición por movimiento
+//
+// Antes se mandaba el lote entero en un único POST (addTransfersBatch /
+// addMovementsBatch). Con recurrencias largas ese cuerpo crecía tanto que WebKit
+// rechazaba la petición al instante ("Load failed") y ningún reintento la salvaba.
+// Ahora cada fecha es una operación independiente, con su propio clientOpId, su propio
+// reintento y su propia confirmación: si una falla, las demás siguen.
+//
+// Las tres acciones que se usan aquí ya existen en el Apps Script desplegado
+// (addMovement, addFutureMovement, transferBank), así que esto no exige redesplegar.
+// ---------------------------------------------------------------------------
+
+function recurringTransferOps(transfers, { from, to, amount, futureMovementSheet, bankSheet } = {}) {
+  const today = endOfToday();
+  const accountText = `${from} → ${to}`;
+  return (transfers || []).filter(Boolean).map(transfer => {
+    if (transfer.date <= today) {
+      // Una transferencia ya vencida solo mueve saldo entre cuentas; no escribe fila.
+      return { action: "transferBank", bankSheet, from, to, amount };
+    }
+    return {
+      action: "addFutureMovement",
+      sheetName: futureMovementSheet,
+      account: accountText,
+      movement: serializeTransaction({
+        ...transfer,
+        tipo: "Transferencia",
+        concepto: "Transferencia",
+        descripcion: accountText,
+        cuenta: accountText,
+        amount: Math.abs(Number(transfer.amount || amount || 0))
+      })
+    };
+  });
+}
+
+function recurringMovementOps(movements, { account, movementSheet, futureMovementSheet, bankSheet } = {}) {
+  const today = endOfToday();
+  return (movements || []).filter(Boolean).map(movement => {
+    const serialized = serializeTransaction({ ...movement, cuenta: account || movement.cuenta || "" });
+    return movement.date <= today
+      ? { action: "addMovement", movement: serialized, sheetName: movementSheet, bankSheet, account }
+      : { action: "addFutureMovement", movement: serialized, sheetName: futureMovementSheet, account };
+  });
 }
 
 function transferMovementFromFormBase() {
@@ -4651,14 +4850,44 @@ async function saveBanks() {
   }
 }
 
-// Los lotes grandes (transferencias/movimientos periódicos) tardan más que una
-// operación suelta. Abortar demasiado pronto no cancela la ejecución en Apps Script:
-// solo provoca un reenvío que se encola detrás de la anterior y satura el proyecto.
-const POST_TIMEOUT_MS = 60000;
+// Cada operación viaja sola, así que el cuerpo es pequeño y no hace falta el margen que
+// necesitaban los lotes. Un timeout más corto detecta antes los envíos que no salen.
+const POST_TIMEOUT_MS = 30000;
+const POST_CONTENT_TYPE = "text/plain;charset=utf-8";
+
+function appsScriptRequestBody(payload) {
+  return JSON.stringify({
+    token: state.config.appToken,
+    dataSheet: state.config.dataSheet || "Datos",
+    investmentSheet: state.config.investmentSheet || "Inversiones",
+    investmentTotalsSheet: state.config.investmentTotalsSheet || "Inversión Totales",
+    investmentEstimateRulesSheet: state.config.investmentEstimateRulesSheet || "Inversiones Estimación Reglas",
+    investmentEstimateLedgerSheet: state.config.investmentEstimateLedgerSheet || "Inversiones Estimación Movimientos",
+    investmentMode: state.investmentMode || "real",
+    movementSheet: state.config.movementSheet || "Control Finanzas",
+    futureMovementSheet: state.config.futureMovementSheet || "Movimientos futuros",
+    ...payload
+  });
+}
+
+// Segundo camino de red para cuando fetch falla de plano (en WebKit eso es un TypeError
+// con el mensaje "Load failed"). sendBeacon usa otra ruta del motor y suele pasar donde
+// fetch no. No devuelve respuesta, pero tampoco hace falta: la confirmación siempre viene
+// de checkClientOp.
+function sendAppsScriptBeacon(body) {
+  if (typeof navigator === "undefined" || typeof navigator.sendBeacon !== "function") return false;
+  if (typeof Blob === "undefined") return false;
+  try {
+    return navigator.sendBeacon(state.config.scriptUrl, new Blob([body], { type: POST_CONTENT_TYPE }));
+  } catch (error) {
+    return false;
+  }
+}
 
 async function fireAppsScript(payload) {
   if (navigator.onLine === false) throw new Error("Sin conexión");
   const finalPayload = withClientOpId(payload || {});
+  const body = appsScriptRequestBody(finalPayload);
   // Con mode:"no-cors" no leemos la respuesta, pero sin timeout un POST colgado
   // dejaría la operación en estado "sending" indefinidamente. Abortamos para que
   // la cola la marque como "retry" y la reintente en el siguiente ciclo.
@@ -4668,23 +4897,19 @@ async function fireAppsScript(payload) {
     await fetch(state.config.scriptUrl, {
       method: "POST",
       mode: "no-cors",
+      // El cuerpo es pequeño (muy por debajo del límite de 64 KB de keepalive), así que
+      // el envío sobrevive a que la app pase a segundo plano o se cierre la pestaña.
+      keepalive: true,
       signal: controller ? controller.signal : undefined,
-      headers: { "Content-Type": "text/plain;charset=utf-8" },
-      body: JSON.stringify({
-      token: state.config.appToken,
-      dataSheet: state.config.dataSheet || "Datos",
-      investmentSheet: state.config.investmentSheet || "Inversiones",
-      investmentTotalsSheet: state.config.investmentTotalsSheet || "Inversión Totales",
-      investmentEstimateRulesSheet: state.config.investmentEstimateRulesSheet || "Inversiones Estimación Reglas",
-      investmentEstimateLedgerSheet: state.config.investmentEstimateLedgerSheet || "Inversiones Estimación Movimientos",
-      investmentMode: state.investmentMode || "real",
-      movementSheet: state.config.movementSheet || "Control Finanzas",
-      futureMovementSheet: state.config.futureMovementSheet || "Movimientos futuros",
-      ...finalPayload
-      })
+      headers: { "Content-Type": POST_CONTENT_TYPE },
+      body
     });
   } catch (error) {
     if (error && error.name === "AbortError") throw new Error("El envío tardó demasiado; se reintentará");
+    if (sendAppsScriptBeacon(body)) {
+      logSyncEvent("fetch falló; enviado con sendBeacon.", "warn", `${error.name || "Error"}: ${error.message || String(error)}`);
+      return finalPayload;
+    }
     throw error;
   } finally {
     if (timer) window.clearTimeout(timer);

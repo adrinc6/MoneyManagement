@@ -202,3 +202,148 @@ test("fetchDownloadData no reintenta un payload con ok:false", async () => {
     app.fetchAppsScriptData = original;
   }
 });
+
+test("recurringTransferOps manda una petición por fecha, no un lote", () => {
+  const past = new Date(); past.setDate(past.getDate() - 10);
+  const future = new Date(); future.setDate(future.getDate() + 10);
+  const transfers = [
+    app.normalizeTransaction({ sid: "mov_a", fecha: app.formatDate(past), tipo: "Transferencia", concepto: "Transferencia", importe: 25 }),
+    app.normalizeTransaction({ sid: "mov_b", fecha: app.formatDate(future), tipo: "Transferencia", concepto: "Transferencia", importe: 25 })
+  ];
+  const ops = app.recurringTransferOps(transfers, {
+    from: "Banco A", to: "Banco B", amount: 25,
+    futureMovementSheet: "Movimientos futuros", bankSheet: "Bancos"
+  });
+
+  assert.equal(ops.length, 2, "una operación por fecha");
+  assert.equal(ops[0].action, "transferBank");
+  assert.equal(ops[0].bankSheet, "Bancos");
+  assert.equal(ops[0].from, "Banco A");
+  assert.equal(ops[0].to, "Banco B");
+  assert.equal(ops[0].amount, 25);
+  assert.equal(ops[1].action, "addFutureMovement");
+  assert.equal(ops[1].sheetName, "Movimientos futuros");
+  assert.equal(ops[1].account, "Banco A → Banco B");
+  assert.equal(ops[1].movement.sid, "mov_b", "conserva el sid para que el reintento no duplique");
+  assert.equal(ops[1].movement.cuenta, "Banco A → Banco B");
+  assert.equal(ops[1].movement.importe, 25);
+  assert.ok(!ops.some(op => op.action === "addTransfersBatch"), "ya no se usa el lote");
+});
+
+test("recurringMovementOps separa realizados y futuros por acción", () => {
+  const past = new Date(); past.setDate(past.getDate() - 3);
+  const future = new Date(); future.setDate(future.getDate() + 3);
+  const movements = [
+    app.normalizeTransaction({ sid: "mov_1", fecha: app.formatDate(past), tipo: "Gasto", concepto: "Comida", importe: -12 }),
+    app.normalizeTransaction({ sid: "mov_2", fecha: app.formatDate(future), tipo: "Gasto", concepto: "Comida", importe: -12 })
+  ];
+  const ops = app.recurringMovementOps(movements, {
+    account: "Banco A", movementSheet: "Control Finanzas",
+    futureMovementSheet: "Movimientos futuros", bankSheet: "Bancos"
+  });
+
+  assert.equal(ops.length, 2);
+  assert.equal(ops[0].action, "addMovement");
+  assert.equal(ops[0].sheetName, "Control Finanzas");
+  assert.equal(ops[0].account, "Banco A");
+  assert.equal(ops[0].movement.cuenta, "Banco A");
+  assert.equal(ops[1].action, "addFutureMovement");
+  assert.equal(ops[1].sheetName, "Movimientos futuros");
+  assert.equal(ops[1].movement.sid, "mov_2");
+});
+
+test("groupPendingOps agrupa un lote en una sola fila con su progreso", () => {
+  const queue = [
+    { id: "a", batchId: "b1", batchLabel: "Transferencias periódicas", batchIndex: 0, batchSize: 4, status: "sending", payload: { action: "transferBank" } },
+    { id: "b", batchId: "b1", batchLabel: "Transferencias periódicas", batchIndex: 1, batchSize: 4, status: "queued", payload: { action: "transferBank" } },
+    { id: "c", status: "queued", payload: { action: "saveBanks" } }
+  ];
+  const groups = app.groupPendingOps(queue);
+  assert.equal(groups.length, 2, "el lote colapsa a una fila y la suelta va aparte");
+  assert.equal(groups[0].retryId, "b1", "reintentar actúa sobre el lote entero");
+  assert.equal(groups[0].ops.length, 2);
+  assert.match(app.describePendingGroup(groups[0]).text, /3 de 4/, "2 ya enviadas de 4");
+  assert.equal(groups[1].label, "Guardar cuentas");
+});
+
+test("runOpQueue envía de una en una y en orden, sin bloquearse por una en error", async () => {
+  const originalFire = app.fireAppsScript;
+  const originalCheck = app.fetchAppsScriptData;
+  try {
+    app.state.config.scriptUrl = "https://example.test/exec";
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const sent = [];
+    app.fireAppsScript = async payload => {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise(resolve => globalThis.setTimeout(resolve, 0));
+      sent.push(payload.action);
+      inFlight--;
+      return payload;
+    };
+    app.fetchAppsScriptData = async () => ({ ok: true, completed: false, pending: true });
+
+    app.writeOpQueue([
+      { id: "op-a", status: "queued", attempts: 0, nextAttemptAt: 0, payload: { action: "transferBank", clientOpId: "c1" } },
+      { id: "op-b", status: "error", attempts: 8, nextAttemptAt: 0, error: "Load failed", payload: { action: "transferBank", clientOpId: "c2" } },
+      { id: "op-c", status: "queued", attempts: 0, nextAttemptAt: 0, payload: { action: "addFutureMovement", clientOpId: "c3" } }
+    ]);
+
+    await app.runOpQueue();
+
+    assert.equal(maxInFlight, 1, "nunca hay dos peticiones a la vez");
+    assert.deepEqual(sent, ["transferBank", "addFutureMovement"], "FIFO, saltando la detenida");
+    assert.equal(app.readOpQueue().find(op => op.id === "op-b").status, "error", "la detenida sigue en error y no bloquea");
+  } finally {
+    app.fireAppsScript = originalFire;
+    app.fetchAppsScriptData = originalCheck;
+    app.writeOpQueue([]);
+    app.state.config.scriptUrl = "";
+  }
+});
+
+test("fireAppsScript cae a sendBeacon cuando fetch falla con Load failed", async () => {
+  const originalFetch = app.fetch;
+  const originalBlob = app.Blob;
+  const originalBeacon = app.navigator.sendBeacon;
+  try {
+    app.state.config.scriptUrl = "https://example.test/exec";
+    app.Blob = class { constructor(parts) { this.parts = parts; } };
+    let fetchCalls = 0;
+    app.fetch = async () => {
+      fetchCalls++;
+      throw new TypeError("Load failed");
+    };
+    const beacons = [];
+    app.navigator.sendBeacon = (url, blob) => { beacons.push({ url, blob }); return true; };
+
+    const payload = await app.fireAppsScript({ action: "transferBank", from: "A", to: "B", amount: 5 });
+
+    assert.equal(fetchCalls, 1);
+    assert.equal(beacons.length, 1, "el envío se reintenta por el otro camino de red");
+    assert.equal(beacons[0].url, "https://example.test/exec");
+    assert.ok(payload.clientOpId, "devuelve el payload con su clientOpId para poder confirmarlo");
+    assert.match(String(beacons[0].blob.parts[0]), /transferBank/);
+  } finally {
+    app.fetch = originalFetch;
+    app.Blob = originalBlob;
+    app.navigator.sendBeacon = originalBeacon;
+    app.state.config.scriptUrl = "";
+  }
+});
+
+test("fireAppsScript propaga el error si tampoco hay sendBeacon", async () => {
+  const originalFetch = app.fetch;
+  const originalBeacon = app.navigator.sendBeacon;
+  try {
+    app.state.config.scriptUrl = "https://example.test/exec";
+    app.fetch = async () => { throw new TypeError("Load failed"); };
+    app.navigator.sendBeacon = undefined;
+    await assert.rejects(() => app.fireAppsScript({ action: "transferBank" }), /Load failed/);
+  } finally {
+    app.fetch = originalFetch;
+    app.navigator.sendBeacon = originalBeacon;
+    app.state.config.scriptUrl = "";
+  }
+});
