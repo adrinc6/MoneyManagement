@@ -149,3 +149,56 @@ test("failQueuedOp aplica backoff y detiene la operación al agotar los intentos
 
   app.writeOpQueue([]);
 });
+
+test("fetchDownloadData reintenta los fallos de red y se rinde tras 3 intentos", async () => {
+  const original = app.fetchAppsScriptData;
+  try {
+    let calls = 0;
+    app.fetchAppsScriptData = async () => {
+      calls++;
+      throw new Error("Apps Script no respondió a tiempo");
+    };
+    await assert.rejects(
+      () => app.fetchDownloadData({ action: "downloadCoreData" }, { label: "datos base" }),
+      /no respondió a tiempo/
+    );
+    assert.equal(calls, 3, "3 intentos = 2 reintentos");
+  } finally {
+    app.fetchAppsScriptData = original;
+  }
+});
+
+test("fetchDownloadData devuelve el payload en cuanto una llamada responde", async () => {
+  const original = app.fetchAppsScriptData;
+  try {
+    let calls = 0;
+    app.fetchAppsScriptData = async options => {
+      calls++;
+      if (calls === 1) throw new Error("Apps Script no respondió a tiempo");
+      return { ok: true, banks: [], timeoutMs: options.timeoutMs };
+    };
+    const payload = await app.fetchDownloadData({ action: "downloadCoreData" }, { label: "datos base" });
+    assert.equal(calls, 2, "no reintenta más de lo necesario");
+    assert.equal(payload.ok, true);
+    assert.equal(payload.timeoutMs, 180000, "las descargas usan el timeout largo");
+  } finally {
+    app.fetchAppsScriptData = original;
+  }
+});
+
+test("fetchDownloadData no reintenta un payload con ok:false", async () => {
+  const original = app.fetchAppsScriptData;
+  try {
+    let calls = 0;
+    app.fetchAppsScriptData = async () => {
+      calls++;
+      return { ok: false, error: "Invalid app token" };
+    };
+    const payload = await app.fetchDownloadData({ action: "downloadCoreData" }, { label: "datos base" });
+    assert.equal(calls, 1, "un error de negocio se devuelve tal cual, sin reintentos");
+    assert.equal(payload.ok, false);
+    assert.throws(() => app.assertPayloadOk(payload), /Invalid app token/);
+  } finally {
+    app.fetchAppsScriptData = original;
+  }
+});

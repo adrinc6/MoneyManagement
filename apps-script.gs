@@ -133,6 +133,9 @@ function doGet(e) {
       payload.categoriesUpdated = true;
     } else if (action === 'updateInvestmentPrices') {
       const priceUpdateResult = updateInvestmentQuotesFromYahoo(investmentSheet);
+      // Los precios han cambiado: aquí sí hay que recalcular la hoja de totales, porque
+      // los payloads de descarga ya no la sincronizan por su cuenta.
+      syncInvestmentTotalsSheet_(investmentTotalsSheet, dataSheet, investmentSheet, movementSheet);
       bumpSections_('investments', 'investmentTotals');
       payload = buildInvestmentDataPayload_(investmentSheet, objectiveSheet, movementSheet, futureMovementSheet, bankSheet, dataSheet, investmentTotalsSheet, investmentEstimateRulesSheet, investmentEstimateLedgerSheet);
       payload.pricesUpdated = true;
@@ -174,54 +177,57 @@ function doGet(e) {
 }
 
 function buildAllDataPayload_(movementSheet, futureMovementSheet, investmentSheet, bankSheet, objectiveSheet, dataSheet, movedFutureMovements, investmentTotalsSheet, investmentEstimateRulesSheet, investmentEstimateLedgerSheet) {
-  const investmentTotals = syncInvestmentTotalsSheet_(investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, dataSheet, investmentSheet, movementSheet);
+  const investmentTotals = investmentTotalsForRead_(investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, dataSheet, investmentSheet, movementSheet);
+  const investments = readInvestments_(investmentSheet);
   return {
     ok: true,
     transactions: readMovements_(movementSheet),
     futureTransactions: readFutureMovements_(futureMovementSheet),
     movedFutureMovements: movedFutureMovements || [],
-    investments: readInvestments_(investmentSheet),
+    investments,
     investmentTotals,
     investmentEstimateRules: readInvestmentEstimateRules_(investmentEstimateRulesSheet || DEFAULT_INVESTMENT_ESTIMATE_RULES_SHEET),
     investmentEstimateLedger: readInvestmentEstimateLedger_(investmentEstimateLedgerSheet || DEFAULT_INVESTMENT_ESTIMATE_LEDGER_SHEET),
     banks: readBanks_(bankSheet),
     investmentGoals: readInvestmentGoals_(objectiveSheet),
-    categories: readAppCategories_(dataSheet, investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, investmentSheet)
+    categories: readAppCategories_(dataSheet, investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, investmentSheet, investments)
   };
 }
 
 function buildCoreDataPayload_(investmentSheet, bankSheet, objectiveSheet, dataSheet, movedFutureMovements, movementSheet, futureMovementSheet, investmentTotalsSheet, investmentEstimateRulesSheet, investmentEstimateLedgerSheet) {
-  const investmentTotals = syncInvestmentTotalsSheet_(investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, dataSheet, investmentSheet, movementSheet || DEFAULT_MOVEMENT_SHEET);
+  const investmentTotals = investmentTotalsForRead_(investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, dataSheet, investmentSheet, movementSheet || DEFAULT_MOVEMENT_SHEET);
+  const investments = readInvestments_(investmentSheet);
   return {
     ok: true,
     movedFutureMovements: movedFutureMovements || [],
-    investments: readInvestments_(investmentSheet),
+    investments,
     investmentTotals,
     investmentEstimateRules: readInvestmentEstimateRules_(investmentEstimateRulesSheet || DEFAULT_INVESTMENT_ESTIMATE_RULES_SHEET),
     investmentEstimateLedger: readInvestmentEstimateLedger_(investmentEstimateLedgerSheet || DEFAULT_INVESTMENT_ESTIMATE_LEDGER_SHEET),
     banks: readBanks_(bankSheet),
     investmentGoals: readInvestmentGoals_(objectiveSheet),
-    categories: readAppCategories_(dataSheet, investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, investmentSheet)
+    categories: readAppCategories_(dataSheet, investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, investmentSheet, investments)
   };
 }
 
 function buildInvestmentDataPayload_(investmentSheet, objectiveSheet, movementSheet, futureMovementSheet, bankSheet, dataSheet, investmentTotalsSheet, investmentEstimateRulesSheet, investmentEstimateLedgerSheet) {
-  const investmentTotals = syncInvestmentTotalsSheet_(investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, dataSheet || 'Datos', investmentSheet, movementSheet || DEFAULT_MOVEMENT_SHEET);
+  const investmentTotals = investmentTotalsForRead_(investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, dataSheet || 'Datos', investmentSheet, movementSheet || DEFAULT_MOVEMENT_SHEET);
+  const investments = readInvestments_(investmentSheet);
   return {
     ok: true,
-    investments: readInvestments_(investmentSheet),
+    investments,
     investmentTotals,
     investmentEstimateRules: readInvestmentEstimateRules_(investmentEstimateRulesSheet || DEFAULT_INVESTMENT_ESTIMATE_RULES_SHEET),
     investmentEstimateLedger: readInvestmentEstimateLedger_(investmentEstimateLedgerSheet || DEFAULT_INVESTMENT_ESTIMATE_LEDGER_SHEET),
     investmentGoals: readInvestmentGoals_(objectiveSheet),
-    categories: readAppCategories_(dataSheet || 'Datos', investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, investmentSheet)
+    categories: readAppCategories_(dataSheet || 'Datos', investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, investmentSheet, investments)
   };
 }
 
 function buildQuickStatusPayload_(movementSheet, futureMovementSheet, investmentSheet, bankSheet, dataSheet, investmentTotalsSheet) {
   const banks = readBanks_(bankSheet);
   const investments = readInvestments_(investmentSheet);
-  const investmentTotals = syncInvestmentTotalsSheet_(investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, dataSheet || 'Datos', investmentSheet || DEFAULT_INVESTMENT_SHEET, movementSheet || DEFAULT_MOVEMENT_SHEET);
+  const investmentTotals = investmentTotalsForRead_(investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, dataSheet || 'Datos', investmentSheet || DEFAULT_INVESTMENT_SHEET, movementSheet || DEFAULT_MOVEMENT_SHEET);
   const investmentTotalsValue = investmentTotals.reduce(function(acc, item) { return acc + (parseNumber_(item.value) || 0); }, 0);
   const investmentsValue = investments.reduce(function(acc, item) { return acc + (parseNumber_(item.total) || 0); }, 0);
   return {
@@ -816,11 +822,18 @@ function movementSidFrom_(movement) {
   return String(movement && (movement.sid || movement.SID || movement.id || movement.ID) || '').trim() || createMovementSid_();
 }
 
-function ensureMovementSidColumn_(sheet) {
+// Localiza la columna SID leyendo solo la fila de cabeceras, sin tocar los datos.
+function movementSidColumn_(sheet) {
   if (!sheet) return 0;
   const lastCol = Math.max(sheet.getLastColumn(), 1);
   const headers = sheet.getRange(1, 1, 1, lastCol).getDisplayValues()[0].map(normalizeHeader_);
-  let sidCol = headers.indexOf('sid') + 1;
+  return headers.indexOf('sid') + 1;
+}
+
+function ensureMovementSidColumn_(sheet) {
+  if (!sheet) return 0;
+  const lastCol = Math.max(sheet.getLastColumn(), 1);
+  let sidCol = movementSidColumn_(sheet);
   if (!sidCol) {
     sidCol = lastCol + 1;
     sheet.getRange(1, sidCol).setValue(movementSidHeader_());
@@ -932,7 +945,10 @@ function readMovementsPage_(sheetName, offset, limit, optional) {
     if (optional) return { rows: [], total: 0, offset: 0, limit: Math.max(1, Math.min(Number(limit || 500), 1000)), nextOffset: 0, hasMore: false };
     throw new Error(`Sheet not found: ${sheetName}`);
   }
-  const sidCol = ensureMovementSidColumn_(sheet);
+  // ensureMovementSidColumn_ lee (y a veces reescribe) la columna SID entera. Hacerlo en
+  // cada página convertía la descarga en O(páginas × filas): con la primera página basta,
+  // porque el resto de páginas de la misma descarga ya encuentran la columna rellena.
+  const sidCol = Number(offset || 0) > 0 ? movementSidColumn_(sheet) : ensureMovementSidColumn_(sheet);
   const total = Math.max(0, sheet.getLastRow() - 1);
   const safeOffset = Math.max(0, Math.min(Number(offset || 0), total));
   const requestedLimit = Number(limit || 500);
@@ -2486,20 +2502,23 @@ function saveInvestmentGoals_(goals, sheetName) {
 
 
 
-function readInvestmentCategoriesForTotals_(totalsSheetName, investmentSheetName) {
+// `knownInvestments` evita releer la hoja de inversiones cuando el llamante ya la tiene:
+// readInvestments_ hace getValues() Y getDisplayValues(), o sea dos lecturas completas de
+// la hoja cada vez que se llama.
+function readInvestmentCategoriesForTotals_(totalsSheetName, investmentSheetName, knownInvestments) {
   const totals = readInvestmentTotals_(totalsSheetName || DEFAULT_INVESTMENT_TOTALS_SHEET)
     .sort(function(a, b) { return Number(a.order || 0) - Number(b.order || 0); })
     .map(function(item) { return String(item.tipo || '').trim(); })
     .filter(Boolean);
-  const investments = readInvestments_(investmentSheetName || DEFAULT_INVESTMENT_SHEET)
+  const investments = (knownInvestments || readInvestments_(investmentSheetName || DEFAULT_INVESTMENT_SHEET))
     .map(function(item) { return String(item.tipo || '').trim(); })
     .filter(Boolean);
   return Array.from(new Set([].concat(totals, investments).filter(Boolean)));
 }
 
-function readAppCategories_(dataSheetName, totalsSheetName, investmentSheetName) {
+function readAppCategories_(dataSheetName, totalsSheetName, investmentSheetName, knownInvestments) {
   const categories = readCategories_(dataSheetName || 'Datos');
-  categories.investmentTypes = readInvestmentCategoriesForTotals_(totalsSheetName || DEFAULT_INVESTMENT_TOTALS_SHEET, investmentSheetName || DEFAULT_INVESTMENT_SHEET);
+  categories.investmentTypes = readInvestmentCategoriesForTotals_(totalsSheetName || DEFAULT_INVESTMENT_TOTALS_SHEET, investmentSheetName || DEFAULT_INVESTMENT_SHEET, knownInvestments);
   return categories;
 }
 
@@ -2570,6 +2589,20 @@ function syncInvestmentTotalsSheet_(totalsSheetName, dataSheetName, investmentSh
     totalsSheet.getRange(2, 8, rows.length, 1).setNumberFormat('0.00%');
   }
   return readInvestmentTotals_(totalsSheetName || DEFAULT_INVESTMENT_TOTALS_SHEET);
+}
+
+// Totales para las DESCARGAS. syncInvestmentTotalsSheet_ no es una lectura: reescribe la
+// hoja de totales (clearContent + setValues + formatos) y, si está vacía, recorre la hoja
+// de movimientos entera. Hacer eso en cada GET era lo que hacía que la descarga inicial
+// pasara de los 20 s del cliente y fallara con "Apps Script no respondió a tiempo".
+// Las acciones que mutan (alta/baja de inversión, categorías, precios, doPost) siguen
+// llamando al sync completo antes de construir su payload, así que los totales no se
+// quedan obsoletos; aquí solo se sincroniza si la hoja aún no existe o está vacía.
+function investmentTotalsForRead_(totalsSheetName, dataSheetName, investmentSheetName, movementSheetName) {
+  const name = totalsSheetName || DEFAULT_INVESTMENT_TOTALS_SHEET;
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(name);
+  if (sheet && sheet.getLastRow() >= 2) return readInvestmentTotals_(name);
+  return syncInvestmentTotalsSheet_(name, dataSheetName, investmentSheetName, movementSheetName);
 }
 
 function readInvestmentTotals_(sheetName) {

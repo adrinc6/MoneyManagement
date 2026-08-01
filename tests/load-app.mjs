@@ -40,6 +40,11 @@ export function loadApp() {
     body: { appendChild: noop }
   };
 
+  // Los temporizadores se disparan de verdad, pero sin esperar: así `sleep` (y con él los
+  // reintentos de descarga) avanza en los tests en vez de quedarse colgado para siempre.
+  const immediateTimeout = fn => globalThis.setTimeout(fn, 0);
+  const cancelTimeout = id => globalThis.clearTimeout(id);
+
   const context = {
     console,
     Intl,
@@ -48,15 +53,15 @@ export function loadApp() {
     JSON,
     localStorage,
     navigator: { onLine: true },
-    setTimeout: noop,
-    clearTimeout: noop,
+    setTimeout: immediateTimeout,
+    clearTimeout: cancelTimeout,
     setInterval: () => 0,
     clearInterval: noop
   };
   context.window = {
     addEventListener: noop,
-    setTimeout: noop,
-    clearTimeout: noop,
+    setTimeout: immediateTimeout,
+    clearTimeout: cancelTimeout,
     setInterval: () => 0,
     clearInterval: noop,
     crypto: globalThis.crypto,
