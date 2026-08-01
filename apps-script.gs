@@ -318,6 +318,80 @@ function appliedBatchSidsKey_() {
   return 'moneyAppliedBatchSids';
 }
 
+function appliedTransferSidsKey_() {
+  return 'moneyAppliedTransferSids';
+}
+
+function receivedClientOpsKey_() {
+  return 'moneyReceivedClientOps';
+}
+
+// Marca "recibida, esperando turno". La fila de "Pendientes" solo se escribe DESPUÉS
+// de obtener el script lock, así que durante esa espera (hasta 30 s) checkClientOp
+// respondía "no sé nada" y el cliente lo contaba como intento fallido, agotando los
+// reintentos. Este registro se escribe ANTES de esperar el lock para que el cliente
+// sepa que su petición está viva.
+var RECEIVED_OP_STALE_MS = 3 * 60 * 1000;
+
+function rememberReceivedClientOp_(clientOpId) {
+  if (!clientOpId) return;
+  try {
+    const now = Date.now();
+    const items = readBoundedList_(receivedClientOpsKey_())
+      .filter(function(item) {
+        return item && item.id !== clientOpId && (now - Number(item.at || 0)) < RECEIVED_OP_STALE_MS;
+      });
+    items.push({ id: clientOpId, at: now });
+    storeBoundedList_(receivedClientOpsKey_(), items);
+  } catch (err) {
+    // Es solo una pista de estado: si falla, se sigue adelante.
+  }
+}
+
+function forgetReceivedClientOp_(clientOpId) {
+  if (!clientOpId) return;
+  try {
+    const items = readBoundedList_(receivedClientOpsKey_());
+    const next = items.filter(function(item) { return item && item.id !== clientOpId; });
+    if (next.length !== items.length) storeBoundedList_(receivedClientOpsKey_(), next);
+  } catch (err) {
+    // Las entradas caducan solas por RECEIVED_OP_STALE_MS.
+  }
+}
+
+function isClientOpReceived_(clientOpId) {
+  if (!clientOpId) return false;
+  const now = Date.now();
+  return readBoundedList_(receivedClientOpsKey_()).some(function(item) {
+    return item && item.id === clientOpId && (now - Number(item.at || 0)) < RECEIVED_OP_STALE_MS;
+  });
+}
+
+// Las transferencias no escriben fila, así que no tienen SID en la hoja que las
+// proteja de un reenvío: su única defensa era la lista de operaciones procesadas,
+// que se poda al superar el límite de 9 KB por propiedad. Si una entrada se
+// desalojaba mientras el cliente aún esperaba confirmación, el reenvío movía el
+// dinero DOS VECES. Este registro propio, con identificadores cortos, lo impide.
+function wasTransferApplied_(transferSid) {
+  if (!transferSid) return false;
+  return readBoundedList_(appliedTransferSidsKey_()).some(function(item) {
+    return String(item && item.id || item) === transferSid;
+  });
+}
+
+function rememberAppliedTransfer_(transferSid) {
+  if (!transferSid) return;
+  try {
+    const items = readBoundedList_(appliedTransferSidsKey_())
+      .filter(function(item) { return String(item && item.id || item) !== transferSid; });
+    items.push(transferSid);
+    storeBoundedList_(appliedTransferSidsKey_(), items);
+  } catch (err) {
+    // Si no se puede registrar, el reintento volvería a mover el saldo; se prefiere
+    // no romper la transferencia que ya se aplicó correctamente.
+  }
+}
+
 function movementSidHeader_() {
   return 'SID';
 }
@@ -497,6 +571,8 @@ function buildClientOpStatusPayload_(clientOpId) {
   // "pending" gana al último error: si hay un reintento en curso, el error anterior
   // ya no describe el estado actual de la operación.
   if (isClientOpPending_(clientOpId)) return { ok: true, completed: false, pending: true };
+  // Recibida pero todavía esperando el script lock: sigue viva, no es un fallo.
+  if (isClientOpReceived_(clientOpId)) return { ok: true, completed: false, pending: true };
   const failure = clientOpFailure_(clientOpId);
   if (failure) {
     // retryable: fallos transitorios (lock ocupado) que el cliente debe reintentar
@@ -660,6 +736,10 @@ function doPost(e) {
     // reintento para siempre) y la propiedad de operaciones procesadas (perdiendo
     // la confirmación), y el cliente se quedaba en "Confirmando" en bucle sin que
     // el cambio llegara a Sheets.
+    // Antes de ponerse a la cola del lock: así checkClientOp puede responder
+    // "pendiente" mientras esta petición espera su turno, en vez de "no sé nada"
+    // (que el cliente contabilizaba como intento fallido).
+    rememberReceivedClientOp_(payload.clientOpId || '');
     lock = LockService.getScriptLock();
     try {
       lock.waitLock(30000);
@@ -794,7 +874,13 @@ function doPost(e) {
       return finishPost_(pendingId, payload, { ok: true });
     }
     if (payload.action === 'transferBank') {
+      // Mover saldo es una suma: sin este guardia, un reenvío duplicaría el dinero.
+      const transferSid = String(payload.transferSid || '').trim();
+      if (transferSid && wasTransferApplied_(transferSid)) {
+        return finishPost_(pendingId, payload, { ok: true, duplicate: true });
+      }
       transferBank_(payload.bankSheet || DEFAULT_BANK_SHEET, payload.from, payload.to, Number(payload.amount || 0));
+      rememberAppliedTransfer_(transferSid);
       return finishPost_(pendingId, payload, { ok: true });
     }
     if (payload.action === 'renameAccount') {
@@ -827,6 +913,7 @@ function doPost(e) {
     }
     return json_(errorPayload_(err));
   } finally {
+    forgetReceivedClientOp_(payload && payload.clientOpId || '');
     if (lock) {
       scriptLockHeld_ = false;
       try { lock.releaseLock(); } catch (releaseErr) {}
@@ -886,7 +973,7 @@ function appendPendingPost_(payload) {
   const id = Utilities.getUuid();
   const sheet = getOrCreateSheet_(DEFAULT_PENDING_SHEET, ['ID', 'Fecha', 'Accion', 'Payload']);
   purgeStalePendingRows_(sheet);
-  sheet.appendRow([id, new Date(), payload.action || '', JSON.stringify(sanitizePendingPayload_(payload))]);
+  appendRowSafe_(sheet, [id, new Date(), payload.action || '', JSON.stringify(sanitizePendingPayload_(payload))]);
   return id;
 }
 
@@ -987,7 +1074,10 @@ function ensureMovementSidColumn_(sheet) {
   let sidCol = movementSidColumn_(sheet);
   if (!sidCol) {
     sidCol = lastCol + 1;
-    sheet.getRange(1, sidCol).setValue(movementSidHeader_());
+    // Escritura protegida: esta función corre ANTES que cualquier otra en las altas
+    // de movimiento, así que una regla de validación heredada aquí tumbaba la
+    // operación entera antes de llegar a las escrituras que sí estaban protegidas.
+    setCellValueSafe_(sheet.getRange(1, sidCol), movementSidHeader_());
   }
   const lastRow = sheet.getLastRow();
   if (lastRow >= 2) {
@@ -1000,7 +1090,7 @@ function ensureMovementSidColumn_(sheet) {
         changed = true;
       }
     }
-    if (changed) range.setValues(values);
+    if (changed) setRangeValuesSafe_(range, values);
   }
   return sidCol;
 }
@@ -1036,6 +1126,21 @@ function setRangeValuesSafe_(range, values) {
 
 function setCellValueSafe_(range, value) {
   setRangeValuesSafe_(range, [[value]]);
+}
+
+// Variante de appendRow con la misma tolerancia a reglas de validación: si la fila
+// nueva hereda una regla que rechaza el valor, se limpia la validación de esa fila
+// y se reintenta una vez.
+function appendRowSafe_(sheet, values) {
+  const row = sheet.getLastRow() + 1;
+  try {
+    sheet.appendRow(values);
+  } catch (err) {
+    const message = String(err && err.message || err || '');
+    if (!/validaci|validation/i.test(message)) throw err;
+    sheet.getRange(row, 1, 1, Math.max(values.length, 1)).clearDataValidations();
+    setRangeValuesSafe_(sheet.getRange(row, 1, 1, values.length), [values]);
+  }
 }
 
 function writeMovementRow_(sheet, rowNumber, movement, sid, account) {
@@ -2005,7 +2110,7 @@ function saveBanks_(banks, sheetName) {
     if (rowNumber >= 2 && rowNumber <= sheet.getMaxRows()) {
       setRangeValuesSafe_(sheet.getRange(rowNumber, 1, 1, 2), values);
     } else {
-      sheet.appendRow(values[0]);
+      appendRowSafe_(sheet, values[0]);
     }
   });
 }
@@ -2024,7 +2129,10 @@ function adjustBank_(sheetName, account, delta) {
   const row = findBankRow_(sheet, account);
   if (!row) throw new Error(`Bank account not found: ${account}`);
   const current = parseNumber_(sheet.getRange(row, 2).getValue());
-  sheet.getRange(row, 2).setValue((Number.isFinite(current) ? current : 0) + delta);
+  // Escritura protegida: es la ÚNICA que hace una transferencia ya vencida, así que
+  // una regla de validación en la columna de importes (p. ej. "mayor que 0") la
+  // dejaba fallando para siempre.
+  setCellValueSafe_(sheet.getRange(row, 2), (Number.isFinite(current) ? current : 0) + delta);
 }
 
 function findBankRow_(sheet, account) {
@@ -2072,8 +2180,10 @@ function renameAccountInMovementSheet_(sheetName, oldName, newName) {
     changed++;
   }
   if (changed) {
-    accountRange.setValues(accountValues);
-    descRange.setValues(descValues);
+    // Escrituras protegidas: la columna 9 (CUENTA) es justo la que suele llevar un
+    // desplegable, y aquí se le escribe texto de par de cuentas "A → B".
+    setRangeValuesSafe_(accountRange, accountValues);
+    setRangeValuesSafe_(descRange, descValues);
   }
   return changed;
 }

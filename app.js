@@ -261,7 +261,6 @@ function wireUi() {
   document.getElementById("formAmount")?.addEventListener("input", enforceTransferPositiveAmount);
   document.getElementById("formAmount")?.addEventListener("change", enforceTransferPositiveAmount);
   document.getElementById("saveConfigBtn")?.addEventListener("click", saveConfigFromForm);
-  document.getElementById("retryPendingOpsBtn")?.addEventListener("click", () => retryPendingOps());
   document.getElementById("clearSyncLogsBtn")?.addEventListener("click", clearSyncLogs);
   document.getElementById("undoSentOpsBtn")?.addEventListener("click", openUndoDialog);
   document.getElementById("closeUndoDialogBtn")?.addEventListener("click", () => document.getElementById("undoDialog")?.close());
@@ -2016,9 +2015,15 @@ function describePendingGroup(group) {
   }
   const done = Math.max(0, total - group.ops.length);
   const progress = `${Math.min(done + 1, total)} de ${total}`;
-  const base = `${opStatusText(active)} ${progress}`;
-  const failedNote = failed.length ? ` · ${failed.length} con error` : "";
-  const detail = active.error ? `: ${active.error}` : "";
+  // Si todo el grupo está en error, mostrarlo como tal: usar el estado de la primera
+  // operación escondía que las demás estaban detenidas y esperando un reintento.
+  const allFailed = failed.length === group.ops.length;
+  const base = allFailed
+    ? `Detenido tras ${failed.length} ${plural(failed.length, "error", "errores")} · ${progress}`
+    : `${opStatusText(active)} ${progress}`;
+  const failedNote = failed.length && !allFailed ? ` · ${failed.length} con error` : "";
+  const reference = allFailed ? failed[0] : active;
+  const detail = reference?.error ? `: ${reference.error}` : "";
   return { text: `${base}${failedNote}${detail}`, failed: failed.length };
 }
 
@@ -2069,7 +2074,7 @@ function undoMovementInfo(serialized) {
   const lines = [
     `${prettyType(movement.tipo)}${movement.concepto ? ` · ${movement.concepto}` : ""}`,
     movement.descripcion || "",
-    `${money(movement.amount)}${movement.cuenta ? ` · ${movement.cuenta}` : ""}`,
+    `${money(movement.amount)}${movementAccountText(movement) ? ` · ${movementAccountText(movement)}` : ""}`,
     formatDate(movement.date)
   ].filter(Boolean);
   return { lines, movement };
@@ -2395,6 +2400,13 @@ const OP_MAX_BACKOFF_MS = 60000;
 // siempre: cada reenvío abre una ejecución de Apps Script que se encola detrás del
 // script lock, satura el proyecto y hace que ni el POST ni la confirmación respondan.
 const OP_MAX_ATTEMPTS = 8;
+// Margen antes de contar como fallo una operación enviada de la que aún no hay
+// noticias: cubre la espera del script lock del servidor (30 s) más reintentos.
+const CONFIRM_GRACE_MS = 120000;
+// Envíos sin confirmar simultáneos. El backend serializa todo con el script lock,
+// así que lanzar decenas a la vez solo genera contención (y roza el límite de
+// ejecuciones simultáneas de Apps Script).
+const MAX_UNCONFIRMED_OPS = 3;
 let opQueuePollerHandle = null;
 const opsInFlight = new Set();
 
@@ -2432,8 +2444,15 @@ async function runOpQueue() {
         break;
       }
       lastSignature = signature;
-      if (op.status === "sending" || op.status === "checking") await checkQueuedOp(op.id);
-      else await sendQueuedOp(op.id);
+      if (op.status === "sending" || op.status === "checking") {
+        await checkQueuedOp(op.id);
+      } else {
+        // No se lanzan más envíos de los que se pueden tener sin confirmar: el
+        // poller retomará la cola en cuanto alguno se confirme.
+        const unconfirmed = readOpQueue().filter(o => o.status === "sending" || o.status === "checking").length;
+        if (unconfirmed >= MAX_UNCONFIRMED_OPS) break;
+        await sendQueuedOp(op.id);
+      }
     }
   } finally {
     opRunnerActive = false;
@@ -2572,6 +2591,14 @@ async function checkQueuedOp(opId) {
     // dejarla en espera hasta el siguiente ciclo. Sin nextAttemptAt, runOpQueue la
     // volvería a elegir de inmediato y el bucle giraría en vacío consultando sin parar.
     if (result?.ok && result.pending) {
+      markOpStatus(opId, { status: "checking", error: null, nextAttemptAt: Date.now() + OP_POLL_INTERVAL_MS });
+      return;
+    }
+    // "Sin noticias" NO es un intento fallido: la petición puede seguir esperando el
+    // script lock del servidor (hasta 30 s) o ir de camino. Contarlo como fallo
+    // agotaba los 8 intentos en pocos minutos y dejaba recurrencias enteras en error.
+    const sentAt = Number(item.lastSentAt || 0);
+    if (sentAt && Date.now() - sentAt < CONFIRM_GRACE_MS) {
       markOpStatus(opId, { status: "checking", error: null, nextAttemptAt: Date.now() + OP_POLL_INTERVAL_MS });
       return;
     }
@@ -3717,7 +3744,7 @@ function renderMovementTable(rows) {
     if (column[0] === "concept") return `<td class="text-clip col-concept" title="${escapeAttr(t.concepto)}">${escapeHtml(t.concepto)}</td>`;
     if (column[0] === "desc") {
       if (state.movementMode === "future") {
-        const accountText = t.cuenta || "Sin cuenta";
+        const accountText = movementAccountText(t) || "Sin cuenta";
         const accountIssue = dueFutureMovementAccountIssue(t);
         const showDescription = t.descripcion && t.descripcion !== accountText;
         return `<td class="col-desc col-desc-with-account">
@@ -4657,18 +4684,24 @@ function recurringTransferOps(transfers, { from, to, amount, futureMovementSheet
   return (transfers || []).filter(Boolean).map(transfer => {
     if (transfer.date <= today) {
       // Una transferencia ya vencida solo mueve saldo entre cuentas; no escribe fila.
-      return { action: "transferBank", bankSheet, from, to, amount };
+      // El transferSid se genera una vez y viaja en la cola, así que un reintento
+      // manda el mismo y el servidor no vuelve a mover el dinero.
+      return { action: "transferBank", bankSheet, from, to, amount, transferSid: createSid("tr") };
     }
     return {
       action: "addFutureMovement",
       sheetName: futureMovementSheet,
-      account: accountText,
+      // CUENTA se deja vacía a propósito: en muchas hojas esa columna tiene un
+      // desplegable de cuentas que RECHAZA el texto "Origen → Destino" y hacía
+      // fallar la operación para siempre. El par de cuentas viaja en DESCRIPCION,
+      // de donde ya lo leen tanto la app como el backend cuando CUENTA está vacía.
+      account: "",
       movement: serializeTransaction({
         ...transfer,
         tipo: "Transferencia",
         concepto: "Transferencia",
         descripcion: accountText,
-        cuenta: accountText,
+        cuenta: "",
         amount: Math.abs(Number(transfer.amount || amount || 0))
       })
     };
@@ -4808,6 +4841,16 @@ function setMovementModeFromClick(event) {
   renderMovements();
 }
 
+// Texto de cuenta para mostrar. Las transferencias no guardan CUENTA (esa columna
+// suele tener un desplegable que rechaza "Origen → Destino"), así que su par de
+// cuentas se reconstruye a partir del origen y destino ya normalizados.
+function movementAccountText(movement) {
+  if (!movement) return "";
+  if (movement.cuenta) return movement.cuenta;
+  if (movement.transferFrom && movement.transferTo) return `${movement.transferFrom} → ${movement.transferTo}`;
+  return "";
+}
+
 function getDisplayedMovements() {
   return state.movementMode === 'future' ? state.futureTransactions : state.transactions;
 }
@@ -4835,7 +4878,7 @@ function movementPopupHtml(movement, account, extra = '') {
     ["Tipo", movement.tipo],
     ["Concepto", movement.concepto],
     ["Descripción", movement.descripcion],
-    ["Cuenta", account || movement.cuenta || "Sin cuenta"],
+    ["Cuenta", account || movementAccountText(movement) || "Sin cuenta"],
     ["Importe", money(movement.amount)]
   ];
   return `<div class="saved-movement-stack">

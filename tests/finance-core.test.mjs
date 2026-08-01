@@ -221,11 +221,16 @@ test("recurringTransferOps manda una petición por fecha, no un lote", () => {
   assert.equal(ops[0].from, "Banco A");
   assert.equal(ops[0].to, "Banco B");
   assert.equal(ops[0].amount, 25);
+  assert.ok(ops[0].transferSid, "lleva identificador para que el reintento no mueva el dinero dos veces");
   assert.equal(ops[1].action, "addFutureMovement");
   assert.equal(ops[1].sheetName, "Movimientos futuros");
-  assert.equal(ops[1].account, "Banco A → Banco B");
+  // CUENTA va vacía a propósito: esa columna suele tener un desplegable que rechaza
+  // "Banco A → Banco B" y hacía fallar la operación para siempre. El par de cuentas
+  // viaja en DESCRIPCION, de donde lo leen tanto la app como el backend.
+  assert.equal(ops[1].account, "");
+  assert.equal(ops[1].movement.cuenta, "");
+  assert.equal(ops[1].movement.descripcion, "Banco A → Banco B");
   assert.equal(ops[1].movement.sid, "mov_b", "conserva el sid para que el reintento no duplique");
-  assert.equal(ops[1].movement.cuenta, "Banco A → Banco B");
   assert.equal(ops[1].movement.importe, 25);
   assert.ok(!ops.some(op => op.action === "addTransfersBatch"), "ya no se usa el lote");
 });

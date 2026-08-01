@@ -180,6 +180,48 @@ test("refreshData no solapa descargas pero no descarta acciones del usuario", as
   }
 });
 
+test("estar esperando el servidor no consume intentos dentro de la ventana de gracia", async () => {
+  // El backend puede tardar hasta 30 s esperando su turno del script lock. Contar
+  // eso como intento fallido agotaba los 8 permitidos y mataba recurrencias enteras.
+  const previousFetch = app.fetchAppsScriptData;
+  try {
+    resetQueue([{
+      id: "op-espera", status: "checking", attempts: 0, nextAttemptAt: 0,
+      lastSentAt: Date.now(), payload: { action: "addFutureMovement", clientOpId: "c-espera" }
+    }]);
+    app.fetchAppsScriptData = async () => ({ ok: true, completed: false, pending: false });
+
+    await app.checkQueuedOp("op-espera");
+
+    const [op] = JSON.parse(app.localStorage.getItem(app.OP_QUEUE_KEY));
+    assert.equal(op.attempts, 0, "no se gasta un intento mientras la petición sigue viva");
+    assert.equal(op.status, "checking");
+    assert.ok(op.nextAttemptAt > Date.now(), "se reprograma la siguiente comprobación");
+  } finally {
+    app.fetchAppsScriptData = previousFetch;
+    resetQueue();
+  }
+});
+
+test("pasada la ventana de gracia, la falta de noticias sí cuenta como intento", async () => {
+  const previousFetch = app.fetchAppsScriptData;
+  try {
+    resetQueue([{
+      id: "op-vieja", status: "checking", attempts: 0, nextAttemptAt: 0,
+      lastSentAt: Date.now() - 10 * 60 * 1000, payload: { action: "addFutureMovement", clientOpId: "c-vieja" }
+    }]);
+    app.fetchAppsScriptData = async () => ({ ok: true, completed: false, pending: false });
+
+    await app.checkQueuedOp("op-vieja");
+
+    const [op] = JSON.parse(app.localStorage.getItem(app.OP_QUEUE_KEY));
+    assert.equal(op.attempts, 1, "una petición que lleva mucho sin noticias sí se reintenta");
+  } finally {
+    app.fetchAppsScriptData = previousFetch;
+    resetQueue();
+  }
+});
+
 test("failQueuedOp aplica backoff creciente y se detiene tras el máximo de intentos", () => {
   resetQueue([{ id: "op-backoff", status: "queued", attempts: 0, nextAttemptAt: 0, payload: { action: "addMovement", clientOpId: "c-b" } }]);
   for (let i = 0; i < app.OP_MAX_ATTEMPTS; i++) {
