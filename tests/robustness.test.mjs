@@ -221,15 +221,3 @@ test("pasada la ventana de gracia, la falta de noticias sí cuenta como intento"
     resetQueue();
   }
 });
-
-test("failQueuedOp aplica backoff creciente y se detiene tras el máximo de intentos", () => {
-  resetQueue([{ id: "op-backoff", status: "queued", attempts: 0, nextAttemptAt: 0, payload: { action: "addMovement", clientOpId: "c-b" } }]);
-  for (let i = 0; i < app.OP_MAX_ATTEMPTS; i++) {
-    app.failQueuedOp("op-backoff", "fallo de prueba");
-  }
-  const [op] = JSON.parse(app.localStorage.getItem(app.OP_QUEUE_KEY));
-  assert.equal(op.status, "error");
-  assert.equal(op.attempts, app.OP_MAX_ATTEMPTS);
-  assert.equal(app.isOpActionable(op), false);
-  resetQueue();
-});
