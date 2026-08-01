@@ -103,65 +103,85 @@ function doGet(e) {
       }
       payload = buildAllDataPayload_(movementSheet, futureMovementSheet, investmentSheet, bankSheet, objectiveSheet, dataSheet, movedFutureMovements, investmentTotalsSheet, investmentEstimateRulesSheet, investmentEstimateLedgerSheet);
     } else if (action === 'updateInvestment') {
-      const targetSheet = params.sheetName || investmentSheet;
-      const investment = params.investment ? JSON.parse(params.investment) : {};
-      const previousInvestment = params.previousInvestment ? JSON.parse(params.previousInvestment) : null;
-      updateInvestment_(investment, targetSheet, previousInvestment);
-      if (params.newInvestment === '1' && !isCashInvestment_(investment)) {
-        updateInvestmentQuotesFromYahoo(targetSheet);
-      }
-      syncInvestmentTotalsSheet_(investmentTotalsSheet, dataSheet, targetSheet, movementSheet);
-      bumpSections_('investments', 'investmentTotals');
-      payload = buildInvestmentDataPayload_(targetSheet, objectiveSheet, movementSheet, futureMovementSheet, bankSheet, dataSheet, investmentTotalsSheet, investmentEstimateRulesSheet, investmentEstimateLedgerSheet);
-      payload.investmentUpdated = true;
+      payload = withScriptLock_(function() {
+        const targetSheet = params.sheetName || investmentSheet;
+        const investment = params.investment ? parseJsonParam_(params.investment, 'investment') || {} : {};
+        const previousInvestment = params.previousInvestment ? parseJsonParam_(params.previousInvestment, 'previousInvestment') : null;
+        updateInvestment_(investment, targetSheet, previousInvestment);
+        if (params.newInvestment === '1' && !isCashInvestment_(investment)) {
+          updateInvestmentQuotesFromYahoo(targetSheet);
+        }
+        syncInvestmentTotalsSheet_(investmentTotalsSheet, dataSheet, targetSheet, movementSheet);
+        bumpSections_('investments', 'investmentTotals');
+        const result = buildInvestmentDataPayload_(targetSheet, objectiveSheet, movementSheet, futureMovementSheet, bankSheet, dataSheet, investmentTotalsSheet, investmentEstimateRulesSheet, investmentEstimateLedgerSheet);
+        result.investmentUpdated = true;
+        return result;
+      });
     } else if (action === 'deleteInvestment') {
-      const targetSheet = params.sheetName || investmentSheet;
-      const investment = params.investment ? JSON.parse(params.investment) : {};
-      deleteInvestment_(investment, targetSheet, params.rowNumber || 0);
-      syncInvestmentTotalsSheet_(investmentTotalsSheet, dataSheet, targetSheet, movementSheet);
-      bumpSections_('investments', 'investmentTotals');
-      payload = buildInvestmentDataPayload_(targetSheet, objectiveSheet, movementSheet, futureMovementSheet, bankSheet, dataSheet, investmentTotalsSheet, investmentEstimateRulesSheet, investmentEstimateLedgerSheet);
-      payload.investmentDeleted = true;
+      payload = withScriptLock_(function() {
+        const targetSheet = params.sheetName || investmentSheet;
+        const investment = params.investment ? parseJsonParam_(params.investment, 'investment') || {} : {};
+        deleteInvestment_(investment, targetSheet, params.rowNumber || 0);
+        syncInvestmentTotalsSheet_(investmentTotalsSheet, dataSheet, targetSheet, movementSheet);
+        bumpSections_('investments', 'investmentTotals');
+        const result = buildInvestmentDataPayload_(targetSheet, objectiveSheet, movementSheet, futureMovementSheet, bankSheet, dataSheet, investmentTotalsSheet, investmentEstimateRulesSheet, investmentEstimateLedgerSheet);
+        result.investmentDeleted = true;
+        return result;
+      });
     } else if (action === 'saveInvestmentCategories') {
-      const targetSheet = params.sheetName || investmentSheet;
-      const investmentTypes = params.investmentTypes ? JSON.parse(params.investmentTypes) : [];
-      const renames = params.renames ? JSON.parse(params.renames) : {};
-      saveInvestmentCategories_(dataSheet, targetSheet, investmentTypes, renames, movementSheet, futureMovementSheet, investmentTotalsSheet);
-      syncInvestmentTotalsSheet_(investmentTotalsSheet, dataSheet, targetSheet, movementSheet);
-      bumpSections_('categories', 'investments', 'investmentTotals', 'transactions', 'futureTransactions');
-      payload = buildInvestmentDataPayload_(targetSheet, objectiveSheet, movementSheet, futureMovementSheet, bankSheet, dataSheet, investmentTotalsSheet, investmentEstimateRulesSheet, investmentEstimateLedgerSheet);
-      payload.categoriesUpdated = true;
+      payload = withScriptLock_(function() {
+        const targetSheet = params.sheetName || investmentSheet;
+        const investmentTypes = params.investmentTypes ? parseJsonParam_(params.investmentTypes, 'investmentTypes') || [] : [];
+        const renames = params.renames ? parseJsonParam_(params.renames, 'renames') || {} : {};
+        saveInvestmentCategories_(dataSheet, targetSheet, investmentTypes, renames, movementSheet, futureMovementSheet, investmentTotalsSheet);
+        syncInvestmentTotalsSheet_(investmentTotalsSheet, dataSheet, targetSheet, movementSheet);
+        bumpSections_('categories', 'investments', 'investmentTotals', 'transactions', 'futureTransactions');
+        const result = buildInvestmentDataPayload_(targetSheet, objectiveSheet, movementSheet, futureMovementSheet, bankSheet, dataSheet, investmentTotalsSheet, investmentEstimateRulesSheet, investmentEstimateLedgerSheet);
+        result.categoriesUpdated = true;
+        return result;
+      });
     } else if (action === 'updateInvestmentPrices') {
-      const priceUpdateResult = updateInvestmentQuotesFromYahoo(investmentSheet);
-      // Los precios han cambiado: aquí sí hay que recalcular la hoja de totales, porque
-      // los payloads de descarga ya no la sincronizan por su cuenta.
-      syncInvestmentTotalsSheet_(investmentTotalsSheet, dataSheet, investmentSheet, movementSheet);
-      bumpSections_('investments', 'investmentTotals');
-      payload = buildInvestmentDataPayload_(investmentSheet, objectiveSheet, movementSheet, futureMovementSheet, bankSheet, dataSheet, investmentTotalsSheet, investmentEstimateRulesSheet, investmentEstimateLedgerSheet);
-      payload.pricesUpdated = true;
-      payload.priceUpdateResult = priceUpdateResult;
+      payload = withScriptLock_(function() {
+        const priceUpdateResult = updateInvestmentQuotesFromYahoo(investmentSheet);
+        // Los precios han cambiado: aquí sí hay que recalcular la hoja de totales, porque
+        // los payloads de descarga ya no la sincronizan por su cuenta.
+        syncInvestmentTotalsSheet_(investmentTotalsSheet, dataSheet, investmentSheet, movementSheet);
+        bumpSections_('investments', 'investmentTotals');
+        const result = buildInvestmentDataPayload_(investmentSheet, objectiveSheet, movementSheet, futureMovementSheet, bankSheet, dataSheet, investmentTotalsSheet, investmentEstimateRulesSheet, investmentEstimateLedgerSheet);
+        result.pricesUpdated = true;
+        result.priceUpdateResult = priceUpdateResult;
+        return result;
+      });
     } else if (action === 'downloadInvestmentEstimateRules') {
       ensureInvestmentEstimateSheets_(investmentEstimateRulesSheet, investmentEstimateLedgerSheet, movementSheet);
       payload = { ok: true, investmentEstimateRules: readInvestmentEstimateRules_(investmentEstimateRulesSheet), investmentEstimateLedger: readInvestmentEstimateLedger_(investmentEstimateLedgerSheet) };
     } else if (action === 'clearInvestmentEstimates') {
-      clearInvestmentEstimates_(investmentEstimateLedgerSheet, movementSheet);
-      bumpSections_('investmentEstimateLedger');
-      payload = { ok: true, estimatesCleared: true, investmentEstimateLedger: [] };
+      payload = withScriptLock_(function() {
+        clearInvestmentEstimates_(investmentEstimateLedgerSheet, movementSheet);
+        bumpSections_('investmentEstimateLedger');
+        return { ok: true, estimatesCleared: true, investmentEstimateLedger: [] };
+      });
     } else if (action === 'simulateInvestmentEstimateRule') {
-      const created = simulateInvestmentEstimateRule_(investmentEstimateRulesSheet, investmentEstimateLedgerSheet, investmentSheet, params.ruleId || '', parseNumber_(params.simulationAmount), params.simulationDate || '');
-      bumpSections_('investmentEstimateLedger');
-      payload = { ok: true, estimateCreated: true, createdEstimate: created, investmentEstimateLedger: readInvestmentEstimateLedger_(investmentEstimateLedgerSheet) };
+      payload = withScriptLock_(function() {
+        const created = simulateInvestmentEstimateRule_(investmentEstimateRulesSheet, investmentEstimateLedgerSheet, investmentSheet, params.ruleId || '', parseNumber_(params.simulationAmount), params.simulationDate || '');
+        bumpSections_('investmentEstimateLedger');
+        return { ok: true, estimateCreated: true, createdEstimate: created, investmentEstimateLedger: readInvestmentEstimateLedger_(investmentEstimateLedgerSheet) };
+      });
     } else if (action === 'saveInvestmentEstimateAllocations') {
-      const entries = params.entries ? JSON.parse(params.entries) : [];
-      const saved = saveInvestmentEstimateAllocations_(investmentEstimateLedgerSheet, entries);
-      bumpSections_('investmentEstimateLedger');
-      payload = { ok: true, estimatesSaved: saved.length, investmentEstimateLedger: readInvestmentEstimateLedger_(investmentEstimateLedgerSheet) };
+      payload = withScriptLock_(function() {
+        const entries = params.entries ? parseJsonParam_(params.entries, 'entries') || [] : [];
+        const saved = saveInvestmentEstimateAllocations_(investmentEstimateLedgerSheet, entries);
+        bumpSections_('investmentEstimateLedger');
+        return { ok: true, estimatesSaved: saved.length, investmentEstimateLedger: readInvestmentEstimateLedger_(investmentEstimateLedgerSheet) };
+      });
     } else if (action === 'sendDailyNotifications') {
+      // Sin withScriptLock_: sendInvestmentNotificationsOnce_ ya toma el script lock
+      // internamente y el lock no es reentrante (se bloquearía contra sí mismo).
       const notificationRequestId = String(params.notificationRequestId || '').trim();
       const notificationResult = sendInvestmentNotificationsOnce_(notificationRequestId, function() {
         sendInvestmentNotificationMessages_(investmentSheet, { mode: investmentMode, rulesSheet: investmentEstimateRulesSheet, ledgerSheet: investmentEstimateLedgerSheet, movementSheet: movementSheet, investmentTotalsSheet: investmentTotalsSheet });
       });
-      payload = { ok: true, notificationsSent: notificationResult.sent, duplicate: notificationResult.duplicate, pricesUpdated: false, investmentMode: investmentMode }; 
+      payload = { ok: true, notificationsSent: notificationResult.sent, duplicate: notificationResult.duplicate, pricesUpdated: false, investmentMode: investmentMode };
     } else {
       payload = { ok: false, error: 'Unknown action' };
     }
@@ -298,6 +318,80 @@ function appliedBatchSidsKey_() {
   return 'moneyAppliedBatchSids';
 }
 
+function appliedTransferSidsKey_() {
+  return 'moneyAppliedTransferSids';
+}
+
+function receivedClientOpsKey_() {
+  return 'moneyReceivedClientOps';
+}
+
+// Marca "recibida, esperando turno". La fila de "Pendientes" solo se escribe DESPUÉS
+// de obtener el script lock, así que durante esa espera (hasta 30 s) checkClientOp
+// respondía "no sé nada" y el cliente lo contaba como intento fallido, agotando los
+// reintentos. Este registro se escribe ANTES de esperar el lock para que el cliente
+// sepa que su petición está viva.
+var RECEIVED_OP_STALE_MS = 3 * 60 * 1000;
+
+function rememberReceivedClientOp_(clientOpId) {
+  if (!clientOpId) return;
+  try {
+    const now = Date.now();
+    const items = readBoundedList_(receivedClientOpsKey_())
+      .filter(function(item) {
+        return item && item.id !== clientOpId && (now - Number(item.at || 0)) < RECEIVED_OP_STALE_MS;
+      });
+    items.push({ id: clientOpId, at: now });
+    storeBoundedList_(receivedClientOpsKey_(), items);
+  } catch (err) {
+    // Es solo una pista de estado: si falla, se sigue adelante.
+  }
+}
+
+function forgetReceivedClientOp_(clientOpId) {
+  if (!clientOpId) return;
+  try {
+    const items = readBoundedList_(receivedClientOpsKey_());
+    const next = items.filter(function(item) { return item && item.id !== clientOpId; });
+    if (next.length !== items.length) storeBoundedList_(receivedClientOpsKey_(), next);
+  } catch (err) {
+    // Las entradas caducan solas por RECEIVED_OP_STALE_MS.
+  }
+}
+
+function isClientOpReceived_(clientOpId) {
+  if (!clientOpId) return false;
+  const now = Date.now();
+  return readBoundedList_(receivedClientOpsKey_()).some(function(item) {
+    return item && item.id === clientOpId && (now - Number(item.at || 0)) < RECEIVED_OP_STALE_MS;
+  });
+}
+
+// Las transferencias no escriben fila, así que no tienen SID en la hoja que las
+// proteja de un reenvío: su única defensa era la lista de operaciones procesadas,
+// que se poda al superar el límite de 9 KB por propiedad. Si una entrada se
+// desalojaba mientras el cliente aún esperaba confirmación, el reenvío movía el
+// dinero DOS VECES. Este registro propio, con identificadores cortos, lo impide.
+function wasTransferApplied_(transferSid) {
+  if (!transferSid) return false;
+  return readBoundedList_(appliedTransferSidsKey_()).some(function(item) {
+    return String(item && item.id || item) === transferSid;
+  });
+}
+
+function rememberAppliedTransfer_(transferSid) {
+  if (!transferSid) return;
+  try {
+    const items = readBoundedList_(appliedTransferSidsKey_())
+      .filter(function(item) { return String(item && item.id || item) !== transferSid; });
+    items.push(transferSid);
+    storeBoundedList_(appliedTransferSidsKey_(), items);
+  } catch (err) {
+    // Si no se puede registrar, el reintento volvería a mover el saldo; se prefiere
+    // no romper la transferencia que ya se aplicó correctamente.
+  }
+}
+
 function movementSidHeader_() {
   return 'SID';
 }
@@ -360,7 +454,11 @@ function readMovementChangeLog_() {
 }
 
 function writeMovementChangeLog_(items) {
-  PropertiesService.getDocumentProperties().setProperty(movementChangelogKey_(), JSON.stringify((items || []).slice(-MOVEMENT_CHANGELOG_LIMIT)));
+  // storeBoundedList_ respeta el límite de 9 KB por propiedad: escribir la lista
+  // entera hacía que, pasadas ~35 entradas, CADA mutación lanzara una excepción al
+  // registrar el cambio. Si se desalojan entradas antiguas no pasa nada: el cliente
+  // cuyo sinceRev quedó fuera del log recibe incremental:false y re-descarga entera.
+  storeBoundedList_(movementChangelogKey_(), (items || []).slice(-MOVEMENT_CHANGELOG_LIMIT));
 }
 
 function appendMovementChanges_(changes) {
@@ -473,8 +571,15 @@ function buildClientOpStatusPayload_(clientOpId) {
   // "pending" gana al último error: si hay un reintento en curso, el error anterior
   // ya no describe el estado actual de la operación.
   if (isClientOpPending_(clientOpId)) return { ok: true, completed: false, pending: true };
+  // Recibida pero todavía esperando el script lock: sigue viva, no es un fallo.
+  if (isClientOpReceived_(clientOpId)) return { ok: true, completed: false, pending: true };
   const failure = clientOpFailure_(clientOpId);
-  if (failure) return { ok: true, completed: false, pending: false, failed: true, error: failure };
+  if (failure) {
+    // retryable: fallos transitorios (lock ocupado) que el cliente debe reintentar
+    // con su backoff normal en vez de detener la operación con error terminal.
+    const retryable = String(failure).indexOf('LOCK_TIMEOUT') === 0;
+    return { ok: true, completed: false, pending: false, failed: true, retryable, error: failure };
+  }
   return { ok: true, completed: false, pending: false };
 }
 
@@ -606,8 +711,19 @@ function doPost(e) {
   let pendingId = '';
   let lock = null;
   try {
-    payload = JSON.parse(e.postData.contents || '{}');
+    try {
+      payload = JSON.parse(e && e.postData && e.postData.contents || '{}');
+    } catch (parseErr) {
+      throw new Error('VALIDATION: el cuerpo de la petición no es JSON válido.');
+    }
     requireToken_(payload.token || '');
+    // Tope de tamaño de lote: por encima del máximo que genera la app legítimamente
+    // (366 fechas por recurrencia) solo puede ser un error o un abuso.
+    ['movements', 'transfers', 'investments', 'entries', 'banks', 'sids'].forEach(function(field) {
+      if (Array.isArray(payload[field]) && payload[field].length > 500) {
+        throw new Error('VALIDATION: demasiados elementos en ' + field + ' (máximo 500).');
+      }
+    });
     // Ruta rápida sin bloqueo para operaciones ya confirmadas (evita serializar la
     // tormenta de reintentos que dispara el cliente).
     if (payload.clientOpId && wasClientOpProcessed_(payload.clientOpId)) {
@@ -620,8 +736,22 @@ function doPost(e) {
     // reintento para siempre) y la propiedad de operaciones procesadas (perdiendo
     // la confirmación), y el cliente se quedaba en "Confirmando" en bucle sin que
     // el cambio llegara a Sheets.
+    // Antes de ponerse a la cola del lock: así checkClientOp puede responder
+    // "pendiente" mientras esta petición espera su turno, en vez de "no sé nada"
+    // (que el cliente contabilizaba como intento fallido).
+    rememberReceivedClientOp_(payload.clientOpId || '');
     lock = LockService.getScriptLock();
-    lock.waitLock(30000);
+    try {
+      lock.waitLock(30000);
+    } catch (lockErr) {
+      lock = null;
+      // Un choque con el lock es transitorio: se marca como reintentable para que el
+      // cliente lo reintente solo, en vez de registrarlo como fallo permanente.
+      throw new Error('LOCK_TIMEOUT: el servidor está ocupado con otra operación; reintenta en unos segundos.');
+    }
+    // Esta ejecución ya posee el lock: los helpers que usan withScriptLock_ deben
+    // ejecutarse directamente en vez de intentar adquirirlo otra vez.
+    scriptLockHeld_ = true;
     // Reevaluado dentro del lock: ya con el estado consolidado por otra petición.
     if (payload.clientOpId && wasClientOpProcessed_(payload.clientOpId)) {
       return json_({ ok: true, duplicate: true });
@@ -641,7 +771,17 @@ function doPost(e) {
         adjustInvestmentCostFromMovement_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.dataSheet || 'Datos', payload.investmentSheet || DEFAULT_INVESTMENT_SHEET, payload.sheetName || DEFAULT_MOVEMENT_SHEET, payload.movement, 1);
         syncInvestmentTotalsSheet_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.dataSheet || 'Datos', payload.investmentSheet || DEFAULT_INVESTMENT_SHEET, payload.sheetName || DEFAULT_MOVEMENT_SHEET);
       }
-      if (payload.account) adjustBank_(payload.bankSheet || DEFAULT_BANK_SHEET, payload.account, Number(payload.movement && (payload.movement.amount || payload.movement.importe) || 0));
+      if (payload.account) {
+        // El ajuste de saldo es una suma, no es idempotente: si el registro del
+        // clientOpId procesado se desalojó de la lista acotada, un reintento
+        // volvería a mover el dinero. El sid del movimiento hace de marcador.
+        const movementSid = String(payload.movement && payload.movement.sid || '').trim();
+        const alreadyApplied = movementSid && payload.clientOpId && appliedBatchSids_(payload.clientOpId)[movementSid];
+        if (!alreadyApplied) {
+          adjustBank_(payload.bankSheet || DEFAULT_BANK_SHEET, payload.account, Number(payload.movement && (payload.movement.amount || payload.movement.importe) || 0));
+          if (movementSid && payload.clientOpId) rememberAppliedBatchSids_(payload.clientOpId, [movementSid]);
+        }
+      }
       return finishPost_(pendingId, payload, { ok: true });
     }
     if (payload.action === 'addFutureMovement') {
@@ -734,7 +874,13 @@ function doPost(e) {
       return finishPost_(pendingId, payload, { ok: true });
     }
     if (payload.action === 'transferBank') {
+      // Mover saldo es una suma: sin este guardia, un reenvío duplicaría el dinero.
+      const transferSid = String(payload.transferSid || '').trim();
+      if (transferSid && wasTransferApplied_(transferSid)) {
+        return finishPost_(pendingId, payload, { ok: true, duplicate: true });
+      }
       transferBank_(payload.bankSheet || DEFAULT_BANK_SHEET, payload.from, payload.to, Number(payload.amount || 0));
+      rememberAppliedTransfer_(transferSid);
       return finishPost_(pendingId, payload, { ok: true });
     }
     if (payload.action === 'renameAccount') {
@@ -759,26 +905,99 @@ function doPost(e) {
     }
     // El cliente no puede leer esta respuesta (no-cors): dejamos el error registrado
     // para que lo recoja checkClientOp y lo muestre en vez de reintentar sin fin.
-    rememberClientOpFailure_(payload && payload.clientOpId || '', err && err.message || err);
+    // Excepción: un timeout de lock NO es un fallo de la operación — si se registrara,
+    // el cliente la marcaría como error terminal por una colisión transitoria.
+    const message = String(err && err.message || err || '');
+    if (message.indexOf('LOCK_TIMEOUT') !== 0) {
+      rememberClientOpFailure_(payload && payload.clientOpId || '', message);
+    }
     return json_(errorPayload_(err));
   } finally {
+    forgetReceivedClientOp_(payload && payload.clientOpId || '');
     if (lock) {
+      scriptLockHeld_ = false;
       try { lock.releaseLock(); } catch (releaseErr) {}
     }
   }
 }
 
+// El token es OBLIGATORIO: sin él, cualquiera con la URL /exec podía leer y
+// modificar todas las finanzas. Configura APP_TOKEN arriba y el mismo valor en
+// Ajustes de la app.
 function requireToken_(token) {
-  if (APP_TOKEN && token !== APP_TOKEN) {
-    throw new Error('Invalid app token');
+  if (!APP_TOKEN) {
+    throw new Error('AUTH: configura APP_TOKEN en el Apps Script (es obligatorio) y en Ajustes de la app.');
+  }
+  if (token !== APP_TOKEN) {
+    throw new Error('AUTH: Invalid app token');
+  }
+}
+
+// Serializa también las mutaciones que llegan por GET (JSONP): sin lock, dos
+// pestañas moviendo futuros vencidos a la vez duplicaban movimientos y aplicaban
+// dos veces los ajustes de saldo.
+// JSON de parámetros de la petición con error limpio: un valor malformado devolvía
+// antes el mensaje interno del parser al caller.
+function parseJsonParam_(raw, what) {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch (err) {
+    throw new Error('VALIDATION: el parámetro ' + what + ' no es JSON válido.');
+  }
+}
+
+// Guard de reentrada: el script lock no es fiablemente reentrante, así que una
+// llamada anidada (una acción bloqueada que invoca otro helper bloqueado) podría
+// quedarse esperándose a sí misma hasta el timeout. Como la ejecución ya posee el
+// lock, la anidada se limita a ejecutar el cuerpo.
+var scriptLockHeld_ = false;
+function withScriptLock_(fn) {
+  if (scriptLockHeld_) return fn();
+  const lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(30000);
+  } catch (err) {
+    throw new Error('LOCK_TIMEOUT: el servidor está ocupado con otra operación; reintenta en unos segundos.');
+  }
+  scriptLockHeld_ = true;
+  try {
+    return fn();
+  } finally {
+    scriptLockHeld_ = false;
+    try { lock.releaseLock(); } catch (releaseErr) {}
   }
 }
 
 function appendPendingPost_(payload) {
   const id = Utilities.getUuid();
   const sheet = getOrCreateSheet_(DEFAULT_PENDING_SHEET, ['ID', 'Fecha', 'Accion', 'Payload']);
-  sheet.appendRow([id, new Date(), payload.action || '', JSON.stringify(sanitizePendingPayload_(payload))]);
+  purgeStalePendingRows_(sheet);
+  appendRowSafe_(sheet, [id, new Date(), payload.action || '', JSON.stringify(sanitizePendingPayload_(payload))]);
   return id;
+}
+
+// Las filas huérfanas de "Pendientes" (ejecuciones cortadas antes de limpiar) se
+// acumulaban para siempre y isClientOpPending_ las recorría todas en cada POST.
+// Se purgan las caducadas como mucho una vez cada hora; un fallo aquí nunca
+// bloquea la operación en curso.
+function purgeStalePendingRows_(sheet) {
+  try {
+    const props = PropertiesService.getDocumentProperties();
+    const lastPurge = Number(props.getProperty('moneyPendingLastPurge') || 0);
+    if (Date.now() - lastPurge < 60 * 60 * 1000) return;
+    props.setProperty('moneyPendingLastPurge', String(Date.now()));
+    const lastRow = sheet.getLastRow();
+    if (lastRow < 2) return;
+    const dates = sheet.getRange(2, 2, lastRow - 1, 1).getValues();
+    const staleBefore = Date.now() - Math.max(PENDING_OP_STALE_MS * 10, 15 * 60 * 1000);
+    for (let i = dates.length - 1; i >= 0; i--) {
+      const at = dates[i][0] instanceof Date ? dates[i][0].getTime() : new Date(dates[i][0]).getTime();
+      if (!Number.isNaN(at) && at < staleBefore) sheet.deleteRow(i + 2);
+    }
+  } catch (err) {
+    // La purga es oportunista.
+  }
 }
 
 function finishPost_(pendingId, requestPayload, responsePayload) {
@@ -835,13 +1054,30 @@ function movementSidColumn_(sheet) {
   return headers.indexOf('sid') + 1;
 }
 
+// Memo por ejecución: ensureMovementSidColumn_ lee (y a veces reescribe) la columna
+// SID entera. Los bucles que la llamaban por fila hacían O(n²) llamadas a la API de
+// Sheets y con unos miles de movimientos chocaban con el límite de 6 minutos.
+// Cada ejecución de Apps Script es aislada, así que la caché vive solo esta petición.
+var movementSidColumnCache_ = {};
+function ensureMovementSidColumnCached_(sheet) {
+  if (!sheet) return 0;
+  const key = String(sheet.getSheetId());
+  if (!(key in movementSidColumnCache_)) {
+    movementSidColumnCache_[key] = ensureMovementSidColumn_(sheet);
+  }
+  return movementSidColumnCache_[key];
+}
+
 function ensureMovementSidColumn_(sheet) {
   if (!sheet) return 0;
   const lastCol = Math.max(sheet.getLastColumn(), 1);
   let sidCol = movementSidColumn_(sheet);
   if (!sidCol) {
     sidCol = lastCol + 1;
-    sheet.getRange(1, sidCol).setValue(movementSidHeader_());
+    // Escritura protegida: esta función corre ANTES que cualquier otra en las altas
+    // de movimiento, así que una regla de validación heredada aquí tumbaba la
+    // operación entera antes de llegar a las escrituras que sí estaban protegidas.
+    setCellValueSafe_(sheet.getRange(1, sidCol), movementSidHeader_());
   }
   const lastRow = sheet.getLastRow();
   if (lastRow >= 2) {
@@ -854,9 +1090,57 @@ function ensureMovementSidColumn_(sheet) {
         changed = true;
       }
     }
-    if (changed) range.setValues(values);
+    if (changed) setRangeValuesSafe_(range, values);
   }
   return sidCol;
+}
+
+// Neutraliza la inyección de fórmulas: un texto de usuario que empiece por '='
+// (u otro prefijo activo) se escribiría como fórmula viva en la hoja. El apóstrofo
+// inicial es invisible en la celda y Sheets lo quita al leer.
+function sanitizeCell_(value) {
+  if (typeof value === 'string' && /^[=+@\t\r]/.test(value)) return "'" + value;
+  return value;
+}
+
+// Escritura tolerante a las reglas de validación de datos de la hoja. Caso real:
+// la columna CUENTA con un desplegable rechaza el texto "Origen → Destino" de las
+// transferencias periódicas y la operación fallaba PARA SIEMPRE (cada reintento
+// escribía el mismo valor). Si la escritura choca con una validación, se limpia la
+// validación SOLO del rango recién escrito (heredada por autofill de la fila
+// anterior; el resto de la hoja no se toca) y se reintenta una vez.
+function setRangeValuesSafe_(range, values) {
+  try {
+    range.setValues(values);
+  } catch (err) {
+    const message = String(err && err.message || err || '');
+    if (!/validaci|validation/i.test(message)) throw err;
+    range.clearDataValidations();
+    try {
+      range.setValues(values);
+    } catch (retryErr) {
+      throw new Error('VALIDATION: una regla de validación de datos de la hoja rechaza el valor a escribir (' + message + '). Relaja esa regla en la hoja.');
+    }
+  }
+}
+
+function setCellValueSafe_(range, value) {
+  setRangeValuesSafe_(range, [[value]]);
+}
+
+// Variante de appendRow con la misma tolerancia a reglas de validación: si la fila
+// nueva hereda una regla que rechaza el valor, se limpia la validación de esa fila
+// y se reintenta una vez.
+function appendRowSafe_(sheet, values) {
+  const row = sheet.getLastRow() + 1;
+  try {
+    sheet.appendRow(values);
+  } catch (err) {
+    const message = String(err && err.message || err || '');
+    if (!/validaci|validation/i.test(message)) throw err;
+    sheet.getRange(row, 1, 1, Math.max(values.length, 1)).clearDataValidations();
+    setRangeValuesSafe_(sheet.getRange(row, 1, 1, values.length), [values]);
+  }
 }
 
 function writeMovementRow_(sheet, rowNumber, movement, sid, account) {
@@ -864,10 +1148,10 @@ function writeMovementRow_(sheet, rowNumber, movement, sid, account) {
   if (Number.isNaN(date.getTime())) throw new Error('Invalid date');
   const amount = Number(movement.amount || movement.importe);
   if (!Number.isFinite(amount)) throw new Error('Invalid amount');
-  const sidCol = ensureMovementSidColumn_(sheet);
-  sheet.getRange(rowNumber, 1, 1, 8).setValues([[date, `=YEAR(A${rowNumber})`, `=MONTH(A${rowNumber})`, `=DAY(A${rowNumber})`, movement.tipo || '', movement.concepto || '', movement.descripcion || '', amount]]);
-  if (sheet.getLastColumn() >= 9) sheet.getRange(rowNumber, 9).setValue(account ?? movement.cuenta ?? movement.account ?? '');
-  if (sidCol) sheet.getRange(rowNumber, sidCol).setValue(sid || movementSidFrom_(movement));
+  const sidCol = ensureMovementSidColumnCached_(sheet);
+  setRangeValuesSafe_(sheet.getRange(rowNumber, 1, 1, 8), [[date, `=YEAR(A${rowNumber})`, `=MONTH(A${rowNumber})`, `=DAY(A${rowNumber})`, sanitizeCell_(movement.tipo || ''), sanitizeCell_(movement.concepto || ''), sanitizeCell_(movement.descripcion || ''), amount]]);
+  if (sheet.getLastColumn() >= 9) setCellValueSafe_(sheet.getRange(rowNumber, 9), sanitizeCell_(account ?? movement.cuenta ?? movement.account ?? ''));
+  if (sidCol) setCellValueSafe_(sheet.getRange(rowNumber, sidCol), sid || movementSidFrom_(movement));
 }
 
 // Añade varios movimientos con UNA sola lectura de la columna SID y UNA sola
@@ -878,7 +1162,7 @@ function writeMovementRow_(sheet, rowNumber, movement, sid, account) {
 // la hoja, así que reintentar un lote aplicado a medias no duplica filas.
 function appendMovementRows_(sheet, entries) {
   if (!sheet || !entries || !entries.length) return 0;
-  const sidCol = ensureMovementSidColumn_(sheet);
+  const sidCol = ensureMovementSidColumnCached_(sheet);
   const lastRow = sheet.getLastRow();
   const existingSids = {};
   if (sidCol && lastRow >= 2) {
@@ -905,16 +1189,16 @@ function appendMovementRows_(sheet, entries) {
     row[1] = `=YEAR(A${rowNumber})`;
     row[2] = `=MONTH(A${rowNumber})`;
     row[3] = `=DAY(A${rowNumber})`;
-    row[4] = movement.tipo || '';
-    row[5] = movement.concepto || '';
-    row[6] = movement.descripcion || '';
+    row[4] = sanitizeCell_(movement.tipo || '');
+    row[5] = sanitizeCell_(movement.concepto || '');
+    row[6] = sanitizeCell_(movement.descripcion || '');
     row[7] = amount;
-    if (width >= 9) row[8] = entry.account != null ? entry.account : (movement.cuenta || movement.account || '');
+    if (width >= 9) row[8] = sanitizeCell_(entry.account != null ? entry.account : (movement.cuenta || movement.account || ''));
     if (sidCol) row[sidCol - 1] = sid;
     rows.push(row);
   });
   if (!rows.length) return 0;
-  sheet.getRange(lastRow + 1, 1, rows.length, width).setValues(rows);
+  setRangeValuesSafe_(sheet.getRange(lastRow + 1, 1, rows.length, width), rows);
   return rows.length;
 }
 
@@ -934,7 +1218,7 @@ function addMovement_(movement, sheetName) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName(sheetName);
   if (!sheet) throw new Error(`Sheet not found: ${sheetName}`);
-  ensureMovementSidColumn_(sheet);
+  ensureMovementSidColumnCached_(sheet);
   const row = sheet.getLastRow() + 1;
   writeMovementRow_(sheet, row, movement, movementSidFrom_(movement), movement.cuenta || movement.account || '');
 }
@@ -953,7 +1237,7 @@ function readMovementsPage_(sheetName, offset, limit, optional) {
   // ensureMovementSidColumn_ lee (y a veces reescribe) la columna SID entera. Hacerlo en
   // cada página convertía la descarga en O(páginas × filas): con la primera página basta,
   // porque el resto de páginas de la misma descarga ya encuentran la columna rellena.
-  const sidCol = Number(offset || 0) > 0 ? movementSidColumn_(sheet) : ensureMovementSidColumn_(sheet);
+  const sidCol = Number(offset || 0) > 0 ? movementSidColumn_(sheet) : ensureMovementSidColumnCached_(sheet);
   const total = Math.max(0, sheet.getLastRow() - 1);
   const safeOffset = Math.max(0, Math.min(Number(offset || 0), total));
   const requestedLimit = Number(limit || 500);
@@ -990,7 +1274,7 @@ function updateMovement_(movement, sheetName, previousMovement) {
   if (!movement) throw new Error('Missing movement');
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
   if (!sheet) throw new Error(`Sheet not found: ${sheetName}`);
-  const sidCol = ensureMovementSidColumn_(sheet);
+  const sidCol = ensureMovementSidColumnCached_(sheet);
   const targetSid = String(movement.sid || previousMovement && previousMovement.sid || '').trim();
   let rowNumber = targetSid ? findMovementRowBySid_(sheet, targetSid, sidCol) : Number(movement.rowNumber || 0);
   if (rowNumber < 2 || rowNumber > sheet.getLastRow()) rowNumber = 0;
@@ -1003,7 +1287,7 @@ function updateMovement_(movement, sheetName, previousMovement) {
 function deleteMovement_(rowNumber, sheetName, movement) {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
   if (!sheet) throw new Error(`Sheet not found: ${sheetName}`);
-  const sidCol = ensureMovementSidColumn_(sheet);
+  const sidCol = ensureMovementSidColumnCached_(sheet);
   const sid = String(movement && movement.sid || '').trim();
   let row = sid ? findMovementRowBySid_(sheet, sid, sidCol) : Number(rowNumber || 0);
   if (movement && row >= 2 && row <= sheet.getLastRow() && !movementMatchesSheetRow_(sheet, row, movement)) {
@@ -1021,7 +1305,7 @@ function deleteMovementsBatch_(items, sheetName) {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
   if (!sheet) throw new Error(`Sheet not found: ${sheetName}`);
   const rows = [];
-  const sidCol = ensureMovementSidColumn_(sheet);
+  const sidCol = ensureMovementSidColumnCached_(sheet);
   items.forEach(item => {
     const movement = item && (item.movement || item);
     const sid = String(movement && movement.sid || '').trim();
@@ -1043,7 +1327,7 @@ function findMovementRow_(sheet, movement, excludedRows) {
   const excluded = excludedRows || [];
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) return 0;
-  const sidCol = ensureMovementSidColumn_(sheet);
+  const sidCol = ensureMovementSidColumnCached_(sheet);
   const sid = String(movement && movement.sid || '').trim();
   const sidRow = sid ? findMovementRowBySid_(sheet, sid, sidCol) : 0;
   if (sidRow && excluded.indexOf(sidRow) === -1) return sidRow;
@@ -1055,7 +1339,7 @@ function findMovementRow_(sheet, movement, excludedRows) {
 }
 
 function movementMatchesSheetRow_(sheet, row, movement) {
-  const sidCol = ensureMovementSidColumn_(sheet);
+  const sidCol = ensureMovementSidColumnCached_(sheet);
   const values = sheet.getRange(row, 1, 1, Math.max(sheet.getLastColumn(), sidCol, 8)).getValues()[0];
   const movementSid = String(movement && movement.sid || '').trim();
   const rowSid = sidCol ? String(values[sidCol - 1] || '').trim() : '';
@@ -1078,7 +1362,7 @@ function futureMovementHeaders_() {
 function addFutureMovement_(movement, sheetName, account) {
   if (!movement) throw new Error('Missing movement');
   const sheet = getOrCreateSheet_(sheetName, futureMovementHeaders_());
-  ensureMovementSidColumn_(sheet);
+  ensureMovementSidColumnCached_(sheet);
   const row = sheet.getLastRow() + 1;
   writeMovementRow_(sheet, row, movement, movementSidFrom_(movement), account || movement.account || movement.cuenta || '');
 }
@@ -1224,14 +1508,38 @@ function readFutureMovements_(sheetName) {
   return page.rows;
 }
 
+// Comprobación barata y de solo lectura: ¿hay algún futuro vencido? Permite que la
+// carga normal (sin nada que mover) no tenga que esperar el script lock.
+function hasDueFutureMovements_(futureSheetName) {
+  const futureSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(futureSheetName);
+  if (!futureSheet || futureSheet.getLastRow() < 2) return false;
+  const dates = futureSheet.getRange(2, 1, futureSheet.getLastRow() - 1, 1).getValues();
+  const today = new Date();
+  today.setHours(23, 59, 59, 999);
+  return dates.some(function(row) {
+    const date = parseMovementDate_(row[0]);
+    return date && date <= today;
+  });
+}
+
+// Mueve los futuros vencidos DENTRO del script lock: la relectura dentro del lock
+// hace la operación segura ante dos peticiones simultáneas (la segunda ya no
+// encuentra las filas movidas por la primera).
 function moveDueFutureMovements_(futureSheetName, movementSheetName, bankSheetName, skipSids) {
+  if (!hasDueFutureMovements_(futureSheetName)) return [];
+  return withScriptLock_(function() {
+    return moveDueFutureMovementsLocked_(futureSheetName, movementSheetName, bankSheetName, skipSids);
+  });
+}
+
+function moveDueFutureMovementsLocked_(futureSheetName, movementSheetName, bankSheetName, skipSids) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const futureSheet = ss.getSheetByName(futureSheetName);
   if (!futureSheet) return [];
   const bankSheet = ss.getSheetByName(bankSheetName);
   const skipSet = {};
   (skipSids || []).forEach(function(sid) { const trimmed = String(sid || '').trim(); if (trimmed) skipSet[trimmed] = true; });
-  const sidCol = ensureMovementSidColumn_(futureSheet);
+  const sidCol = ensureMovementSidColumnCached_(futureSheet);
   const values = futureSheet.getDataRange().getValues();
   const today = new Date();
   today.setHours(23, 59, 59, 999);
@@ -1268,7 +1576,16 @@ function getOrCreateSheet_(sheetName, headers) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   let sheet = ss.getSheetByName(sheetName);
   if (!sheet) {
-    sheet = ss.insertSheet(sheetName);
+    // El nombre viene de la petición: se valida antes de crear nada para que un
+    // caller no pueda sembrar la hoja de cálculo de pestañas basura.
+    const name = String(sheetName || '').trim();
+    if (!name || name.length > 80 || /[\[\]*?:\/\\]/.test(name)) {
+      throw new Error('VALIDATION: nombre de hoja no válido: ' + name);
+    }
+    if (ss.getSheets().length >= 40) {
+      throw new Error('VALIDATION: demasiadas hojas en el documento; no se crea "' + name + '".');
+    }
+    sheet = ss.insertSheet(name);
     sheet.appendRow(headers);
   }
   return sheet;
@@ -1494,7 +1811,7 @@ function applyInvestmentEstimateRulesForNewMovements_(rulesSheetName, ledgerShee
   const baseline = storedBaseline ? Number(storedBaseline) : (processLastIfNoBaseline ? Math.max(1, lastRow - 1) : lastRow);
   if (!storedBaseline && !processLastIfNoBaseline) props.setProperty(baselineKey, String(lastRow));
   if (lastRow <= baseline) return [];
-  const sidCol = ensureMovementSidColumn_(movementSheet);
+  const sidCol = ensureMovementSidColumnCached_(movementSheet);
   const width = Math.max(movementSheet.getLastColumn(), sidCol, 9);
   const values = movementSheet.getRange(baseline + 1, 1, lastRow - baseline, width).getValues();
   const movements = values.map(function(row, index) { return movementObjectFromRow_(row, baseline + 1 + index, sidCol); }).filter(Boolean);
@@ -1776,12 +2093,24 @@ function saveBanks_(banks, sheetName) {
 
   banks.forEach(item => {
     if (!item || !item.cuenta) return;
-    const rowNumber = Number(item.rowNumber || findBankRow_(sheet, item.cuenta) || 0);
-    const values = [[item.cuenta, Number(item.dinero || 0)]];
-    if (rowNumber >= 2 && rowNumber <= sheet.getMaxRows()) {
-      sheet.getRange(rowNumber, 1, 1, 2).setValues(values);
+    const amount = parseNumber_(item.dinero);
+    if (!Number.isFinite(amount)) return;
+    // El rowNumber del cliente puede estar desfasado si la hoja cambió: se verifica
+    // que esa fila sea de la misma cuenta antes de escribir encima; si no, se busca
+    // por nombre para no machacar una fila ajena.
+    let rowNumber = Number(item.rowNumber || 0);
+    if (rowNumber >= 2 && rowNumber <= sheet.getLastRow()) {
+      const currentAccount = String(sheet.getRange(rowNumber, 1).getValue() || '').trim();
+      if (currentAccount !== String(item.cuenta).trim()) rowNumber = 0;
     } else {
-      sheet.appendRow(values[0]);
+      rowNumber = 0;
+    }
+    if (!rowNumber) rowNumber = Number(findBankRow_(sheet, item.cuenta) || 0);
+    const values = [[sanitizeCell_(item.cuenta), amount]];
+    if (rowNumber >= 2 && rowNumber <= sheet.getMaxRows()) {
+      setRangeValuesSafe_(sheet.getRange(rowNumber, 1, 1, 2), values);
+    } else {
+      appendRowSafe_(sheet, values[0]);
     }
   });
 }
@@ -1800,7 +2129,10 @@ function adjustBank_(sheetName, account, delta) {
   const row = findBankRow_(sheet, account);
   if (!row) throw new Error(`Bank account not found: ${account}`);
   const current = parseNumber_(sheet.getRange(row, 2).getValue());
-  sheet.getRange(row, 2).setValue((Number.isFinite(current) ? current : 0) + delta);
+  // Escritura protegida: es la ÚNICA que hace una transferencia ya vencida, así que
+  // una regla de validación en la columna de importes (p. ej. "mayor que 0") la
+  // dejaba fallando para siempre.
+  setCellValueSafe_(sheet.getRange(row, 2), (Number.isFinite(current) ? current : 0) + delta);
 }
 
 function findBankRow_(sheet, account) {
@@ -1848,8 +2180,10 @@ function renameAccountInMovementSheet_(sheetName, oldName, newName) {
     changed++;
   }
   if (changed) {
-    accountRange.setValues(accountValues);
-    descRange.setValues(descValues);
+    // Escrituras protegidas: la columna 9 (CUENTA) es justo la que suele llevar un
+    // desplegable, y aquí se le escribe texto de par de cuentas "A → B".
+    setRangeValuesSafe_(accountRange, accountValues);
+    setRangeValuesSafe_(descRange, descValues);
   }
   return changed;
 }
@@ -2112,7 +2446,10 @@ function updateInvestmentQuotesFromYahooOptimized_(sheetName) {
   });
 
   updateCurrencyHelperRow_(sheet, col, rates);
-  return { prices, previous };
+  // Los tickers que no se pudieron consultar viajan en la respuesta para que la app
+  // pueda avisar, en vez de dar por buena una actualización incompleta.
+  const failures = quotes.__failures || [];
+  return { prices, previous, failures, failed: failures.length };
 }
 
 function writeInvestmentVariation_(sheet, row, column, percentagePoints) {
@@ -2195,9 +2532,19 @@ function getYahooQuotes_(tickers) {
   } catch (err) {
     // Fallback individual abajo.
   }
+  // Un ticker que Yahoo no reconoce (o un fallo puntual de red) no debe tumbar la
+  // actualización entera: antes el throw dentro del forEach abortaba también los
+  // que sí se habían resuelto. Los fallos se acumulan y se informan aparte.
+  const failures = [];
   uniqueTickers.forEach(ticker => {
-    if (!out[ticker]) out[ticker] = getYahooQuote_(ticker);
+    if (out[ticker]) return;
+    try {
+      out[ticker] = getYahooQuote_(ticker);
+    } catch (err) {
+      failures.push({ ticker: ticker, error: String(err && err.message || err) });
+    }
   });
+  if (failures.length) out.__failures = failures;
   return out;
 }
 
@@ -2299,9 +2646,7 @@ function sendInvestmentNotificationsOnce_(requestId, sendFn) {
     sendFn();
     return { sent: true, duplicate: false };
   }
-  const lock = LockService.getScriptLock();
-  lock.waitLock(30000);
-  try {
+  return withScriptLock_(function() {
     const props = PropertiesService.getScriptProperties();
     let processed = [];
     try {
@@ -2312,13 +2657,14 @@ function sendInvestmentNotificationsOnce_(requestId, sendFn) {
     if (processed.some(function(item) { return item && item.id === requestId; })) {
       return { sent: false, duplicate: true };
     }
-    sendFn();
+    // La petición se marca como procesada ANTES de enviar: sendFn manda N mensajes
+    // de Telegram y, si fallaba a mitad, el reintento reenviaba los ya entregados.
+    // Para un aviso informativo diario es preferible perderlo una vez a duplicarlo.
     processed.push({ id: requestId, at: new Date().toISOString() });
     props.setProperty(PROCESSED_NOTIFICATION_REQUESTS_KEY, JSON.stringify(processed.slice(-100)));
+    sendFn();
     return { sent: true, duplicate: false };
-  } finally {
-    lock.releaseLock();
-  }
+  });
 }
 
 function setupDailyMoneyManagementNotifications() {
@@ -2862,6 +3208,9 @@ function json_(payload) {
 
 function errorCode_(err) {
   const message = String(err && err.message ? err.message : err || '');
+  if (/^AUTH:/.test(message)) return 'AUTH';
+  if (/^VALIDATION:/.test(message)) return 'VALIDATION';
+  if (/^LOCK_TIMEOUT/.test(message)) return 'BUSY';
   if (/Invalid app token/i.test(message)) return 'AUTH';
   if (/Sheet not found/i.test(message)) return 'SHEET_NOT_FOUND';
   if (/not found/i.test(message)) return 'NOT_FOUND';
@@ -2874,5 +3223,12 @@ function errorCode_(err) {
 
 function errorPayload_(err) {
   const message = String(err && err.message ? err.message : err);
-  return { ok: false, error: message, errorCode: errorCode_(err) };
+  const code = errorCode_(err);
+  // Los errores no clasificados no exponen internos del script al caller: el
+  // detalle queda en el registro de ejecuciones de Apps Script.
+  if (code === 'UNKNOWN') {
+    console.error(err && err.stack || message);
+    return { ok: false, error: 'Error interno del servidor. Revisa el registro de ejecuciones de Apps Script.', errorCode: 'INTERNAL' };
+  }
+  return { ok: false, error: message, errorCode: code };
 }

@@ -102,6 +102,32 @@ const EVOLUTION_RANGE_KEY = "moneyEvolutionRange";
 const ACCOUNT_GROUPS_KEY = "moneyAccountGroups";
 const FUTURE_MOVEMENT_ACCOUNT_SKIP_KEY = "moneyFutureMovementAccountSkip";
 const FULL_MONTH_NAMES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
+
+// Escritura segura en localStorage: si el almacenamiento está lleno, se sacrifican
+// primero los diagnósticos (logs, histórico de envíos) y se reintenta. Nunca se
+// evicciona la cola de operaciones ni la caché de datos (eso sería perder cambios).
+// Devuelve false si aun así no se pudo escribir, para que el caller pueda avisar.
+let storageFullNotified = false;
+function safeSetItem(key, value) {
+  try {
+    localStorage.setItem(key, value);
+    return true;
+  } catch (firstErr) {
+    try {
+      if (key !== SYNC_LOG_KEY) localStorage.removeItem(SYNC_LOG_KEY);
+      if (key !== SENT_HISTORY_KEY) localStorage.removeItem(SENT_HISTORY_KEY);
+      localStorage.setItem(key, value);
+      return true;
+    } catch (secondErr) {
+      console.warn(`safeSetItem: no se pudo guardar ${key}`, secondErr || firstErr);
+      if (!storageFullNotified && typeof setNotice === "function") {
+        storageFullNotified = true;
+        setNotice("Almacenamiento local lleno: algunos cambios podrían no conservarse sin conexión.", "warn");
+      }
+      return false;
+    }
+  }
+}
 const SYSTEM_GOAL_LABELS = {
   expenseMonthly: "Gasto mensual",
   investmentMonthly: "Inversión mensual",
@@ -163,11 +189,19 @@ const state = {
   futureMovementAccountPromptDismissed: false
 };
 
+// Los iconos vienen de un CDN (lucide). Si el CDN falla o no hay red en la primera
+// carga, la llamada directa lanzaba un ReferenceError en pleno arranque y ningún
+// listener llegaba a cablearse: app muerta. Sin iconos la app sigue siendo usable.
+function refreshIcons() {
+  if (!window.lucide?.createIcons) return;
+  try { lucide.createIcons(); } catch (err) { console.warn("lucide.createIcons falló", err); }
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   investmentDebug("app cargada", { version: "local-mirror-v19" });
   applySavedTheme();
   applySavedInvestmentEstimateMode();
-  lucide.createIcons();
+  refreshIcons();
   wireUi();
   hydrateConfigForm();
   setDefaultDate();
@@ -176,9 +210,13 @@ document.addEventListener("DOMContentLoaded", () => {
   renderSyncSettingsPanel();
   renderSettingsPanelTabs();
   syncRefreshButtonLabel("registrar");
-  refreshData({ scope: "all", cacheOnly: true });
+  refreshData({ scope: "all", cacheOnly: true })
+    .catch(err => logSyncEvent("La carga inicial de datos falló.", "warn", String(err?.message || err)));
   ensureOpQueuePoller();
-  window.setTimeout(() => retryPendingOps(null, { recoverSending: true }), 0);
+  window.setTimeout(() => {
+    Promise.resolve(retryPendingOps(null, { recoverSending: true }))
+      .catch(err => console.error("retryPendingOps", err));
+  }, 0);
 });
 
 function wireUi() {
@@ -191,16 +229,16 @@ function wireUi() {
       showView(btn.dataset.viewButton);
     });
   });
-  document.getElementById("refreshBtn").addEventListener("click", refreshActiveViewData);
+  document.getElementById("refreshBtn")?.addEventListener("click", refreshActiveViewData);
   document.getElementById("investmentUpdatePricesBtn")?.addEventListener("click", updateInvestmentPricesFromHeader);
   document.getElementById("investmentSendNotificationsBtn")?.addEventListener("click", sendInvestmentNotificationsFromHeader);
-  document.getElementById("movementForm").addEventListener("submit", submitMovement);
-  document.getElementById("registerModeSwitch").addEventListener("click", setRegisterModeFromClick);
-  document.getElementById("recurrenceType").addEventListener("change", renderRecurrencePicker);
-  document.getElementById("movementModeSwitch").addEventListener("click", setMovementModeFromClick);
-  document.getElementById("investmentPanelSwitch").addEventListener("click", setInvestmentPanelFromClick);
+  document.getElementById("movementForm")?.addEventListener("submit", submitMovement);
+  document.getElementById("registerModeSwitch")?.addEventListener("click", setRegisterModeFromClick);
+  document.getElementById("recurrenceType")?.addEventListener("change", renderRecurrencePicker);
+  document.getElementById("movementModeSwitch")?.addEventListener("click", setMovementModeFromClick);
+  document.getElementById("investmentPanelSwitch")?.addEventListener("click", setInvestmentPanelFromClick);
   document.getElementById("settingsPanelSwitch")?.addEventListener("click", setSettingsPanelFromClick);
-  document.getElementById("editInvestmentGoalsBtn").addEventListener("click", editInvestmentGoals);
+  document.getElementById("editInvestmentGoalsBtn")?.addEventListener("click", editInvestmentGoals);
   document.getElementById("evolutionStartMonth")?.addEventListener("change", saveEvolutionRangeAndRender);
   document.getElementById("evolutionEndMonth")?.addEventListener("change", saveEvolutionRangeAndRender);
   document.getElementById("evolutionSnapshotDay")?.addEventListener("change", saveEvolutionRangeAndRender);
@@ -219,36 +257,35 @@ function wireUi() {
   document.getElementById("closeInvestmentEstimateRulesBtn")?.addEventListener("click", () => document.getElementById("investmentEstimateRulesDialog")?.close());
   document.getElementById("addInvestmentEstimateRuleBtn")?.addEventListener("click", addInvestmentEstimateRule);
   document.getElementById("saveInvestmentEstimateRulesBtn")?.addEventListener("click", saveInvestmentEstimateRules);
-  document.getElementById("formType").addEventListener("change", syncRegistrarMode);
+  document.getElementById("formType")?.addEventListener("change", syncRegistrarMode);
   document.getElementById("formAmount")?.addEventListener("input", enforceTransferPositiveAmount);
   document.getElementById("formAmount")?.addEventListener("change", enforceTransferPositiveAmount);
-  document.getElementById("saveConfigBtn").addEventListener("click", saveConfigFromForm);
-  document.getElementById("retryPendingOpsBtn")?.addEventListener("click", () => retryPendingOps());
+  document.getElementById("saveConfigBtn")?.addEventListener("click", saveConfigFromForm);
   document.getElementById("clearSyncLogsBtn")?.addEventListener("click", clearSyncLogs);
   document.getElementById("undoSentOpsBtn")?.addEventListener("click", openUndoDialog);
   document.getElementById("closeUndoDialogBtn")?.addEventListener("click", () => document.getElementById("undoDialog")?.close());
-  document.getElementById("summaryYear").addEventListener("change", syncSummaryPeriodAndRender);
-  document.getElementById("summaryMonth").addEventListener("change", syncSummaryPeriodAndRender);
-  document.getElementById("openMonthSituationBtn").addEventListener("click", () => {
+  document.getElementById("summaryYear")?.addEventListener("change", syncSummaryPeriodAndRender);
+  document.getElementById("summaryMonth")?.addEventListener("change", syncSummaryPeriodAndRender);
+  document.getElementById("openMonthSituationBtn")?.addEventListener("click", () => {
     document.getElementById("monthSituationDialog").showModal();
     renderSummary();
   });
-  document.getElementById("closeMonthSituationBtn").addEventListener("click", () => document.getElementById("monthSituationDialog").close());
-  document.getElementById("closeMoneyDialogBtn").addEventListener("click", () => document.getElementById("moneyDialog").close());
-  document.getElementById("openInvestmentOverviewBtn").addEventListener("click", () => openInvestmentOverview(null));
-  document.getElementById("closeInvestmentOverviewBtn").addEventListener("click", () => document.getElementById("investmentOverviewDialog").close());
-  document.getElementById("movementBackBtn").addEventListener("click", movementBack);
-  document.getElementById("movementBulkEditBtn").addEventListener("click", toggleMovementBulkEdit);
-  document.getElementById("movementBulkDeleteBtn").addEventListener("click", deleteSelectedMovements);
-  document.getElementById("addInvestmentRowBtn").addEventListener("click", addInvestmentRow);
+  document.getElementById("closeMonthSituationBtn")?.addEventListener("click", () => document.getElementById("monthSituationDialog").close());
+  document.getElementById("closeMoneyDialogBtn")?.addEventListener("click", () => document.getElementById("moneyDialog").close());
+  document.getElementById("openInvestmentOverviewBtn")?.addEventListener("click", () => openInvestmentOverview(null));
+  document.getElementById("closeInvestmentOverviewBtn")?.addEventListener("click", () => document.getElementById("investmentOverviewDialog").close());
+  document.getElementById("movementBackBtn")?.addEventListener("click", movementBack);
+  document.getElementById("movementBulkEditBtn")?.addEventListener("click", toggleMovementBulkEdit);
+  document.getElementById("movementBulkDeleteBtn")?.addEventListener("click", deleteSelectedMovements);
+  document.getElementById("addInvestmentRowBtn")?.addEventListener("click", addInvestmentRow);
   document.getElementById("addAccountGroupBtn")?.addEventListener("click", () => openAccountGroupDialog(null));
   document.getElementById("saveInvestmentsBtn")?.classList.add("hidden");
   document.getElementById("saveInvestmentsBtn")?.addEventListener("click", saveInvestments);
   ensureInvestmentCategoryDialog();
-  document.getElementById("formDescription").addEventListener("input", suggestTypeConceptFromDescription);
-  document.getElementById("closeMovementDetailBtn").addEventListener("click", () => document.getElementById("movementDetailDialog").close());
-  document.getElementById("movementDetailForm").addEventListener("submit", saveMovementDetail);
-  document.getElementById("deleteMovementBtn").addEventListener("click", deleteMovementDetail);
+  document.getElementById("formDescription")?.addEventListener("input", suggestTypeConceptFromDescription);
+  document.getElementById("closeMovementDetailBtn")?.addEventListener("click", () => document.getElementById("movementDetailDialog").close());
+  document.getElementById("movementDetailForm")?.addEventListener("submit", saveMovementDetail);
+  document.getElementById("deleteMovementBtn")?.addEventListener("click", deleteMovementDetail);
   document.getElementById("movementDeleteAccountForm")?.addEventListener("submit", confirmMovementDeleteAccount);
   document.getElementById("closeMovementDeleteAccountBtn")?.addEventListener("click", closeMovementAccountPrompt);
   document.getElementById("closeMovementTableControlBtn")?.addEventListener("click", () => document.getElementById("movementTableControlDialog").close());
@@ -286,9 +323,9 @@ function wireUi() {
     dialog.close();
     renderMovementTable(rows);
   });
-  document.getElementById("closeInvestmentDetailBtn").addEventListener("click", () => document.getElementById("investmentDetailDialog").close());
+  document.getElementById("closeInvestmentDetailBtn")?.addEventListener("click", () => document.getElementById("investmentDetailDialog").close());
   document.getElementById("deleteInvestmentBtn")?.addEventListener("click", deleteInvestmentDetail);
-  document.getElementById("investmentDetailForm").addEventListener("submit", saveInvestmentDetail);
+  document.getElementById("investmentDetailForm")?.addEventListener("submit", saveInvestmentDetail);
   document.getElementById("editInvestmentQuantity")?.addEventListener("input", syncInvestmentDetailComputedTotal);
   document.getElementById("editInvestmentName")?.addEventListener("input", syncInvestmentDetailInputLocks);
   document.getElementById("editInvestmentData")?.addEventListener("input", syncInvestmentDetailInputLocks);
@@ -299,7 +336,7 @@ function wireUi() {
   document.getElementById("addExistingInvestmentAllocationRowBtn")?.addEventListener("click", addExistingInvestmentAllocationRow);
   document.getElementById("addNewInvestmentAllocationRowBtn")?.addEventListener("click", addBlankInvestmentAllocationRow);
   document.getElementById("investmentAllocationForm")?.addEventListener("submit", saveInvestmentAllocationPrompt);
-  document.getElementById("monthSituationMode").addEventListener("click", event => {
+  document.getElementById("monthSituationMode")?.addEventListener("click", event => {
     const btn = event.target.closest("[data-situation-mode]");
     if (!btn) return;
     state.summaryModes.situation = btn.dataset.situationMode;
@@ -506,7 +543,7 @@ function formatQuickStatusValue(value) {
 async function updateInvestmentPricesFromHeader() {
   const btn = document.getElementById("investmentUpdatePricesBtn");
   btn?.classList.add("saving");
-  btn.disabled = true;
+  if (btn) btn.disabled = true;
 
   const ok = await refreshData({
     force: true,
@@ -517,7 +554,7 @@ async function updateInvestmentPricesFromHeader() {
 
   btn?.classList.remove("saving");
   btn?.classList.toggle("saved", ok);
-  btn.disabled = false;
+  if (btn) btn.disabled = false;
 
   if (ok) {
     window.setTimeout(() => btn?.classList.remove("saved"), 2200);
@@ -529,7 +566,7 @@ async function sendInvestmentNotificationsFromHeader() {
   state.investmentNotificationsSending = true;
   const btn = document.getElementById("investmentSendNotificationsBtn");
   btn?.classList.add("saving");
-  btn.disabled = true;
+  if (btn) btn.disabled = true;
   const notificationRequestId = typeof crypto?.randomUUID === "function"
     ? crypto.randomUUID()
     : `notification_${Date.now()}_${Math.random().toString(36).slice(2)}`;
@@ -557,7 +594,7 @@ async function sendInvestmentNotificationsFromHeader() {
     return false;
   } finally {
     state.investmentNotificationsSending = false;
-    btn.disabled = false;
+    if (btn) btn.disabled = false;
     setRefreshLoading(false);
     kickOpQueue();
   }
@@ -599,6 +636,10 @@ function hydrateConfigForm() {
 
 async function saveConfigFromForm() {
   const btn = document.getElementById("saveConfigBtn");
+  // Las operaciones encoladas se construyeron con la configuración anterior (otra URL
+  // u otras hojas): enviarlas contra la nueva escribiría en el sitio equivocado.
+  const pendingOps = readOpQueue().filter(op => op.status !== "done");
+  const previousConfigKey = dataCacheConfigKey();
   markButtonSaving(btn);
   state.config = {
     scriptUrl: document.getElementById("configScriptUrl").value.trim(),
@@ -614,7 +655,22 @@ async function saveConfigFromForm() {
     dataSheet: document.getElementById("configDataSheet").value.trim() || "Datos",
     initialCash: DEFAULT_CONFIG.initialCash
   };
-  localStorage.setItem("moneyConfig", JSON.stringify(state.config));
+  if (pendingOps.length && dataCacheConfigKey() !== previousConfigKey) {
+    const proceed = await confirmDialog(
+      `Hay ${pendingOps.length} ${plural(pendingOps.length, "cambio pendiente", "cambios pendientes")} de enviar creados con la configuración anterior. Si continúas se descartarán (se guarda una copia de seguridad). ¿Continuar?`,
+      "Cambios pendientes"
+    );
+    if (!proceed) {
+      state.config = loadConfig();
+      hydrateConfigForm();
+      restoreButton(btn);
+      return;
+    }
+    safeSetItem(`${OP_QUEUE_KEY}.backup`, JSON.stringify(readOpQueue()));
+    writeOpQueue([]);
+    logSyncEvent(`Cola descartada al cambiar la configuración (${pendingOps.length} operaciones); copia en ${OP_QUEUE_KEY}.backup.`, "warn");
+  }
+  safeSetItem("moneyConfig", JSON.stringify(state.config));
   clearDataCache();
   clearPendingCache();
   await refreshData({ force: true, scope: refreshScopeForView(activeViewId()) });
@@ -632,7 +688,7 @@ function applySavedTheme() {
 function setThemeFromToggle(event) {
   const theme = event.target.checked ? "dark" : "light";
   document.documentElement.dataset.theme = theme;
-  localStorage.setItem(THEME_KEY, theme);
+  safeSetItem(THEME_KEY, theme);
   refreshChartTheme();
 }
 
@@ -661,7 +717,7 @@ function syncInvestmentEstimateModeUi() {
 
 function setInvestmentEstimateModeFromToggle(event) {
   state.investmentMode = event.target.checked ? "estimated" : "real";
-  localStorage.setItem(INVESTMENT_ESTIMATE_MODE_KEY, state.investmentMode);
+  safeSetItem(INVESTMENT_ESTIMATE_MODE_KEY, state.investmentMode);
   syncInvestmentEstimateModeUi();
   refreshChartTheme();
   setNotice(state.investmentMode === "estimated" ? "Modo estimación activado." : "Modo real activado.", "ok", 1800);
@@ -717,6 +773,9 @@ function normalizeCacheMeta(cached = {}) {
     };
   });
   base.savedAt = savedAt;
+  // Conserva la marca de caché podada por falta de espacio: refreshData la usa para
+  // forzar la re-descarga de las secciones truncadas.
+  if (meta.partial) base.partial = true;
   return base;
 }
 
@@ -806,7 +865,7 @@ function renderCurrentView(viewId = activeViewId()) {
       renderPendingOpsBadge();
     });
   }
-  lucide.createIcons();
+  refreshIcons();
 }
 
 function renderDataScope(scope = "all") {
@@ -831,7 +890,36 @@ function syncedSectionsFromData(data = {}) {
   return sections;
 }
 
-async function refreshData(options = {}) {
+// Evita descargas simultáneas: dos refresh a la vez aplicaban snapshots y escribían
+// la caché entrelazados, y el primero en terminar apagaba el indicador de carga
+// mientras el otro seguía descargando.
+//
+// Una petición de fondo equivalente se engancha a la que ya está en vuelo. Una
+// acción del usuario (forzar, actualizar precios, notificar) NO puede engancharse:
+// haría un trabajo distinto, así que espera su turno y se ejecuta después.
+let refreshInFlight = null;
+
+function refreshData(options = {}) {
+  const mustRunOnItsOwn = Boolean(options.force || options.manualRefresh || options.userRefresh
+    || options.updateInvestments || options.sendNotifications);
+  const start = () => {
+    const run = refreshDataImpl(options).finally(() => {
+      if (refreshInFlight === run) refreshInFlight = null;
+    });
+    refreshInFlight = run;
+    return run;
+  };
+  if (!refreshInFlight) return start();
+  if (!mustRunOnItsOwn) return refreshInFlight;
+  // Encadenada: el catch evita que un fallo previo tumbe esta petición.
+  const chained = refreshInFlight.catch(() => {}).then(() => refreshDataImpl(options)).finally(() => {
+    if (refreshInFlight === chained) refreshInFlight = null;
+  });
+  refreshInFlight = chained;
+  return chained;
+}
+
+async function refreshDataImpl(options = {}) {
   const force = Boolean(options.force);
   const updateInvestments = Boolean(options.updateInvestments);
   const sendNotifications = Boolean(options.sendNotifications);
@@ -934,11 +1022,31 @@ async function refreshData(options = {}) {
     let movedFutureMovements = [];
     let syncedSections = [];
 
+    // Una sección "dirty" (con cambios locales sin confirmar) no se descarga para no
+    // pisarlos, PERO con un refresh forzado y la cola drenada (o muerta en error) sí:
+    // antes una operación fallida dejaba su sección excluida de toda descarga para
+    // siempre y la divergencia con Sheets era irreparable desde la interfaz.
+    const opQueueBusy = readOpQueue().some(op => op.status !== "done" && op.status !== "error");
+    const skipDirty = section => {
+      if (!cachedSectionIsDirty(cached, section)) return false;
+      if (forceRequestedSections && !opQueueBusy) return false;
+      return true;
+    };
     let neededSections = updateInvestments || sendNotifications
       ? ["investments", "investmentTotals", "investmentEstimateRules", "investmentEstimateLedger", "investmentGoals"]
       : !cached || forceRequestedSections
-        ? requestedSections.filter(section => !cachedSectionIsDirty(cached, section))
+        ? requestedSections.filter(section => !skipDirty(section))
         : [];
+    if (forceRequestedSections && opQueueBusy && requestedSections.some(section => cachedSectionIsDirty(cached, section))) {
+      setNotice("Hay cambios pendientes de confirmar: se conserva la caché local de esas secciones hasta que se envíen.", "warn");
+    }
+
+    // Caché podada por falta de espacio: fuerza la re-descarga de las secciones de
+    // movimientos para no calcular balances sobre un histórico truncado.
+    if (cached?.meta?.partial) {
+      neededSections = unique([...neededSections, ...requestedSections.filter(section =>
+        ["transactions", "futureTransactions", "investmentEstimateLedger"].includes(section) && !skipDirty(section))]);
+    }
 
     if (shouldMoveDueFutureMovements) {
       neededSections = forceRequestedSections
@@ -1094,6 +1202,8 @@ async function refreshData(options = {}) {
     }
 
     markCacheSectionsSynced(syncedSections);
+    // Si se re-descargó el histórico completo, la caché deja de estar podada.
+    if (state.cacheMeta?.partial && syncedSections.includes("transactions")) delete state.cacheMeta.partial;
     syncOptions();
     renderDataScope(scope);
     writeDataCache({ syncedSections });
@@ -1179,9 +1289,15 @@ function assertPayloadOk(payload) {
   }
 }
 
+// Tope duro de páginas: con MOVEMENT_PAGE_SIZE filas por página cubre cualquier
+// histórico real, y evita que un backend que repite offset deje la app descargando
+// en bucle infinito con la interfaz bloqueada en "Descargando".
+const MOVEMENT_MAX_PAGES = 200;
+
 async function downloadMovementPages(kind, label, options = {}) {
   let offset = 0;
   let total = null;
+  let pagesFetched = 0;
   const rows = [];
   syncStatusStep(options.showProgress, `Descargando ${label}\nCalculando páginas`, "");
   while (true) {
@@ -1201,9 +1317,13 @@ async function downloadMovementPages(kind, label, options = {}) {
     rows.push(...pageRows);
     total = Number.isFinite(Number(payload.total)) ? Number(payload.total) : rows.length;
     const totalPages = Math.max(1, Math.ceil(total / MOVEMENT_PAGE_SIZE));
+    const previousOffset = offset;
     offset = Number.isFinite(Number(payload.nextOffset)) ? Number(payload.nextOffset) : offset + pageRows.length;
     syncStatusStep(options.showProgress, `Descargando ${label}\nPágina ${pageNumber}/${totalPages} · ${Math.min(rows.length, total)}/${total}`, "");
     if (!payload.hasMore || !pageRows.length) break;
+    pagesFetched += 1;
+    if (offset <= previousOffset) throw new Error(`La paginación de ${label} no avanza (offset repetido).`);
+    if (pagesFetched >= MOVEMENT_MAX_PAGES) throw new Error(`Descarga de ${label} interrumpida: demasiadas páginas (${MOVEMENT_MAX_PAGES}).`);
   }
   return rows;
 }
@@ -1236,14 +1356,14 @@ function markButtonSaved(button, label = "Guardado") {
   button.classList.add("saved");
   button.disabled = true;
   button.innerHTML = `<i data-lucide="check"></i> ${escapeHtml(label)}`;
-  lucide.createIcons();
+  refreshIcons();
   window.setTimeout(() => {
     if (!button.isConnected) return;
     button.classList.remove("saved");
     button.innerHTML = button.dataset.previousHtml || previousHtml;
     delete button.dataset.previousHtml;
     button.disabled = false;
-    lucide.createIcons();
+    refreshIcons();
   }, 2200);
 }
 
@@ -1254,7 +1374,7 @@ function markButtonSaving(button, label = "Guardando") {
   button.classList.add("saving");
   button.disabled = true;
   button.innerHTML = `<i data-lucide="loader-2"></i> ${escapeHtml(label)}`;
-  lucide.createIcons();
+  refreshIcons();
 }
 
 function restoreButton(button) {
@@ -1263,7 +1383,7 @@ function restoreButton(button) {
   button.disabled = false;
   button.innerHTML = button.dataset.previousHtml;
   delete button.dataset.previousHtml;
-  lucide.createIcons();
+  refreshIcons();
 }
 
 function confirmDialog(message, title = "Confirmar") {
@@ -1274,18 +1394,26 @@ function confirmDialog(message, title = "Confirmar") {
     const acceptBtn = document.getElementById("genericConfirmAcceptBtn");
     const cancelBtn = document.getElementById("genericConfirmCancelBtn");
     const closeBtn = document.getElementById("closeGenericConfirmBtn");
+    // "close" cubre Esc y cualquier cierre externo: sin él la promesa quedaba
+    // pendiente para siempre y bloqueaba a quien la esperase (p. ej. refreshData).
+    let settled = false;
     const settle = result => {
+      if (settled) return;
+      settled = true;
       acceptBtn.removeEventListener("click", onAccept);
       cancelBtn.removeEventListener("click", onCancel);
       closeBtn.removeEventListener("click", onCancel);
-      dialog.close();
+      dialog.removeEventListener("close", onClose);
+      if (dialog.open) dialog.close();
       resolve(result);
     };
     const onAccept = () => settle(true);
     const onCancel = () => settle(false);
+    const onClose = () => settle(false);
     acceptBtn.addEventListener("click", onAccept);
     cancelBtn.addEventListener("click", onCancel);
     closeBtn.addEventListener("click", onCancel);
+    dialog.addEventListener("close", onClose);
     dialog.showModal();
   });
 }
@@ -1316,27 +1444,61 @@ function ensureMovedFutureMovementsVisible(movedFutureMovements) {
   state.transactions.sort((a, b) => b.date - a.date);
 }
 
+// Normaliza y cuenta lo que se descarta: antes una fila corrupta (importe o fecha
+// ilegibles) desaparecía en silencio de los totales sin que el usuario lo supiera.
+function normalizeRows(rows, fn, dropped, label) {
+  const source = rows || [];
+  const out = source.map(fn).filter(Boolean);
+  const diff = source.length - out.length;
+  if (diff > 0 && dropped) dropped.push(`${label}: ${diff}`);
+  return out;
+}
+
+function reportDroppedRows(dropped) {
+  if (!dropped.length) return;
+  const detail = dropped.join(", ");
+  logSyncEvent("Se descartaron filas no válidas al cargar datos.", "warn", detail);
+  setNotice(`Aviso: se descartaron filas con datos no válidos (${detail}). Revisa la hoja.`, "warn");
+}
+
+// Filas sin sid: normalizeTransaction les acuña uno NUEVO en cada pasada, así que
+// dos normalizaciones del mismo dato daban identidades distintas y los lookups por
+// sid (edición, deshacer) fallaban. Si se acuñaron sids, se reescribe la caché una
+// vez para que la siguiente lectura devuelva los mismos.
+function countRowsWithoutSid(rows) {
+  return (rows || []).filter(row => row && !String(row.sid || row.SID || row.Id || row.ID || "").trim()).length;
+}
+
+function persistMintedSids(data) {
+  const minted = countRowsWithoutSid(data.transactions) + countRowsWithoutSid(data.futureTransactions);
+  if (minted > 0) writeDataCache();
+}
+
 function applyDataSnapshot(data) {
-  state.transactions = (data.transactions || []).map(normalizeTransaction).filter(Boolean);
-  state.futureTransactions = (data.futureTransactions || []).map(normalizeTransaction).filter(Boolean);
-  state.investments = (data.investments || []).map(normalizeInvestment).filter(Boolean).map(recalculateInvestmentTotal);
+  const dropped = [];
+  state.transactions = normalizeRows(data.transactions, normalizeTransaction, dropped, "movimientos");
+  state.futureTransactions = normalizeRows(data.futureTransactions, normalizeTransaction, dropped, "futuros");
+  state.investments = normalizeRows(data.investments, normalizeInvestment, dropped, "inversiones").map(recalculateInvestmentTotal);
   state.investmentTotals = (data.investmentTotals || []).map(normalizeInvestmentTotal).filter(Boolean);
   state.investmentEstimateRules = (data.investmentEstimateRules || []).map(normalizeInvestmentEstimateRule).filter(Boolean);
   state.investmentEstimateLedger = (data.investmentEstimateLedger || []).map(normalizeInvestmentEstimateLedger).filter(Boolean);
-  state.banks = (data.banks || []).map(normalizeBank).filter(Boolean);
+  state.banks = normalizeRows(data.banks, normalizeBank, dropped, "bancos");
   state.investmentGoals = normalizeInvestmentGoals(data.investmentGoals ?? state.investmentGoals);
   state.categories = normalizeCategories(data.categories);
+  reportDroppedRows(dropped);
+  persistMintedSids(data);
 }
 
 function mergeDataSnapshot(data = {}) {
+  const dropped = [];
   if (Object.prototype.hasOwnProperty.call(data, "transactions")) {
-    state.transactions = (data.transactions || []).map(normalizeTransaction).filter(Boolean);
+    state.transactions = normalizeRows(data.transactions, normalizeTransaction, dropped, "movimientos");
   }
   if (Object.prototype.hasOwnProperty.call(data, "futureTransactions")) {
-    state.futureTransactions = (data.futureTransactions || []).map(normalizeTransaction).filter(Boolean);
+    state.futureTransactions = normalizeRows(data.futureTransactions, normalizeTransaction, dropped, "futuros");
   }
   if (Object.prototype.hasOwnProperty.call(data, "investments")) {
-    state.investments = (data.investments || []).map(normalizeInvestment).filter(Boolean).map(recalculateInvestmentTotal);
+    state.investments = normalizeRows(data.investments, normalizeInvestment, dropped, "inversiones").map(recalculateInvestmentTotal);
   }
   if (Object.prototype.hasOwnProperty.call(data, "investmentTotals")) {
     state.investmentTotals = (data.investmentTotals || []).map(normalizeInvestmentTotal).filter(Boolean);
@@ -1348,7 +1510,7 @@ function mergeDataSnapshot(data = {}) {
     state.investmentEstimateLedger = (data.investmentEstimateLedger || []).map(normalizeInvestmentEstimateLedger).filter(Boolean);
   }
   if (Object.prototype.hasOwnProperty.call(data, "banks")) {
-    state.banks = (data.banks || []).map(normalizeBank).filter(Boolean);
+    state.banks = normalizeRows(data.banks, normalizeBank, dropped, "bancos");
   }
   if (Object.prototype.hasOwnProperty.call(data, "investmentGoals")) {
     state.investmentGoals = normalizeInvestmentGoals(data.investmentGoals ?? state.investmentGoals);
@@ -1356,6 +1518,8 @@ function mergeDataSnapshot(data = {}) {
   if (Object.prototype.hasOwnProperty.call(data, "categories")) {
     state.categories = normalizeCategories(data.categories);
   }
+  reportDroppedRows(dropped);
+  persistMintedSids(data);
 }
 
 function dataCacheConfigKey() {
@@ -1490,12 +1654,19 @@ function clearDataCache() {
   localStorage.removeItem(DATA_CACHE_KEY);
 }
 
+let pendingCacheCorruptNotified = false;
 function readPendingCache() {
+  const raw = localStorage.getItem(PENDING_CACHE_KEY);
   try {
-    const pending = JSON.parse(localStorage.getItem(PENDING_CACHE_KEY) || "null");
+    const pending = JSON.parse(raw || "null");
     if (!pending || pending.configKey !== dataCacheConfigKey()) return null;
     return pending;
   } catch {
+    if (!pendingCacheCorruptNotified) {
+      pendingCacheCorruptNotified = true;
+      safeSetItem(`${PENDING_CACHE_KEY}.corrupt`, String(raw || ""));
+      logSyncEvent("Cambios pendientes corruptos; se guardó una copia y se descartaron.", "warn");
+    }
     return null;
   }
 }
@@ -1504,7 +1675,7 @@ function writePendingCache(pending) {
   const next = { ...pending, configKey: dataCacheConfigKey(), savedAt: Date.now() };
   const hasPending = ["investments", "banks"].some(key => Array.isArray(next[key])) || Boolean(next.investmentGoals);
   if (!hasPending) return clearPendingCache();
-  localStorage.setItem(PENDING_CACHE_KEY, JSON.stringify(next));
+  safeSetItem(PENDING_CACHE_KEY, JSON.stringify(next));
 }
 
 function clearPendingCache() {
@@ -1580,7 +1751,7 @@ function readSyncLogs() {
 }
 
 function writeSyncLogs(logs) {
-  localStorage.setItem(SYNC_LOG_KEY, JSON.stringify((logs || []).slice(-120)));
+  safeSetItem(SYNC_LOG_KEY, JSON.stringify((logs || []).slice(-120)));
 }
 
 function logSyncEvent(message, type = "", detail = "") {
@@ -1671,18 +1842,30 @@ function renderSyncSettingsPanel() {
   }
 }
 
+let opQueueCorruptNotified = false;
 function readOpQueue() {
+  const raw = localStorage.getItem(OP_QUEUE_KEY);
   try {
-    const queue = JSON.parse(localStorage.getItem(OP_QUEUE_KEY) || "[]");
+    const queue = JSON.parse(raw || "[]");
     return Array.isArray(queue) ? queue : [];
   } catch {
+    // Cola corrupta: se conserva una copia para diagnóstico y se avisa una vez.
+    // Descartarla en silencio dejaba cambios locales aplicados que jamás llegarían
+    // a Sheets sin que el usuario lo supiera.
+    if (!opQueueCorruptNotified) {
+      opQueueCorruptNotified = true;
+      safeSetItem(`${OP_QUEUE_KEY}.corrupt`, String(raw || ""));
+      logSyncEvent("Cola de operaciones corrupta; se guardó una copia y se vació.", "warn");
+      if (typeof setNotice === "function") setNotice("La cola de cambios pendientes estaba corrupta y se ha vaciado. Revisa que tus últimos cambios estén en Sheets.", "warn");
+    }
     return [];
   }
 }
 
 function writeOpQueue(queue) {
-  localStorage.setItem(OP_QUEUE_KEY, JSON.stringify(queue));
+  const ok = safeSetItem(OP_QUEUE_KEY, JSON.stringify(queue));
   renderPendingOpsBadge();
+  return ok;
 }
 
 function todayKey() {
@@ -1704,7 +1887,7 @@ function readSentHistory() {
 
 function writeSentHistory(history) {
   const next = history.filter(item => item && item.status === "ok").slice(-100);
-  localStorage.setItem(SENT_HISTORY_KEY, JSON.stringify(next));
+  safeSetItem(SENT_HISTORY_KEY, JSON.stringify(next));
 }
 
 // Las operaciones de un mismo lote se acumulan en UNA entrada del historial. Si no, una
@@ -1832,9 +2015,15 @@ function describePendingGroup(group) {
   }
   const done = Math.max(0, total - group.ops.length);
   const progress = `${Math.min(done + 1, total)} de ${total}`;
-  const base = `${opStatusText(active)} ${progress}`;
-  const failedNote = failed.length ? ` · ${failed.length} con error` : "";
-  const detail = active.error ? `: ${active.error}` : "";
+  // Si todo el grupo está en error, mostrarlo como tal: usar el estado de la primera
+  // operación escondía que las demás estaban detenidas y esperando un reintento.
+  const allFailed = failed.length === group.ops.length;
+  const base = allFailed
+    ? `Detenido tras ${failed.length} ${plural(failed.length, "error", "errores")} · ${progress}`
+    : `${opStatusText(active)} ${progress}`;
+  const failedNote = failed.length && !allFailed ? ` · ${failed.length} con error` : "";
+  const reference = allFailed ? failed[0] : active;
+  const detail = reference?.error ? `: ${reference.error}` : "";
   return { text: `${base}${failedNote}${detail}`, failed: failed.length };
 }
 
@@ -1885,7 +2074,7 @@ function undoMovementInfo(serialized) {
   const lines = [
     `${prettyType(movement.tipo)}${movement.concepto ? ` · ${movement.concepto}` : ""}`,
     movement.descripcion || "",
-    `${money(movement.amount)}${movement.cuenta ? ` · ${movement.cuenta}` : ""}`,
+    `${money(movement.amount)}${movementAccountText(movement) ? ` · ${movementAccountText(movement)}` : ""}`,
     formatDate(movement.date)
   ].filter(Boolean);
   return { lines, movement };
@@ -2038,7 +2227,7 @@ function renderUndoDialogList() {
   }).join("");
   container.querySelectorAll("[data-undo-id]").forEach(btn =>
     btn.addEventListener("click", () => undoSentOp(btn.dataset.undoId)));
-  if (window.lucide?.createIcons) lucide.createIcons();
+  refreshIcons();
 }
 
 // Inversas de una entrada del historial. Solo se ofrece deshacer si TODOS sus elementos
@@ -2194,7 +2383,12 @@ function queueOps(payloads, { label = "" } = {}) {
   const dirtySections = [...sections];
   markCacheSectionsDirty(dirtySections);
   writeDataCache({ dirtySections });
-  writeOpQueue(queue);
+  if (!writeOpQueue(queue)) {
+    // La mutación optimista ya está aplicada en pantalla pero la operación no se pudo
+    // encolar: sin este aviso el cambio se perdería en silencio al recargar.
+    setNotice("El cambio se aplicó en pantalla pero NO se pudo guardar en la cola de envío. Se perderá al recargar: libera espacio y reinténtalo.", "warn");
+    logSyncEvent("No se pudo encolar una operación (almacenamiento lleno).", "warn", batchLabel);
+  }
   ensureOpQueuePoller();
   setTimeout(() => runOpQueue(), 0);
   return batchId;
@@ -2206,6 +2400,13 @@ const OP_MAX_BACKOFF_MS = 60000;
 // siempre: cada reenvío abre una ejecución de Apps Script que se encola detrás del
 // script lock, satura el proyecto y hace que ni el POST ni la confirmación respondan.
 const OP_MAX_ATTEMPTS = 8;
+// Margen antes de contar como fallo una operación enviada de la que aún no hay
+// noticias: cubre la espera del script lock del servidor (30 s) más reintentos.
+const CONFIRM_GRACE_MS = 120000;
+// Envíos sin confirmar simultáneos. El backend serializa todo con el script lock,
+// así que lanzar decenas a la vez solo genera contención (y roza el límite de
+// ejecuciones simultáneas de Apps Script).
+const MAX_UNCONFIRMED_OPS = 3;
 let opQueuePollerHandle = null;
 const opsInFlight = new Set();
 
@@ -2233,9 +2434,25 @@ async function runOpQueue() {
   opRunnerActive = true;
   try {
     let op;
+    let lastSignature = "";
     while ((op = nextActionableOp())) {
-      if (op.status === "sending" || op.status === "checking") await checkQueuedOp(op.id);
-      else await sendQueuedOp(op.id);
+      // Cortacircuitos: si la misma operación sale dos veces seguidas sin cambiar de
+      // estado, algo no progresa y seguir iterando congelaría la pestaña en bucle.
+      const signature = `${op.id}|${op.status}|${op.nextAttemptAt || 0}`;
+      if (signature === lastSignature) {
+        failQueuedOp(op.id, "La cola no avanza; se reintentará más tarde.");
+        break;
+      }
+      lastSignature = signature;
+      if (op.status === "sending" || op.status === "checking") {
+        await checkQueuedOp(op.id);
+      } else {
+        // No se lanzan más envíos de los que se pueden tener sin confirmar: el
+        // poller retomará la cola en cuanto alguno se confirme.
+        const unconfirmed = readOpQueue().filter(o => o.status === "sending" || o.status === "checking").length;
+        if (unconfirmed >= MAX_UNCONFIRMED_OPS) break;
+        await sendQueuedOp(op.id);
+      }
     }
   } finally {
     opRunnerActive = false;
@@ -2305,7 +2522,8 @@ function completeQueuedOp(item) {
   setSyncStatus("Cambio enviado\nCaché sincronizada", "ok");
   window.setTimeout(() => setSyncStatus("", ""), 1800);
   if (item.payload?.action === "updateInvestment" && item.payload?.newInvestment) {
-    refreshData({ force: true, scope: "investments", successMessage: "Inversión creada, precios actualizados y datos descargados desde Sheets." });
+    refreshData({ force: true, scope: "investments", successMessage: "Inversión creada, precios actualizados y datos descargados desde Sheets." })
+      .catch(err => logSyncEvent("La actualización tras crear la inversión falló.", "warn", String(err?.message || err)));
   }
 }
 
@@ -2341,7 +2559,13 @@ async function checkQueuedOp(opId) {
   const item = queue.find(op => op.id === opId);
   if (!item || item.status === "done" || item.status === "error") return;
   const clientOpId = item.payload?.clientOpId;
-  if (!clientOpId) return;
+  if (!clientOpId) {
+    // Sin clientOpId no hay forma de confirmarla nunca. Devolver sin tocar el estado
+    // hacía que runOpQueue eligiera esta misma operación en bucle y congelara la pestaña.
+    markOpStatus(opId, { status: "error", error: "Operación sin identificador; no se puede confirmar.", nextAttemptAt: 0 });
+    logSyncEvent("Operación descartada: no tiene identificador de confirmación.", "warn");
+    return;
+  }
   opsInFlight.add(opId);
   try {
     const result = await fetchAppsScriptData({ action: "checkClientOp", clientOpId });
@@ -2352,6 +2576,12 @@ async function checkQueuedOp(opId) {
     // El servidor registró un error real para esta operación: reintentarla sola solo
     // repetiría el fallo, así que se para y se muestra el motivo.
     if (result?.ok && result.failed) {
+      // Fallo transitorio en el servidor (p. ej. lock ocupado): reintentar con el
+      // backoff normal en vez de detener la operación como error terminal.
+      if (result.retryable) {
+        failQueuedOp(opId, result.error || "Servidor ocupado; se reintentará.");
+        return;
+      }
       markOpStatus(opId, { status: "error", error: result.error || "Apps Script rechazó la operación.", nextAttemptAt: 0 });
       logSyncEvent(`Apps Script devolvió un error: ${item.payload?.action || "cambio"}.`, "warn", result.error || "");
       setSyncStatus("Error al enviar\nRevisa Ajustes › Conexión", "warn");
@@ -2361,6 +2591,14 @@ async function checkQueuedOp(opId) {
     // dejarla en espera hasta el siguiente ciclo. Sin nextAttemptAt, runOpQueue la
     // volvería a elegir de inmediato y el bucle giraría en vacío consultando sin parar.
     if (result?.ok && result.pending) {
+      markOpStatus(opId, { status: "checking", error: null, nextAttemptAt: Date.now() + OP_POLL_INTERVAL_MS });
+      return;
+    }
+    // "Sin noticias" NO es un intento fallido: la petición puede seguir esperando el
+    // script lock del servidor (hasta 30 s) o ir de camino. Contarlo como fallo
+    // agotaba los 8 intentos en pocos minutos y dejaba recurrencias enteras en error.
+    const sentAt = Number(item.lastSentAt || 0);
+    if (sentAt && Date.now() - sentAt < CONFIRM_GRACE_MS) {
       markOpStatus(opId, { status: "checking", error: null, nextAttemptAt: Date.now() + OP_POLL_INTERVAL_MS });
       return;
     }
@@ -2375,7 +2613,7 @@ async function checkQueuedOp(opId) {
 
 function kickOpQueue() {
   ensureOpQueuePoller();
-  runOpQueue();
+  runOpQueue().catch(err => console.error("runOpQueue", err));
 }
 
 // Reintento manual ("Reintentar ahora"): reactiva también las operaciones detenidas en
@@ -2527,7 +2765,7 @@ function loadFutureMovementAccountSkipSids() {
 }
 
 function saveFutureMovementAccountSkipSids(sids) {
-  localStorage.setItem(FUTURE_MOVEMENT_ACCOUNT_SKIP_KEY, JSON.stringify([...sids]));
+  safeSetItem(FUTURE_MOVEMENT_ACCOUNT_SKIP_KEY, JSON.stringify([...sids]));
 }
 
 function addFutureMovementAccountSkipSids(newSids) {
@@ -2734,7 +2972,7 @@ function syncRegistrarMode() {
   document.getElementById("submitMovement").innerHTML = submitLabel;
   syncRegistrarActionButton();
   if (typeof syncRegisterMode === "function") syncRegisterMode();
-  lucide.createIcons();
+  refreshIcons();
 }
 
 function syncRegistrarActionButton() {
@@ -2760,7 +2998,7 @@ function syncRegistrarActionButton() {
     registrarButton.setAttribute("aria-label", "Registrar");
     registrarButton.innerHTML = `<i data-lucide="plus"></i><span>Registrar</span>`;
   }
-  lucide.createIcons();
+  refreshIcons();
 }
 
 function syncSummaryPeriodOptions() {
@@ -2790,6 +3028,10 @@ function syncSummaryPeriodAndRender() {
 
 function fillSelect(id, values, placeholder = null) {
   const el = document.getElementById(id);
+  if (!el) {
+    console.warn(`fillSelect: #${id} no existe`);
+    return;
+  }
   const current = el.value;
 
   const options = [
@@ -2860,7 +3102,7 @@ function renderAll() {
   syncInvestmentEstimateModeUi();
   renderSyncSettingsPanel();
   renderSettingsPanelTabs();
-  lucide.createIcons();
+  refreshIcons();
 }
 
 function getPersonalCardTotal() {
@@ -2943,7 +3185,7 @@ function renderMoneySummary(summary) {
   document.querySelectorAll("[data-account-group-id]").forEach(btn => {
     btn.addEventListener("click", () => openAccountGroupDialog(btn.dataset.accountGroupId));
   });
-  lucide.createIcons();
+  refreshIcons();
 
   document.getElementById("bookMoneyTotal").textContent = money(summary.totalMoneyBook);
   document.getElementById("realizedMoneyTotal").textContent = `${money(summary.totalMoneyRealized)} • ${pct(summary.profitLossPct)} • ${money(summary.profitLoss)}`;
@@ -3035,7 +3277,7 @@ function openMoneyDetail(mode) {
   if (isBank) renderBankDetail(summary);
   document.getElementById("moneyDialog").showModal();
   renderMoneyCharts(summary);
-  lucide.createIcons();
+  refreshIcons();
 }
 
 function renderBankRows() {
@@ -3209,10 +3451,16 @@ function promptFutureMovementAccountResolution({ account, count, otherAccounts }
     ].join("");
     const form = document.getElementById("futureMovementAccountForm");
     const closeBtn = document.getElementById("closeFutureMovementAccountBtn");
+    // Esc dispara "close" sin pasar por los botones: hay que resolver también ahí
+    // para no dejar la promesa (y a deleteAccountManage) colgada para siempre.
+    let settled = false;
     const settle = result => {
+      if (settled) return;
+      settled = true;
       form.removeEventListener("submit", onSubmit);
       closeBtn.removeEventListener("click", onCancel);
-      dialog.close();
+      dialog.removeEventListener("close", onClose);
+      if (dialog.open) dialog.close();
       resolve(result);
     };
     const onSubmit = event => {
@@ -3221,8 +3469,10 @@ function promptFutureMovementAccountResolution({ account, count, otherAccounts }
       settle(value === "__delete__" ? { mode: "delete" } : { mode: "reassign", newAccount: value });
     };
     const onCancel = () => settle(null);
+    const onClose = () => settle(null);
     form.addEventListener("submit", onSubmit);
     closeBtn.addEventListener("click", onCancel);
+    dialog.addEventListener("close", onClose);
     dialog.showModal();
   });
 }
@@ -3368,7 +3618,7 @@ function renderBankDetail(summary) {
   accountsPanel.querySelectorAll("[data-bank-manage-index]").forEach(btn => {
     btn.addEventListener("click", () => openAccountManageDialog(Number(btn.dataset.bankManageIndex)));
   });
-  lucide.createIcons();
+  refreshIcons();
 }
 
 function bankCheckText(accountsAdjustment) {
@@ -3380,8 +3630,9 @@ function bankCheckText(accountsAdjustment) {
 
 function renderMovements() {
   const drill = state.movementDrill;
-  document.querySelector("#movimientos .movement-toolbar").classList.toggle("hidden", drill.level === "years");
-  document.getElementById("movementBackBtn").style.visibility = drill.level === "years" ? "hidden" : "visible";
+  document.querySelector("#movimientos .movement-toolbar")?.classList.toggle("hidden", drill.level === "years");
+  const backBtn = document.getElementById("movementBackBtn");
+  if (backBtn) backBtn.style.visibility = drill.level === "years" ? "hidden" : "visible";
   syncMovementBulkButtons();
   if (drill.level === "years") renderMovementYears();
   if (drill.level === "months") renderMovementMonths(drill.year);
@@ -3493,7 +3744,7 @@ function renderMovementTable(rows) {
     if (column[0] === "concept") return `<td class="text-clip col-concept" title="${escapeAttr(t.concepto)}">${escapeHtml(t.concepto)}</td>`;
     if (column[0] === "desc") {
       if (state.movementMode === "future") {
-        const accountText = t.cuenta || "Sin cuenta";
+        const accountText = movementAccountText(t) || "Sin cuenta";
         const accountIssue = dueFutureMovementAccountIssue(t);
         const showDescription = t.descripcion && t.descripcion !== accountText;
         return `<td class="col-desc col-desc-with-account">
@@ -3552,7 +3803,7 @@ function syncMovementBulkButtons() {
   editBtn.innerHTML = state.movementBulkEdit ? `<i data-lucide="check"></i>` : `<i data-lucide="square-pen"></i> Editar`;
   const count = selectedMovementIndexes().length;
   if (deleteBtn.classList.contains("saving")) {
-    lucide.createIcons();
+    refreshIcons();
     return;
   }
   deleteBtn.disabled = count === 0;
@@ -3560,7 +3811,7 @@ function syncMovementBulkButtons() {
   deleteBtn.setAttribute("aria-label", count ? `Borrar ${count} movimientos seleccionados` : "Borrar movimientos seleccionados");
   deleteBtn.title = count ? `Borrar ${count}` : "Borrar";
   deleteBtn.innerHTML = `<i data-lucide="trash-2"></i>`;
-  lucide.createIcons();
+  refreshIcons();
 }
 
 function selectedMovementIndexes() {
@@ -3858,6 +4109,9 @@ function openMovementDetail(index) {
   const t = list[index];
   if (!t) return;
   document.getElementById("editMovementIndex").value = index;
+  // El sid identifica el movimiento aunque la lista cambie (refresh, borrados)
+  // entre abrir el detalle y guardar: el índice solo ya editaba la fila equivocada.
+  document.getElementById("editMovementIndex").dataset.sid = t.sid || "";
   document.getElementById("editMovementDate").value = formatDate(t.date);
   document.getElementById("editMovementType").value = t.tipo;
   document.getElementById("editMovementConcept").value = t.concepto;
@@ -3868,15 +4122,31 @@ function openMovementDetail(index) {
   document.getElementById("movementDetailDialog").showModal();
 }
 
+// Relocaliza el movimiento en edición por su sid (identidad estable); el índice
+// guardado solo sirve de respaldo si el sid faltase. Si un refresh o un borrado lo
+// hizo desaparecer, devuelve movement null para que el caller avise en vez de tocar
+// (o borrar) la fila que ahora ocupa esa posición.
+function resolveEditedMovement() {
+  const field = document.getElementById("editMovementIndex");
+  const list = getDisplayedMovements();
+  const sid = String(field?.dataset.sid || "");
+  if (sid) {
+    const index = list.findIndex(item => item && item.sid === sid);
+    return { list, index, movement: index >= 0 ? list[index] : null };
+  }
+  const index = Number(field?.value);
+  return { list, index, movement: Number.isInteger(index) ? list[index] || null : null };
+}
+
 async function saveMovementDetail(event) {
   event.preventDefault();
   const btn = event.submitter;
   markButtonSaving(btn);
-  const index = Number(document.getElementById("editMovementIndex").value);
-  const list = getDisplayedMovements();
-  const previous = list[index];
+  const { list, index, movement: previous } = resolveEditedMovement();
   if (!previous) {
     restoreButton(btn);
+    setNotice("El movimiento ya no existe (los datos se actualizaron). Vuelve a abrirlo.", "warn");
+    document.getElementById("movementDetailDialog").close();
     return;
   }
   const movement = normalizeTransaction({
@@ -3941,10 +4211,12 @@ async function saveMovementDetail(event) {
 
 async function deleteMovementDetail() {
   const btn = document.getElementById("deleteMovementBtn");
-  const index = Number(document.getElementById("editMovementIndex").value);
-  const list = getDisplayedMovements();
-  const movement = list[index];
-  if (!movement) return;
+  const { list, index, movement } = resolveEditedMovement();
+  if (!movement) {
+    setNotice("El movimiento ya no existe (los datos se actualizaron). Vuelve a abrirlo.", "warn");
+    document.getElementById("movementDetailDialog").close();
+    return;
+  }
   markButtonSaving(btn, "Eliminando");
   const accountDelta = -Number(movement.amount || 0);
   const finalizeDelete = account => {
@@ -4157,6 +4429,9 @@ async function submitMovement(event) {
     setNotice("Configura Apps Script antes de enviar movimientos.", "warn");
     return;
   }
+  // Evita el doble envío: un segundo submit (doble toque o botón de navegación)
+  // mientras el primero sigue en marcha duplicaría el movimiento y el ajuste de saldo.
+  if (state.submittingMovement) return;
   const isTransfer = normalizeType(document.getElementById("formType").value) === "transferencia";
   const isRecurring = isRecurringMode();
   const btn = document.getElementById("submitMovement");
@@ -4167,9 +4442,13 @@ async function submitMovement(event) {
     if (isRecurring && isTransfer) {
       const transfers = transferMovementsFromRecurrenceForm();
       if (!transfers.length) throw new Error("selecciona fechas y al menos un día");
+      if (transfers.length > 50 && !(await confirmDialog(`Vas a crear ${transfers.length} transferencias. ¿Continuar?`, "Recurrencia larga"))) {
+        restoreButton(btn);
+        return;
+      }
       const from = document.getElementById("formTransferFrom").value;
       const to = document.getElementById("formTransferTo").value;
-      const amount = Math.abs(Number(document.getElementById("formAmount").value || 0));
+      const amount = Math.abs(roundMoney(document.getElementById("formAmount").value));
       if (!amount || !from || !to || from === to) throw new Error("elige origen, destino e importe valido");
       const today = endOfToday();
       const realized = transfers.filter(m => m.date <= today);
@@ -4196,6 +4475,10 @@ async function submitMovement(event) {
     } else if (isRecurring && !isTransfer) {
       const movements = movementsFromRecurrenceForm();
       if (!movements.length) throw new Error("selecciona fechas y al menos un día");
+      if (movements.length > 50 && !(await confirmDialog(`Vas a crear ${movements.length} movimientos. ¿Continuar?`, "Recurrencia larga"))) {
+        restoreButton(btn);
+        return;
+      }
       const account = document.getElementById("recurrenceAccount").value;
       movements.forEach(movement => { movement.cuenta = account; });
       const today = endOfToday();
@@ -4228,7 +4511,7 @@ async function submitMovement(event) {
         bankSheet: state.config.bankSheet || "Bancos"
       }), { label: "Movimientos periódicos" });
     } else if (isTransfer) {
-      const amount = Math.abs(Number(document.getElementById("formAmount").value || 0));
+      const amount = Math.abs(roundMoney(document.getElementById("formAmount").value));
       const from = document.getElementById("formTransferFrom").value;
       const to = document.getElementById("formTransferTo").value;
       if (!amount || !from || !to || from === to) throw new Error("elige origen, destino e importe valido");
@@ -4247,6 +4530,20 @@ async function submitMovement(event) {
       );
     } else {
       const movement = movementFromForm();
+      if (!movement) throw new Error("revisa la fecha y el importe del movimiento");
+      if (!movement.amount) throw new Error("introduce un importe distinto de 0");
+      // Un Gasto en positivo suma al banco (y un Ingreso en negativo resta): casi
+      // siempre es un despiste de signo, así que se pide confirmación explícita.
+      const normalizedFormType = normalizeType(movement.tipo);
+      const suspectSign = (normalizedFormType === "gasto" && movement.amount > 0)
+        || (normalizedFormType === "ingreso" && movement.amount < 0);
+      if (suspectSign && !(await confirmDialog(
+        `Has introducido un ${movement.tipo} de ${money(movement.amount)} (signo ${movement.amount > 0 ? "positivo" : "negativo"}). ¿Registrarlo igualmente?`,
+        "Revisar signo"
+      ))) {
+        restoreButton(btn);
+        return;
+      }
       const future = movement.date > endOfToday();
       const isInvestmentRegistration = !future && (
         isInvestmentMovement(movement)
@@ -4325,23 +4622,47 @@ async function submitMovement(event) {
   }
 }
 
-function movementsFromRecurrenceForm() {
-  const start = parseDate(document.getElementById("recurrenceStart").value);
-  const end = parseDate(document.getElementById("recurrenceEnd").value);
-  if (!start || !end || start > end) return [];
-  const selected = [...document.querySelectorAll("#recurrencePicker input:checked")].map(i => Number(i.value));
-  if (!selected.length) return [];
-  const type = document.getElementById("recurrenceType").value;
-  const base = movementFromFormBase();
-  const out = [];
+// Tope de fechas por recurrencia: sin él, un rango equivocado (p. ej. 100 años)
+// generaba decenas de miles de operaciones que se enviaban una a una durante horas.
+const MAX_RECURRENCE_OCCURRENCES = 366;
+const MAX_RECURRENCE_DAYS = 366 * 5;
+
+// Expande el rango en fechas concretas según el tipo (semanal/mensual) y los días
+// marcados. Función pura y acotada: devuelve también si se truncó por el tope.
+function expandRecurrenceDates(start, end, type, selected, cap = MAX_RECURRENCE_OCCURRENCES) {
+  const dates = [];
+  let truncated = false;
+  if (!start || !end || start > end || !Array.isArray(selected) || !selected.length) return { dates, truncated };
+  let walked = 0;
   for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+    walked += 1;
+    if (walked > MAX_RECURRENCE_DAYS) { truncated = true; break; }
     const weekDay = (d.getDay() + 6) % 7;
     const monthDay = d.getDate();
     if ((type === "weekly" && selected.includes(weekDay)) || (type === "monthly" && selected.includes(monthDay))) {
-      out.push(normalizeTransaction({ ...base, fecha: formatDate(d) }));
+      if (dates.length >= cap) { truncated = true; break; }
+      dates.push(new Date(d));
     }
   }
-  return out.filter(Boolean);
+  return { dates, truncated };
+}
+
+function recurrenceDatesFromForm() {
+  const start = parseDate(document.getElementById("recurrenceStart").value);
+  const end = parseDate(document.getElementById("recurrenceEnd").value);
+  const selected = [...document.querySelectorAll("#recurrencePicker input:checked")].map(i => Number(i.value));
+  const type = document.getElementById("recurrenceType").value;
+  return expandRecurrenceDates(start, end, type, selected);
+}
+
+function movementsFromRecurrenceForm() {
+  const { dates, truncated } = recurrenceDatesFromForm();
+  if (truncated) throw new Error(`el rango genera más de ${MAX_RECURRENCE_OCCURRENCES} movimientos; acórtalo`);
+  const base = movementFromFormBase();
+  // Se valida aquí el importe: si no, todas las fechas se descartarían al normalizar
+  // y el usuario recibiría un aviso sobre las fechas en vez de sobre el importe.
+  if (!Number.isFinite(base.importe) || !base.importe) throw new Error("introduce un importe distinto de 0");
+  return dates.map(d => normalizeTransaction({ ...base, fecha: formatDate(d) })).filter(Boolean);
 }
 
 // ---------------------------------------------------------------------------
@@ -4363,18 +4684,24 @@ function recurringTransferOps(transfers, { from, to, amount, futureMovementSheet
   return (transfers || []).filter(Boolean).map(transfer => {
     if (transfer.date <= today) {
       // Una transferencia ya vencida solo mueve saldo entre cuentas; no escribe fila.
-      return { action: "transferBank", bankSheet, from, to, amount };
+      // El transferSid se genera una vez y viaja en la cola, así que un reintento
+      // manda el mismo y el servidor no vuelve a mover el dinero.
+      return { action: "transferBank", bankSheet, from, to, amount, transferSid: createSid("tr") };
     }
     return {
       action: "addFutureMovement",
       sheetName: futureMovementSheet,
-      account: accountText,
+      // CUENTA se deja vacía a propósito: en muchas hojas esa columna tiene un
+      // desplegable de cuentas que RECHAZA el texto "Origen → Destino" y hacía
+      // fallar la operación para siempre. El par de cuentas viaja en DESCRIPCION,
+      // de donde ya lo leen tanto la app como el backend cuando CUENTA está vacía.
+      account: "",
       movement: serializeTransaction({
         ...transfer,
         tipo: "Transferencia",
         concepto: "Transferencia",
         descripcion: accountText,
-        cuenta: accountText,
+        cuenta: "",
         amount: Math.abs(Number(transfer.amount || amount || 0))
       })
     };
@@ -4394,7 +4721,7 @@ function recurringMovementOps(movements, { account, movementSheet, futureMovemen
 function transferMovementFromFormBase() {
   const from = document.getElementById("formTransferFrom").value;
   const to = document.getElementById("formTransferTo").value;
-  const amount = Math.abs(Number(document.getElementById("formAmount").value || 0));
+  const amount = Math.abs(roundMoney(document.getElementById("formAmount").value));
   const account = `${from} → ${to}`;
   return {
     tipo: "Transferencia",
@@ -4408,27 +4735,17 @@ function transferMovementFromFormBase() {
 }
 
 function transferMovementsFromRecurrenceForm() {
-  const start = parseDate(document.getElementById("recurrenceStart").value);
-  const end = parseDate(document.getElementById("recurrenceEnd").value);
-  if (!start || !end || start > end) return [];
-  const selected = [...document.querySelectorAll("#recurrencePicker input:checked")].map(i => Number(i.value));
-  if (!selected.length) return [];
-  const type = document.getElementById("recurrenceType").value;
+  const { dates, truncated } = recurrenceDatesFromForm();
+  if (truncated) throw new Error(`el rango genera más de ${MAX_RECURRENCE_OCCURRENCES} transferencias; acórtalo`);
   const base = transferMovementFromFormBase();
-  const out = [];
-  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-    const weekDay = (d.getDay() + 6) % 7;
-    const monthDay = d.getDate();
-    if ((type === "weekly" && selected.includes(weekDay)) || (type === "monthly" && selected.includes(monthDay))) {
-      out.push(normalizeTransaction({ ...base, fecha: formatDate(d) }));
-    }
-  }
-  return out.filter(Boolean);
+  return dates.map(d => normalizeTransaction({ ...base, fecha: formatDate(d) })).filter(Boolean);
 }
 
 function movementFromFormBase() {
   const type = prettyType(document.getElementById("formType").value);
-  const amount = Number(document.getElementById("formAmount").value || 0);
+  // parseNumber en vez de Number: acepta coma decimal española y devuelve NaN
+  // (rechazable) para importes vacíos o ilegibles, en vez de un 0 silencioso.
+  const amount = parseNumber(document.getElementById("formAmount").value);
   return {
     tipo: type,
     concepto: prettyType(document.getElementById("formConcept").value),
@@ -4524,6 +4841,16 @@ function setMovementModeFromClick(event) {
   renderMovements();
 }
 
+// Texto de cuenta para mostrar. Las transferencias no guardan CUENTA (esa columna
+// suele tener un desplegable que rechaza "Origen → Destino"), así que su par de
+// cuentas se reconstruye a partir del origen y destino ya normalizados.
+function movementAccountText(movement) {
+  if (!movement) return "";
+  if (movement.cuenta) return movement.cuenta;
+  if (movement.transferFrom && movement.transferTo) return `${movement.transferFrom} → ${movement.transferTo}`;
+  return "";
+}
+
 function getDisplayedMovements() {
   return state.movementMode === 'future' ? state.futureTransactions : state.transactions;
 }
@@ -4551,7 +4878,7 @@ function movementPopupHtml(movement, account, extra = '') {
     ["Tipo", movement.tipo],
     ["Concepto", movement.concepto],
     ["Descripción", movement.descripcion],
-    ["Cuenta", account || movement.cuenta || "Sin cuenta"],
+    ["Cuenta", account || movementAccountText(movement) || "Sin cuenta"],
     ["Importe", money(movement.amount)]
   ];
   return `<div class="saved-movement-stack">
@@ -4633,7 +4960,7 @@ function showMovementPopup(title, movement, account = '', extra = '') {
   document.getElementById('movementPopupTitle').textContent = title;
   document.getElementById('movementPopupBody').innerHTML = movementPopupHtml(movement, account, extra);
   if (!dialog.open) dialog.showModal();
-  lucide.createIcons();
+  refreshIcons();
 }
 
 function loadInvestmentGoals() {
@@ -4665,7 +4992,7 @@ async function saveInvestmentGoalsFromDialog(event) {
   const yearly = roundMoney(document.getElementById("goalYearlyInput").value);
   const total = roundMoney(document.getElementById("goalTotalInput").value);
   state.investmentGoals = normalizeInvestmentGoals({ expenseMonthly, investmentMonthly, monthly: investmentMonthly, yearly, total });
-  localStorage.setItem('investmentGoals', JSON.stringify(state.investmentGoals));
+  safeSetItem('investmentGoals', JSON.stringify(state.investmentGoals));
   writeDataCache({ dirtySections: ["investmentGoals"] });
   rememberPendingSnapshot("investmentGoals");
   renderDataScope("investments");
@@ -4797,6 +5124,14 @@ function promptMovementDeleteAccount({ title, amount, onConfirm, onCancel }) {
   select.innerHTML = state.banks.map(bank => `<option value="${escapeAttr(bank.cuenta)}">${escapeHtml(bank.cuenta)}</option>`).join("");
   dialog.__onConfirm = onConfirm;
   dialog.__onCancel = onCancel;
+  // Esc cierra el diálogo sin pasar por los botones: si queda un onCancel pendiente
+  // hay que ejecutarlo para no dejar al caller con el botón en "guardando" para siempre.
+  dialog.addEventListener("close", () => {
+    const pendingCancel = dialog.__onCancel;
+    dialog.__onConfirm = null;
+    dialog.__onCancel = null;
+    if (typeof pendingCancel === "function") pendingCancel();
+  }, { once: true });
   dialog.showModal();
 }
 
@@ -4823,10 +5158,21 @@ async function confirmMovementDeleteAccount(event) {
 
 async function saveBanks() {
   const btn = document.getElementById("saveBanksBtn");
+  // Validar ANTES de mutar: roundMoney convierte lo ilegible en 0, así que un
+  // typo en un campo ponía la cuenta a 0 € y lo subía a Sheets sin aviso.
+  const invalid = [];
+  document.querySelectorAll("[data-bank-index]").forEach(input => {
+    const idx = Number(input.dataset.bankIndex);
+    if (state.banks[idx] && !Number.isFinite(roundMoneyStrict(input.value))) invalid.push(state.banks[idx].cuenta);
+  });
+  if (invalid.length) {
+    setNotice(`Importe no válido en: ${invalid.join(", ")}. No se ha guardado nada.`, "warn");
+    return;
+  }
   markButtonSaving(btn);
   document.querySelectorAll("[data-bank-index]").forEach(input => {
     const idx = Number(input.dataset.bankIndex);
-    if (state.banks[idx]) state.banks[idx].dinero = roundMoney(input.value);
+    if (state.banks[idx]) state.banks[idx].dinero = roundMoneyStrict(input.value);
   });
   if (!state.config.scriptUrl) {
     writeDataCache({ dirtySections: ["banks"] });
@@ -5289,6 +5635,10 @@ function investmentTypes() {
 
 function renderTable(id, headers, rows) {
   const table = document.getElementById(id);
+  if (!table) {
+    console.warn(`renderTable: #${id} no existe`);
+    return;
+  }
   if (!rows.length) {
     table.innerHTML = `<tbody><tr><td class="empty" colspan="${headers.length}">Sin datos para mostrar.</td></tr></tbody>`;
     return;
@@ -5297,8 +5647,15 @@ function renderTable(id, headers, rows) {
 }
 
 function upsertChart(canvasId, type, data, options) {
+  // Chart.js viene de un CDN: si no cargó, mejor quedarse sin gráfica que romper la vista.
+  if (typeof Chart === "undefined") {
+    console.warn(`Chart.js no disponible; se omite la gráfica ${canvasId}`);
+    return;
+  }
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return;
   if (state.charts[canvasId]) state.charts[canvasId].destroy();
-  state.charts[canvasId] = new Chart(document.getElementById(canvasId), { type, data, options });
+  state.charts[canvasId] = new Chart(canvas, { type, data, options });
 }
 
 function compactChartOptions(title, options = {}) {
@@ -5413,7 +5770,7 @@ function openInvestmentCategoryDialog() {
   investmentTypes().forEach(type => addInvestmentCategoryRow(type));
   updateInvestmentCategoryMoveButtons();
   document.getElementById("investmentCategoriesDialog").showModal();
-  lucide.createIcons();
+  refreshIcons();
 }
 
 function updateInvestmentCategoryMoveButtons() {
@@ -5464,7 +5821,7 @@ function addInvestmentCategoryRow(value = "") {
   });
   rows.appendChild(row);
   updateInvestmentCategoryMoveButtons();
-  lucide.createIcons();
+  refreshIcons();
 }
 
 async function saveInvestmentCategoriesFromDialog(event) {
@@ -5518,7 +5875,7 @@ async function saveInvestmentCategoriesFromDialog(event) {
       setSyncStatus("Guardando categorías", "");
       setNotice("Categorías aplicadas en caché y enviadas a Sheets.", "ok");
     } else {
-      localStorage.setItem(INVESTMENT_CATEGORY_CACHE_KEY, JSON.stringify(nextTypes));
+      safeSetItem(INVESTMENT_CATEGORY_CACHE_KEY, JSON.stringify(nextTypes));
       setSyncStatus("Categorías guardadas en este navegador", "ok");
     }
     markButtonSaved(btn);
@@ -5535,7 +5892,7 @@ function renderInvestmentBreakdownTable(summary) {
     const current = summary.valueByType[type] || 0;
     const dailyPrevious = summary.dailyPreviousByType[type] || 0;
     const dailyPct = dailyPrevious ? (current - dailyPrevious) / dailyPrevious : 0;
-    return `<tr class="clickable-row" data-investment-type="${escapeAttr(type)}"><td class="text-clip col-type">${type}</td><td class="amount col-money">${money(invested)}</td><td class="amount col-money">${money(current)}</td><td class="amount col-money">${amountCell(current - invested)}</td><td class="amount col-pct">${pctCell(gainPct(current, invested))}</td><td class="amount col-pct">${pctCell(dailyPct)}</td></tr>`;
+    return `<tr class="clickable-row" data-investment-type="${escapeAttr(type)}"><td class="text-clip col-type">${escapeHtml(type)}</td><td class="amount col-money">${money(invested)}</td><td class="amount col-money">${money(current)}</td><td class="amount col-money">${amountCell(current - invested)}</td><td class="amount col-pct">${pctCell(gainPct(current, invested))}</td><td class="amount col-pct">${pctCell(dailyPct)}</td></tr>`;
   }).join("");
   document.getElementById("investmentBreakdownTable").innerHTML = `<colgroup><col class="col-type"><col class="col-money"><col class="col-money"><col class="col-money"><col class="col-pct"><col class="col-pct"></colgroup><thead><tr><th class="col-type"></th><th class="col-money">Cost</th><th class="col-money">Value</th><th class="col-money">Gain</th><th class="col-pct">%Gain</th><th class="col-pct">%d</th></tr></thead><tbody>${rows}</tbody>`;
   document.querySelectorAll("#investmentBreakdownTable [data-investment-type]").forEach(row => row.addEventListener("click", () => openInvestmentOverview(row.dataset.investmentType)));
@@ -5772,7 +6129,7 @@ function renderInvestments() {
 function openInvestmentEstimateRulesDialog() {
   renderInvestmentEstimateRulesTable();
   document.getElementById("investmentEstimateRulesDialog")?.showModal();
-  lucide.createIcons();
+  refreshIcons();
 }
 
 function blankInvestmentEstimateRule() {
@@ -5823,7 +6180,7 @@ function renderInvestmentEstimateRulesTable() {
       renderInvestmentEstimateRulesTable();
     });
   });
-  lucide.createIcons();
+  refreshIcons();
 }
 
 function formatOptionalInput(value) {
@@ -6101,7 +6458,7 @@ function openInvestmentAllocationDialog(prompt) {
     renderInvestmentAllocationFallbackRow(amount, movement);
     setNotice(lineMessage("Se abrió un reparto editable sin precargar las reglas.", error.message), "warn");
   }
-  lucide.createIcons();
+  refreshIcons();
 }
 
 function renderInvestmentAllocationFallbackRow(amount, movement) {
@@ -6250,7 +6607,7 @@ function renderInvestmentAllocationTable(rows = []) {
     updateInvestmentAllocationTotals();
   }));
   updateInvestmentAllocationTotals();
-  lucide.createIcons();
+  refreshIcons();
 }
 
 function investmentAllocationRowHtml(row) {
@@ -6332,7 +6689,9 @@ function updateInvestmentAllocationTotals() {
 
 function addExistingInvestmentAllocationRow() {
   const select = document.getElementById("investmentAllocationExistingSelect");
-  const indexes = JSON.parse(select?.dataset.candidateIndexes || "[]");
+  let indexes = [];
+  try { indexes = JSON.parse(select?.dataset.candidateIndexes || "[]"); } catch { indexes = []; }
+  if (!Array.isArray(indexes)) indexes = [];
   const investment = state.investments[indexes[Number(select?.value || 0)]];
   if (!investment) return;
   const remaining = investmentAllocationRemainingAmount();
@@ -6361,7 +6720,7 @@ function appendInvestmentAllocationRow(row) {
   tr.querySelectorAll("input, select").forEach(input => input.addEventListener("input", handleInvestmentAllocationInput));
   tr.querySelector("[data-allocation-delete]")?.addEventListener("click", () => { tr.remove(); updateInvestmentAllocationTotals(); });
   updateInvestmentAllocationTotals();
-  lucide.createIcons();
+  refreshIcons();
 }
 
 function investmentAllocationRemainingAmount() {
@@ -6413,18 +6772,27 @@ async function saveInvestmentAllocationPrompt(event) {
 }
 
 function loadEvolutionRange() {
+  const fallback = { start: "2026-01", end: "2026-12", snapshotDay: 31, income: 1800, expenses: 1250, investment: 750 };
   try {
     const saved = JSON.parse(localStorage.getItem(EVOLUTION_RANGE_KEY) || "{}");
+    // Los meses guardados se validan: un valor corrupto ("20x6-99") haría iterar
+    // monthsBetween miles de veces (o para siempre) y congelaría la pestaña.
+    const validMonth = value => /^\d{4}-(0[1-9]|1[0-2])$/.test(String(value || ""));
+    let start = validMonth(saved.start) ? saved.start : fallback.start;
+    let end = validMonth(saved.end) ? saved.end : fallback.end;
+    if (compareMonthKeys(start, end) > 0) [start, end] = [end, start];
+    // Tope de 120 meses: por encima el render de evolución se vuelve inutilizable.
+    if (monthsBetween(start, end).length > 120) end = addMonthsKey(start, 119);
     return {
-      start: saved.start || "2026-01",
-      end: saved.end || "2026-12",
+      start,
+      end,
       snapshotDay: Number(saved.snapshotDay ?? 31),
       income: Number(saved.income ?? 1800),
       expenses: Number(saved.expenses ?? 1250),
       investment: Number(saved.investment ?? 750)
     };
   } catch {
-    return { start: "2026-01", end: "2026-12", snapshotDay: 31, income: 1800, expenses: 1250, investment: 750 };
+    return fallback;
   }
 }
 
@@ -6445,7 +6813,7 @@ function loadAccountGroups() {
 }
 
 function writeAccountGroups() {
-  localStorage.setItem(ACCOUNT_GROUPS_KEY, JSON.stringify(state.accountGroups || []));
+  safeSetItem(ACCOUNT_GROUPS_KEY, JSON.stringify(state.accountGroups || []));
 }
 
 function renameAccountInGroups(oldName, newName) {
@@ -6473,7 +6841,7 @@ function saveEvolutionRangeAndRender() {
     expenses: readEvolutionNumber("evolutionEstimateExpense", state.evolutionRange.expenses ?? 1250),
     investment: readEvolutionNumber("evolutionEstimateInvestment", state.evolutionRange.investment ?? 750)
   };
-  localStorage.setItem(EVOLUTION_RANGE_KEY, JSON.stringify(state.evolutionRange));
+  safeSetItem(EVOLUTION_RANGE_KEY, JSON.stringify(state.evolutionRange));
   renderInvestmentEvolution();
 }
 
@@ -6668,25 +7036,46 @@ function normalizeDescription(value) {
 function parseDate(value) {
   if (value instanceof Date) return value;
   if (!value) return null;
-  if (typeof value === "number") return new Date(Math.round((value - 25569) * 86400 * 1000));
+  // Serial de hoja de cálculo (época 1899-12-30) construido en hora LOCAL: la
+  // fórmula por epoch UTC desplazaba la fecha un día en zonas al oeste de UTC,
+  // moviendo movimientos de mes en los resúmenes.
+  if (typeof value === "number") return new Date(1899, 11, 30 + Math.floor(value));
   const text = String(value).trim();
   const iso = text.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
   if (iso) return new Date(Number(iso[1]), Number(iso[2]) - 1, Number(iso[3]));
-  const slash = text.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
+  const slash = text.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})$/);
   if (slash) return new Date(Number(slash[3].padStart(4, "20")), Number(slash[2]) - 1, Number(slash[1]));
   const date = new Date(text);
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
+// Contrato: lo inválido devuelve NaN, nunca 0. Antes "abc" acababa en 0 € (la
+// limpieza dejaba "" y Number("") es 0) y "1.234" (miles en formato español) se
+// leía como 1,234 — un error de mil veces. Los separadores de miles se detectan
+// por estructura (grupos de exactamente 3 dígitos) para respetar ambos locales.
 function parseNumber(value) {
   if (typeof value === "number") return value;
-  if (value === null || value === undefined || value === "" || value === "---") return NaN;
-  let cleaned = String(value).replace(/\s/g, "").replace(/[^\d,.-]/g, "");
+  if (value === null || value === undefined) return NaN;
+  const cleaned = String(value).replace(/\s/g, "").replace(/[^\d,.-]/g, "");
+  if (!cleaned || !/\d/.test(cleaned)) return NaN;
   const hasComma = cleaned.includes(",");
   const hasDot = cleaned.includes(".");
-  if (hasComma && hasDot) cleaned = cleaned.lastIndexOf(",") > cleaned.lastIndexOf(".") ? cleaned.replace(/\./g, "").replace(",", ".") : cleaned.replace(/,/g, "");
-  else if (hasComma) cleaned = cleaned.replace(",", ".");
-  return Number(cleaned);
+  let normalized;
+  if (hasComma && hasDot) {
+    normalized = cleaned.lastIndexOf(",") > cleaned.lastIndexOf(".")
+      ? cleaned.replace(/\./g, "").replace(",", ".")
+      : cleaned.replace(/,/g, "");
+  } else if (hasComma) {
+    // En es-ES la coma es decimal ("10,555" = 10.555): solo se lee como separador de
+    // miles al estilo en-US cuando hay varios grupos ("1,234,567"), que no admiten
+    // otra lectura.
+    normalized = /^-?\d{1,3}(,\d{3}){2,}$/.test(cleaned) ? cleaned.replace(/,/g, "") : cleaned.replace(",", ".");
+  } else if (hasDot) {
+    normalized = /^-?\d{1,3}(\.\d{3})+$/.test(cleaned) ? cleaned.replace(/\./g, "") : cleaned;
+  } else {
+    normalized = cleaned;
+  }
+  return Number(normalized);
 }
 
 function normalizePercentPoints(value) {
@@ -6708,6 +7097,9 @@ function pctNoSymbol(value) {
 }
 function formatDecimalInput(value, decimals = 2) { return safeNumber(parseNumber(value)).toFixed(decimals); }
 function roundMoney(value) { const parsed = parseNumber(value); return Number.isFinite(parsed) ? Math.round(parsed * 100) / 100 : 0; }
+// Variante estricta para entradas del usuario: lo ilegible devuelve NaN para poder
+// rechazarlo, en vez del 0 silencioso de roundMoney (pensado solo para presentación).
+function roundMoneyStrict(value) { const parsed = parseNumber(value); return Number.isFinite(parsed) ? Math.round(parsed * 100) / 100 : NaN; }
 function quantityFmt(value) {
   const number = Number(value) || 0;
   const decimals = Math.abs(number) > 0 && Math.abs(number) < 0.01 ? 6 : 4;
