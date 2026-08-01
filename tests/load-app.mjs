@@ -73,5 +73,9 @@ export function loadApp() {
 
   vm.createContext(context);
   vm.runInContext(source, context, { filename: "app.js" });
+  // Las declaraciones `const`/`let` de nivel superior son léxicas: al contrario que las
+  // funciones, no quedan como propiedades del contexto. Se exponen a mano las que los
+  // tests necesitan poder leer o ajustar.
+  vm.runInContext("globalThis.state = state;", context, { filename: "app.js:expose" });
   return context;
 }

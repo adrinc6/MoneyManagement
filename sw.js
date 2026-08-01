@@ -3,7 +3,7 @@
  * pero sin SW no arrancaba sin conexión. Aquí cacheamos el shell y las librerías
  * de CDN, y SIEMPRE dejamos pasar las peticiones a Apps Script (datos en vivo).
  */
-const CACHE_VERSION = "mm-20260801-v21";
+const CACHE_VERSION = "mm-20260801-v22";
 const APP_SHELL = [
   "./",
   "./index.html",
