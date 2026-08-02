@@ -1906,7 +1906,6 @@ function pendingOpsCount() {
 const OP_LABELS = {
   addMovement: "Movimiento",
   addFutureMovement: "Movimiento futuro",
-  addMovementsBatch: "Movimientos periódicos",
   updateMovement: "Editar movimiento",
   updateInvestment: "Editar inversión",
   deleteMovement: "Borrar movimiento",
@@ -1917,12 +1916,10 @@ const OP_LABELS = {
   saveInvestmentCategories: "Guardar categorías inversión",
   saveInvestmentEstimateRules: "Guardar reglas estimación",
   clearInvestmentEstimates: "Borrar estimaciones",
-  simulateInvestmentEstimateRule: "Simular estimación",
   saveInvestmentEstimateAllocations: "Reparto estimación",
   saveInvestmentModePreference: "Modo inversión",
   saveInvestmentGoals: "Guardar objetivos",
   transferBank: "Transferencia",
-  addTransfersBatch: "Transferencias periódicas",
   renameAccount: "Renombrar cuenta",
   deleteAccount: "Eliminar cuenta",
   reassignFutureMovementsAccount: "Reasignar movs. futuros"
@@ -2083,12 +2080,6 @@ function describeSentOp(payload = {}) {
   if (action === "transferBank") {
     return [`${payload.from || "?"} → ${payload.to || "?"}`, money(payload.amount)];
   }
-  if (action === "addMovementsBatch") {
-    return [`${(payload.movements || []).length} movimiento(s) periódico(s)`];
-  }
-  if (action === "addTransfersBatch") {
-    return [`${payload.from || "?"} → ${payload.to || "?"}`, `${(payload.transfers || []).length} transferencia(s)`, money(payload.amount)];
-  }
   if (action === "deleteMovementsBatch") {
     return [`${(payload.movements || []).length} movimiento(s) borrado(s)`];
   }
@@ -2160,8 +2151,6 @@ function undoReasonFor(action) {
     updateMovement: "La edición se revierte a mano desde el propio movimiento.",
     deleteMovement: "Vuelve a registrarlo desde la pantalla Registrar.",
     deleteMovementsBatch: "Vuelve a registrarlos desde la pantalla Registrar.",
-    addMovementsBatch: "Bórralos desde Movimientos (edición múltiple).",
-    addTransfersBatch: "Revísalo desde Movimientos.",
     saveBanks: "Ajusta el saldo de nuevo en Dinero.",
     saveInvestments: "Corrige las posiciones en Inversión.",
     updateInvestment: "Corrige la posición en Inversión.",
@@ -2248,25 +2237,23 @@ async function undoSentOp(entryId) {
 
 function queuePayloadSections(payload = {}) {
   const action = payload.action || "";
+  const targetsFutureSheet = String(payload.sheetName || "") === (state.config.futureMovementSheet || "Movimientos futuros");
   if (["addMovement", "updateMovement", "deleteMovement"].includes(action)) {
-    const sheetName = String(payload.sheetName || "");
-    return sheetName === (state.config.futureMovementSheet || "Movimientos futuros") || action === "addFutureMovement"
+    return targetsFutureSheet
       ? ["futureTransactions"]
       : ["transactions", "banks", "investmentTotals", "investmentEstimateLedger"];
   }
   if (action === "addFutureMovement") return ["futureTransactions"];
-  if (action === "addMovementsBatch") return ["transactions", "futureTransactions", "banks", "investmentTotals", "investmentEstimateLedger"];
   if (action === "deleteMovementsBatch") {
-    const sheetName = String(payload.sheetName || "");
-    return sheetName === (state.config.futureMovementSheet || "Movimientos futuros") ? ["futureTransactions"] : ["transactions", "investmentTotals"];
+    return targetsFutureSheet ? ["futureTransactions"] : ["transactions", "investmentTotals"];
   }
-  if (["transferBank", "saveBanks", "addTransfersBatch"].includes(action)) return action === "addTransfersBatch" ? ["futureTransactions", "banks"] : ["banks"];
+  if (["transferBank", "saveBanks"].includes(action)) return ["banks"];
   if (["renameAccount", "deleteAccount"].includes(action)) return ["banks", "transactions", "futureTransactions"];
   if (action === "reassignFutureMovementsAccount") return ["futureTransactions"];
   if (["saveInvestments", "updateInvestment", "deleteInvestment"].includes(action)) return ["investments", "investmentTotals", "investmentEstimateLedger"];
   if (action === "saveInvestmentCategories") return ["categories", "investments", "investmentTotals", "transactions", "futureTransactions"];
-  if (["saveInvestmentEstimateRules"].includes(action)) return ["investmentEstimateRules", "investmentEstimateLedger"];
-  if (["clearInvestmentEstimates", "simulateInvestmentEstimateRule", "saveInvestmentEstimateAllocations"].includes(action)) return ["investmentEstimateLedger"];
+  if (action === "saveInvestmentEstimateRules") return ["investmentEstimateRules", "investmentEstimateLedger"];
+  if (["clearInvestmentEstimates", "saveInvestmentEstimateAllocations"].includes(action)) return ["investmentEstimateLedger"];
   if (action === "saveInvestmentGoals") return ["investmentGoals"];
   return [];
 }
@@ -4623,14 +4610,12 @@ function movementsFromRecurrenceForm() {
 // ---------------------------------------------------------------------------
 // Altas periódicas: una petición por movimiento
 //
-// Antes se mandaba el lote entero en un único POST (addTransfersBatch /
-// addMovementsBatch). Con recurrencias largas ese cuerpo crecía tanto que WebKit
-// rechazaba la petición al instante ("Load failed") y ningún reintento la salvaba.
-// Ahora cada fecha es una operación independiente, con su propio clientOpId, su propio
-// reintento y su propia confirmación: si una falla, las demás siguen.
-//
-// Las tres acciones que se usan aquí ya existen en el Apps Script desplegado
-// (addMovement, addFutureMovement, transferBank), así que esto no exige redesplegar.
+// Cada fecha es una operación independiente (addMovement, addFutureMovement o
+// transferBank) con su propio clientOpId, su propio reintento y su propia
+// confirmación: si una falla, las demás siguen. Mandar el lote entero en un único
+// POST no es una alternativa: con recurrencias largas el cuerpo crecía tanto que
+// WebKit rechazaba la petición al instante ("Load failed") y ningún reintento la
+// salvaba.
 // ---------------------------------------------------------------------------
 
 function recurringTransferOps(transfers, { from, to, amount, futureMovementSheet, bankSheet } = {}) {

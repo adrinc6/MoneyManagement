@@ -46,9 +46,9 @@ function doGet(e) {
     } else if (action === 'downloadData') {
       payload = buildAllDataPayload_(movementSheet, futureMovementSheet, investmentSheet, bankSheet, objectiveSheet, dataSheet, [], investmentTotalsSheet, investmentEstimateRulesSheet, investmentEstimateLedgerSheet);
     } else if (action === 'downloadCoreData') {
-      payload = buildCoreDataPayload_(investmentSheet, bankSheet, objectiveSheet, dataSheet, [], movementSheet, futureMovementSheet, investmentTotalsSheet, investmentEstimateRulesSheet, investmentEstimateLedgerSheet);
+      payload = buildCoreDataPayload_(investmentSheet, bankSheet, objectiveSheet, dataSheet, movementSheet, investmentTotalsSheet, investmentEstimateRulesSheet, investmentEstimateLedgerSheet);
     } else if (action === 'downloadInvestments') {
-      payload = buildInvestmentDataPayload_(investmentSheet, objectiveSheet, movementSheet, futureMovementSheet, bankSheet, dataSheet, investmentTotalsSheet, investmentEstimateRulesSheet, investmentEstimateLedgerSheet);
+      payload = buildInvestmentDataPayload_(investmentSheet, objectiveSheet, movementSheet, dataSheet, investmentTotalsSheet, investmentEstimateRulesSheet, investmentEstimateLedgerSheet);
     } else if (action === 'downloadMovementsPage') {
       payload = buildMovementPagePayload_(
         params.movementKind === 'future' ? futureMovementSheet : movementSheet,
@@ -59,8 +59,8 @@ function doGet(e) {
     } else if (action === 'moveDueFutureMovements') {
       const movedFutureMovements = moveDueFutureMovements_(futureMovementSheet, movementSheet, bankSheet, skipFutureSids);
       if (movedFutureMovements.length) {
-        movedFutureMovements.forEach(function(movement) { adjustInvestmentCostFromMovement_(investmentTotalsSheet, dataSheet, investmentSheet, movementSheet, movement, 1); });
-        syncInvestmentTotalsSheet_(investmentTotalsSheet, dataSheet, investmentSheet, movementSheet);
+        movedFutureMovements.forEach(function(movement) { adjustInvestmentCostFromMovement_(investmentTotalsSheet, investmentSheet, movementSheet, movement, 1); });
+        syncInvestmentTotalsSheet_(investmentTotalsSheet, investmentSheet, movementSheet);
       }
       payload = {
         ok: true,
@@ -71,8 +71,8 @@ function doGet(e) {
     } else if (action === 'all') {
       const movedFutureMovements = moveDueFutureMovements_(futureMovementSheet, movementSheet, bankSheet, skipFutureSids);
       if (movedFutureMovements.length) {
-        movedFutureMovements.forEach(function(movement) { adjustInvestmentCostFromMovement_(investmentTotalsSheet, dataSheet, investmentSheet, movementSheet, movement, 1); });
-        syncInvestmentTotalsSheet_(investmentTotalsSheet, dataSheet, investmentSheet, movementSheet);
+        movedFutureMovements.forEach(function(movement) { adjustInvestmentCostFromMovement_(investmentTotalsSheet, investmentSheet, movementSheet, movement, 1); });
+        syncInvestmentTotalsSheet_(investmentTotalsSheet, investmentSheet, movementSheet);
       }
       payload = buildAllDataPayload_(movementSheet, futureMovementSheet, investmentSheet, bankSheet, objectiveSheet, dataSheet, movedFutureMovements, investmentTotalsSheet, investmentEstimateRulesSheet, investmentEstimateLedgerSheet);
     } else if (action === 'updateInvestmentPrices') {
@@ -80,8 +80,8 @@ function doGet(e) {
         const priceUpdateResult = updateInvestmentQuotesFromYahoo(investmentSheet);
         // Los precios han cambiado: aquí sí hay que recalcular la hoja de totales, porque
         // los payloads de descarga ya no la sincronizan por su cuenta.
-        syncInvestmentTotalsSheet_(investmentTotalsSheet, dataSheet, investmentSheet, movementSheet);
-        const result = buildInvestmentDataPayload_(investmentSheet, objectiveSheet, movementSheet, futureMovementSheet, bankSheet, dataSheet, investmentTotalsSheet, investmentEstimateRulesSheet, investmentEstimateLedgerSheet);
+        syncInvestmentTotalsSheet_(investmentTotalsSheet, investmentSheet, movementSheet);
+        const result = buildInvestmentDataPayload_(investmentSheet, objectiveSheet, movementSheet, dataSheet, investmentTotalsSheet, investmentEstimateRulesSheet, investmentEstimateLedgerSheet);
         result.pricesUpdated = true;
         result.priceUpdateResult = priceUpdateResult;
         return result;
@@ -109,7 +109,7 @@ function doGet(e) {
 }
 
 function buildAllDataPayload_(movementSheet, futureMovementSheet, investmentSheet, bankSheet, objectiveSheet, dataSheet, movedFutureMovements, investmentTotalsSheet, investmentEstimateRulesSheet, investmentEstimateLedgerSheet) {
-  const investmentTotals = investmentTotalsForRead_(investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, dataSheet, investmentSheet, movementSheet);
+  const investmentTotals = investmentTotalsForRead_(investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, investmentSheet, movementSheet);
   const investments = readInvestments_(investmentSheet);
   return {
     ok: true,
@@ -126,12 +126,14 @@ function buildAllDataPayload_(movementSheet, futureMovementSheet, investmentShee
   };
 }
 
-function buildCoreDataPayload_(investmentSheet, bankSheet, objectiveSheet, dataSheet, movedFutureMovements, movementSheet, futureMovementSheet, investmentTotalsSheet, investmentEstimateRulesSheet, investmentEstimateLedgerSheet) {
-  const investmentTotals = investmentTotalsForRead_(investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, dataSheet, investmentSheet, movementSheet || DEFAULT_MOVEMENT_SHEET);
+function buildCoreDataPayload_(investmentSheet, bankSheet, objectiveSheet, dataSheet, movementSheet, investmentTotalsSheet, investmentEstimateRulesSheet, investmentEstimateLedgerSheet) {
+  const investmentTotals = investmentTotalsForRead_(investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, investmentSheet, movementSheet || DEFAULT_MOVEMENT_SHEET);
   const investments = readInvestments_(investmentSheet);
   return {
     ok: true,
-    movedFutureMovements: movedFutureMovements || [],
+    // Este payload no mueve futuros vencidos (eso es 'moveDueFutureMovements'/'all'):
+    // el campo va siempre vacío para que el cliente lo trate igual que los demás.
+    movedFutureMovements: [],
     investments,
     investmentTotals,
     investmentEstimateRules: readInvestmentEstimateRules_(investmentEstimateRulesSheet || DEFAULT_INVESTMENT_ESTIMATE_RULES_SHEET),
@@ -142,8 +144,8 @@ function buildCoreDataPayload_(investmentSheet, bankSheet, objectiveSheet, dataS
   };
 }
 
-function buildInvestmentDataPayload_(investmentSheet, objectiveSheet, movementSheet, futureMovementSheet, bankSheet, dataSheet, investmentTotalsSheet, investmentEstimateRulesSheet, investmentEstimateLedgerSheet) {
-  const investmentTotals = investmentTotalsForRead_(investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, dataSheet || 'Datos', investmentSheet, movementSheet || DEFAULT_MOVEMENT_SHEET);
+function buildInvestmentDataPayload_(investmentSheet, objectiveSheet, movementSheet, dataSheet, investmentTotalsSheet, investmentEstimateRulesSheet, investmentEstimateLedgerSheet) {
+  const investmentTotals = investmentTotalsForRead_(investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, investmentSheet, movementSheet || DEFAULT_MOVEMENT_SHEET);
   const investments = readInvestments_(investmentSheet);
   return {
     ok: true,
@@ -159,7 +161,7 @@ function buildInvestmentDataPayload_(investmentSheet, objectiveSheet, movementSh
 function buildQuickStatusPayload_(movementSheet, futureMovementSheet, investmentSheet, bankSheet, dataSheet, investmentTotalsSheet) {
   const banks = readBanks_(bankSheet);
   const investments = readInvestments_(investmentSheet);
-  const investmentTotals = investmentTotalsForRead_(investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, dataSheet || 'Datos', investmentSheet || DEFAULT_INVESTMENT_SHEET, movementSheet || DEFAULT_MOVEMENT_SHEET);
+  const investmentTotals = investmentTotalsForRead_(investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, investmentSheet || DEFAULT_INVESTMENT_SHEET, movementSheet || DEFAULT_MOVEMENT_SHEET);
   const investmentTotalsValue = investmentTotals.reduce(function(acc, item) { return acc + (parseNumber_(item.value) || 0); }, 0);
   const investmentsValue = investments.reduce(function(acc, item) { return acc + (parseNumber_(item.total) || 0); }, 0);
   return {
@@ -490,8 +492,8 @@ function doPost(e) {
       // Para el resto, resincronizarla era trabajo caro tirado — y ahora que las altas
       // periódicas llegan de una en una, sería ese coste multiplicado por cada fecha.
       if (isInvestmentMovement_(payload.movement)) {
-        adjustInvestmentCostFromMovement_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.dataSheet || 'Datos', payload.investmentSheet || DEFAULT_INVESTMENT_SHEET, payload.sheetName || DEFAULT_MOVEMENT_SHEET, payload.movement, 1);
-        syncInvestmentTotalsSheet_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.dataSheet || 'Datos', payload.investmentSheet || DEFAULT_INVESTMENT_SHEET, payload.sheetName || DEFAULT_MOVEMENT_SHEET);
+        adjustInvestmentCostFromMovement_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.investmentSheet || DEFAULT_INVESTMENT_SHEET, payload.sheetName || DEFAULT_MOVEMENT_SHEET, payload.movement, 1);
+        syncInvestmentTotalsSheet_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.investmentSheet || DEFAULT_INVESTMENT_SHEET, payload.sheetName || DEFAULT_MOVEMENT_SHEET);
       }
       if (payload.account) {
         // El ajuste de saldo es una suma, no es idempotente: si el registro del
@@ -510,38 +512,26 @@ function doPost(e) {
       addFutureMovement_(payload.movement, payload.sheetName || DEFAULT_FUTURE_MOVEMENT_SHEET, payload.account || '');
       return finishPost_(pendingId, payload, { ok: true });
     }
-    if (payload.action === 'addMovementsBatch') {
-      const appliedMovements = addMovementsBatch_(payload.movements || [], payload.movementSheet || DEFAULT_MOVEMENT_SHEET, payload.futureMovementSheet || DEFAULT_FUTURE_MOVEMENT_SHEET, payload.bankSheet || DEFAULT_BANK_SHEET, payload.account || '', payload.clientOpId || '');
-      appliedMovements.forEach(function(movement) {
-        adjustInvestmentCostFromMovement_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.dataSheet || 'Datos', payload.investmentSheet || DEFAULT_INVESTMENT_SHEET, payload.movementSheet || DEFAULT_MOVEMENT_SHEET, movement, 1);
-      });
-      syncInvestmentTotalsSheet_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.dataSheet || 'Datos', payload.investmentSheet || DEFAULT_INVESTMENT_SHEET, payload.movementSheet || DEFAULT_MOVEMENT_SHEET);
-      return finishPost_(pendingId, payload, { ok: true });
-    }
-    if (payload.action === 'addTransfersBatch') {
-      addTransfersBatch_(payload.transfers || [], payload.futureMovementSheet || DEFAULT_FUTURE_MOVEMENT_SHEET, payload.bankSheet || DEFAULT_BANK_SHEET, payload.from || '', payload.to || '', Number(payload.amount || 0), payload.clientOpId || '');
-      return finishPost_(pendingId, payload, { ok: true });
-    }
     if (payload.action === 'updateMovement') {
-      if (payload.previousMovement) adjustInvestmentCostFromMovement_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.dataSheet || 'Datos', payload.investmentSheet || DEFAULT_INVESTMENT_SHEET, payload.sheetName || DEFAULT_MOVEMENT_SHEET, payload.previousMovement, -1);
+      if (payload.previousMovement) adjustInvestmentCostFromMovement_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.investmentSheet || DEFAULT_INVESTMENT_SHEET, payload.sheetName || DEFAULT_MOVEMENT_SHEET, payload.previousMovement, -1);
       updateMovement_(payload.movement, payload.sheetName || DEFAULT_MOVEMENT_SHEET, payload.previousMovement || null);
-      adjustInvestmentCostFromMovement_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.dataSheet || 'Datos', payload.investmentSheet || DEFAULT_INVESTMENT_SHEET, payload.sheetName || DEFAULT_MOVEMENT_SHEET, payload.movement, 1);
-      syncInvestmentTotalsSheet_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.dataSheet || 'Datos', payload.investmentSheet || DEFAULT_INVESTMENT_SHEET, payload.sheetName || DEFAULT_MOVEMENT_SHEET);
+      adjustInvestmentCostFromMovement_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.investmentSheet || DEFAULT_INVESTMENT_SHEET, payload.sheetName || DEFAULT_MOVEMENT_SHEET, payload.movement, 1);
+      syncInvestmentTotalsSheet_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.investmentSheet || DEFAULT_INVESTMENT_SHEET, payload.sheetName || DEFAULT_MOVEMENT_SHEET);
       return finishPost_(pendingId, payload, { ok: true });
     }
     if (payload.action === 'deleteMovement') {
-      if (payload.movement) adjustInvestmentCostFromMovement_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.dataSheet || 'Datos', payload.investmentSheet || DEFAULT_INVESTMENT_SHEET, payload.sheetName || DEFAULT_MOVEMENT_SHEET, payload.movement, -1);
+      if (payload.movement) adjustInvestmentCostFromMovement_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.investmentSheet || DEFAULT_INVESTMENT_SHEET, payload.sheetName || DEFAULT_MOVEMENT_SHEET, payload.movement, -1);
       deleteMovement_(payload.rowNumber, payload.sheetName || DEFAULT_MOVEMENT_SHEET, payload.movement || null);
-      syncInvestmentTotalsSheet_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.dataSheet || 'Datos', payload.investmentSheet || DEFAULT_INVESTMENT_SHEET, payload.sheetName || DEFAULT_MOVEMENT_SHEET);
+      syncInvestmentTotalsSheet_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.investmentSheet || DEFAULT_INVESTMENT_SHEET, payload.sheetName || DEFAULT_MOVEMENT_SHEET);
       return finishPost_(pendingId, payload, { ok: true });
     }
     if (payload.action === 'deleteMovementsBatch') {
       (payload.movements || []).forEach(function(item) {
         const movement = item && (item.movement || item);
-        if (movement) adjustInvestmentCostFromMovement_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.dataSheet || 'Datos', payload.investmentSheet || DEFAULT_INVESTMENT_SHEET, payload.sheetName || DEFAULT_MOVEMENT_SHEET, movement, -1);
+        if (movement) adjustInvestmentCostFromMovement_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.investmentSheet || DEFAULT_INVESTMENT_SHEET, payload.sheetName || DEFAULT_MOVEMENT_SHEET, movement, -1);
       });
       deleteMovementsBatch_(payload.movements || [], payload.sheetName || DEFAULT_MOVEMENT_SHEET);
-      syncInvestmentTotalsSheet_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.dataSheet || 'Datos', payload.investmentSheet || DEFAULT_INVESTMENT_SHEET, payload.sheetName || DEFAULT_MOVEMENT_SHEET);
+      syncInvestmentTotalsSheet_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.investmentSheet || DEFAULT_INVESTMENT_SHEET, payload.sheetName || DEFAULT_MOVEMENT_SHEET);
       return finishPost_(pendingId, payload, { ok: true });
     }
     if (payload.action === 'updateInvestment') {
@@ -549,22 +539,22 @@ function doPost(e) {
       if (payload.newInvestment && !isCashInvestment_(payload.investment || {})) {
         updateInvestmentQuotesFromYahoo(payload.sheetName || DEFAULT_INVESTMENT_SHEET);
       }
-      syncInvestmentTotalsSheet_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.dataSheet || 'Datos', payload.sheetName || DEFAULT_INVESTMENT_SHEET, payload.movementSheet || DEFAULT_MOVEMENT_SHEET);
+      syncInvestmentTotalsSheet_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.sheetName || DEFAULT_INVESTMENT_SHEET, payload.movementSheet || DEFAULT_MOVEMENT_SHEET);
       return finishPost_(pendingId, payload, { ok: true, pricesUpdated: Boolean(payload.newInvestment) });
     }
     if (payload.action === 'deleteInvestment') {
       deleteInvestment_(payload.investment || {}, payload.sheetName || DEFAULT_INVESTMENT_SHEET, payload.rowNumber || 0);
-      syncInvestmentTotalsSheet_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.dataSheet || 'Datos', payload.sheetName || DEFAULT_INVESTMENT_SHEET, payload.movementSheet || DEFAULT_MOVEMENT_SHEET);
+      syncInvestmentTotalsSheet_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.sheetName || DEFAULT_INVESTMENT_SHEET, payload.movementSheet || DEFAULT_MOVEMENT_SHEET);
       return finishPost_(pendingId, payload, { ok: true, investmentDeleted: true });
     }
     if (payload.action === 'saveInvestments') {
       saveInvestments_(payload.investments || [], payload.sheetName || DEFAULT_INVESTMENT_SHEET);
-      syncInvestmentTotalsSheet_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.dataSheet || 'Datos', payload.sheetName || DEFAULT_INVESTMENT_SHEET, payload.movementSheet || DEFAULT_MOVEMENT_SHEET);
+      syncInvestmentTotalsSheet_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.sheetName || DEFAULT_INVESTMENT_SHEET, payload.movementSheet || DEFAULT_MOVEMENT_SHEET);
       return finishPost_(pendingId, payload, { ok: true });
     }
     if (payload.action === 'saveInvestmentCategories') {
-      saveInvestmentCategories_(payload.dataSheet || 'Datos', payload.sheetName || DEFAULT_INVESTMENT_SHEET, payload.investmentTypes || [], payload.renames || {}, payload.movementSheet || DEFAULT_MOVEMENT_SHEET, payload.futureMovementSheet || DEFAULT_FUTURE_MOVEMENT_SHEET, payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET);
-      syncInvestmentTotalsSheet_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.dataSheet || 'Datos', payload.sheetName || DEFAULT_INVESTMENT_SHEET, payload.movementSheet || DEFAULT_MOVEMENT_SHEET);
+      saveInvestmentCategories_(payload.sheetName || DEFAULT_INVESTMENT_SHEET, payload.investmentTypes || [], payload.renames || {}, payload.movementSheet || DEFAULT_MOVEMENT_SHEET, payload.futureMovementSheet || DEFAULT_FUTURE_MOVEMENT_SHEET, payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET);
+      syncInvestmentTotalsSheet_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.sheetName || DEFAULT_INVESTMENT_SHEET, payload.movementSheet || DEFAULT_MOVEMENT_SHEET);
       return finishPost_(pendingId, payload, { ok: true });
     }
     if (payload.action === 'saveInvestmentEstimateRules') {
@@ -1062,104 +1052,6 @@ function addFutureMovement_(movement, sheetName, account) {
   writeMovementRow_(sheet, row, movement, movementSidFrom_(movement), account || movement.account || movement.cuenta || '');
 }
 
-// Aplica los deltas agregados por cuenta (una escritura por cuenta en vez de una por
-// movimiento) y registra los sids ya aplicados, para que un reintento del mismo lote no
-// vuelva a mover el dinero.
-function applyBatchBankDeltas_(bankSheet, deltasByAccount, clientOpId, appliedSids) {
-  Object.keys(deltasByAccount).forEach(account => {
-    const delta = deltasByAccount[account];
-    if (delta) adjustBank_(bankSheet, account, delta);
-  });
-  rememberAppliedBatchSids_(clientOpId, appliedSids);
-}
-
-function addMovementsBatch_(movements, movementSheet, futureSheet, bankSheet, account, clientOpId) {
-  const today = new Date();
-  today.setHours(23, 59, 59, 999);
-  const alreadyApplied = appliedBatchSids_(clientOpId);
-  const realizedEntries = [];
-  const futureEntries = [];
-  const deltas = {};
-  const appliedSids = [];
-  const newlyRealized = [];
-  (movements || []).forEach(movement => {
-    if (!movement) return;
-    const date = new Date(movement.date || movement.fecha);
-    if (Number.isNaN(date.getTime())) return;
-    const cuenta = account || movement.cuenta || '';
-    const sid = movementSidFrom_(movement);
-    const entry = { movement: Object.assign({}, movement, { cuenta }), sid, account: cuenta };
-    if (date > today) {
-      futureEntries.push(entry);
-      return;
-    }
-    realizedEntries.push(entry);
-    if (alreadyApplied[sid]) return;
-    appliedSids.push(sid);
-    newlyRealized.push(movement);
-    if (account) deltas[account] = (deltas[account] || 0) + Number(movement.amount || movement.importe || 0);
-  });
-  const movementTargetSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(movementSheet);
-  if (realizedEntries.length && !movementTargetSheet) throw new Error(`Sheet not found: ${movementSheet}`);
-  appendMovementRows_(movementTargetSheet, realizedEntries);
-  if (futureEntries.length) {
-    appendMovementRows_(getOrCreateSheet_(futureSheet, futureMovementHeaders_()), futureEntries);
-  }
-  applyBatchBankDeltas_(bankSheet, deltas, clientOpId, appliedSids);
-  // Los movimientos que este intento sí ha aplicado, para que el coste de inversión
-  // tampoco se recalcule dos veces si el lote se reintenta.
-  return newlyRealized;
-}
-
-function addTransfersBatch_(transfers, futureSheet, bankSheet, defaultFrom, defaultTo, defaultAmount, clientOpId) {
-  const today = new Date();
-  today.setHours(23, 59, 59, 999);
-  const alreadyApplied = appliedBatchSids_(clientOpId);
-  const futureEntries = [];
-  const deltas = {};
-  const appliedSids = [];
-  (transfers || []).forEach(transfer => {
-    if (!transfer) return;
-    const date = new Date(transfer.date || transfer.fecha);
-    if (Number.isNaN(date.getTime())) return;
-    const accounts = transferAccountsFromMovement_(transfer, defaultFrom, defaultTo);
-    const amount = Math.abs(Number(transfer.amount || transfer.importe || defaultAmount || 0));
-    if (!accounts.from || !accounts.to || accounts.from === accounts.to || !Number.isFinite(amount) || amount <= 0) return;
-    const sid = movementSidFrom_(transfer);
-    if (date > today) {
-      const accountText = `${accounts.from} → ${accounts.to}`;
-      futureEntries.push({
-        sid,
-        account: accountText,
-        movement: {
-          fecha: transfer.fecha || transfer.date,
-          tipo: 'Transferencia',
-          concepto: 'Transferencia',
-          descripcion: accountText,
-          importe: amount,
-          cuenta: accountText
-        }
-      });
-      return;
-    }
-    if (alreadyApplied[sid]) return;
-    deltas[accounts.from] = (deltas[accounts.from] || 0) - amount;
-    deltas[accounts.to] = (deltas[accounts.to] || 0) + amount;
-    appliedSids.push(sid);
-  });
-  if (futureEntries.length) {
-    appendMovementRows_(getOrCreateSheet_(futureSheet, futureMovementHeaders_()), futureEntries);
-  }
-  applyBatchBankDeltas_(bankSheet, deltas, clientOpId, appliedSids);
-}
-
-function transferAccountsFromMovement_(movement, fallbackFrom, fallbackTo) {
-  const explicitFrom = String(movement && (movement.transferFrom || movement.from) || '').trim();
-  const explicitTo = String(movement && (movement.transferTo || movement.to) || '').trim();
-  if (explicitFrom || explicitTo) return { from: explicitFrom || fallbackFrom || '', to: explicitTo || fallbackTo || '' };
-  return parseTransferAccountText_(movement && (movement.cuenta || movement.account || movement.descripcion) || `${fallbackFrom || ''} → ${fallbackTo || ''}`);
-}
-
 function parseTransferAccountText_(value) {
   const text = String(value || '').trim();
   const separator = text.indexOf('→') !== -1 ? '→' : text.indexOf('->') !== -1 ? '->' : '';
@@ -1227,6 +1119,10 @@ function moveDueFutureMovementsLocked_(futureSheetName, movementSheetName, bankS
   today.setHours(23, 59, 59, 999);
   const moved = [];
   const rowsToDelete = [];
+  // Los movimientos realizados se acumulan y se escriben de una vez con
+  // appendMovementRows_: fila a fila eran ~3 llamadas a la API por vencimiento, y una
+  // puesta al día de varios meses se comía el presupuesto de tiempo de la petición.
+  const pendingAppends = [];
   for (let r = values.length - 1; r >= 1; r--) {
     const row = values[r];
     const date = parseMovementDate_(row[0]);
@@ -1244,11 +1140,16 @@ function moveDueFutureMovementsLocked_(futureSheetName, movementSheetName, bankS
       moved.push({ ...movement, cuenta: `${accounts.from} → ${accounts.to}`, transferFrom: accounts.from, transferTo: accounts.to });
     } else {
       if (row[8] && bankSheet && !findBankRow_(bankSheet, row[8])) continue;
-      addMovement_(movement, movementSheetName);
+      pendingAppends.push({ movement, sid: sid || movementSidFrom_(movement), account: row[8] || '' });
       if (row[8]) adjustBank_(bankSheetName, row[8], movement.importe);
       moved.push({ ...movement, cuenta: row[8] || '' });
     }
     rowsToDelete.push(r + 1);
+  }
+  if (pendingAppends.length) {
+    const movementSheet = ss.getSheetByName(movementSheetName);
+    if (!movementSheet) throw new Error(`Sheet not found: ${movementSheetName}`);
+    appendMovementRows_(movementSheet, pendingAppends);
   }
   rowsToDelete.sort((a, b) => b - a).forEach(rowNumber => futureSheet.deleteRow(rowNumber));
   return moved.reverse();
@@ -1261,7 +1162,7 @@ function getOrCreateSheet_(sheetName, headers) {
     // El nombre viene de la petición: se valida antes de crear nada para que un
     // caller no pueda sembrar la hoja de cálculo de pestañas basura.
     const name = String(sheetName || '').trim();
-    if (!name || name.length > 80 || /[\[\]*?:\/\\]/.test(name)) {
+    if (!name || name.length > 80 || /[[\]*?:/\\]/.test(name)) {
       throw new Error('VALIDATION: nombre de hoja no válido: ' + name);
     }
     if (ss.getSheets().length >= 40) {
@@ -1312,7 +1213,7 @@ function investmentEstimateLedgerHeaders_() {
   return ['ID', 'Activo', 'Fecha Movimiento', 'SID Movimiento', 'Tipo Inversión', 'Data', 'Nombre', 'Short Name', 'Importe', 'Precio Usado', 'Shares Estimadas', 'Origen'];
 }
 
-function ensureInvestmentEstimateSheets_(rulesSheetName, ledgerSheetName, movementSheetName) {
+function ensureInvestmentEstimateSheets_(rulesSheetName, ledgerSheetName) {
   const rulesSheet = getOrCreateSheet_(rulesSheetName || DEFAULT_INVESTMENT_ESTIMATE_RULES_SHEET, investmentEstimateRuleHeaders_());
   const ledgerSheet = getOrCreateSheet_(ledgerSheetName || DEFAULT_INVESTMENT_ESTIMATE_LEDGER_SHEET, investmentEstimateLedgerHeaders_());
   resetSheetHeaders_(rulesSheet, investmentEstimateRuleHeaders_());
@@ -1403,7 +1304,7 @@ function ledgerColumnMap_(sheet) {
 }
 
 function readInvestmentEstimateRules_(sheetName) {
-  const setup = ensureInvestmentEstimateSheets_(sheetName || DEFAULT_INVESTMENT_ESTIMATE_RULES_SHEET, DEFAULT_INVESTMENT_ESTIMATE_LEDGER_SHEET, DEFAULT_MOVEMENT_SHEET);
+  const setup = ensureInvestmentEstimateSheets_(sheetName || DEFAULT_INVESTMENT_ESTIMATE_RULES_SHEET, DEFAULT_INVESTMENT_ESTIMATE_LEDGER_SHEET);
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName || DEFAULT_INVESTMENT_ESTIMATE_RULES_SHEET) || setup.rulesSheet;
   const values = sheet.getDataRange().getValues();
   const col = estimateColumnMap_(sheet);
@@ -2423,7 +2324,7 @@ function positionPreviousTotal_(item) {
   return parseNumber_(item.total ?? item.value ?? item.VALUE) || 0;
 }
 
-function syncInvestmentTotalsSheet_(totalsSheetName, dataSheetName, investmentSheetName, movementSheetName) {
+function syncInvestmentTotalsSheet_(totalsSheetName, investmentSheetName, movementSheetName) {
   const totalsSheet = getOrCreateSheet_(totalsSheetName || DEFAULT_INVESTMENT_TOTALS_SHEET, ['TIPO', 'COST', 'VALUE', 'LAST VALUE', 'DAILY', '%D', 'GAIN', '%GAIN', 'ORDEN']);
   const categories = readInvestmentCategoriesForTotals_(totalsSheetName || DEFAULT_INVESTMENT_TOTALS_SHEET, investmentSheetName || DEFAULT_INVESTMENT_SHEET);
   const investments = readInvestments_(investmentSheetName || DEFAULT_INVESTMENT_SHEET);
@@ -2468,11 +2369,11 @@ function syncInvestmentTotalsSheet_(totalsSheetName, dataSheetName, investmentSh
 // Las acciones que mutan (alta/baja de inversión, categorías, precios, doPost) siguen
 // llamando al sync completo antes de construir su payload, así que los totales no se
 // quedan obsoletos; aquí solo se sincroniza si la hoja aún no existe o está vacía.
-function investmentTotalsForRead_(totalsSheetName, dataSheetName, investmentSheetName, movementSheetName) {
+function investmentTotalsForRead_(totalsSheetName, investmentSheetName, movementSheetName) {
   const name = totalsSheetName || DEFAULT_INVESTMENT_TOTALS_SHEET;
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(name);
   if (sheet && sheet.getLastRow() >= 2) return readInvestmentTotals_(name);
-  return syncInvestmentTotalsSheet_(name, dataSheetName, investmentSheetName, movementSheetName);
+  return syncInvestmentTotalsSheet_(name, investmentSheetName, movementSheetName);
 }
 
 function readInvestmentTotals_(sheetName) {
@@ -2500,14 +2401,14 @@ function isInvestmentMovement_(movement) {
   return Boolean(movement) && normalizeType_(movement.tipo) === 'inversion';
 }
 
-function adjustInvestmentCostFromMovement_(totalsSheetName, dataSheetName, investmentSheetName, movementSheetName, movement, sign) {
+function adjustInvestmentCostFromMovement_(totalsSheetName, investmentSheetName, movementSheetName, movement, sign) {
   if (normalizeType_(movementSheetName || '').indexOf('futuro') !== -1) return;
   const categories = readInvestmentCategoriesForTotals_(totalsSheetName || DEFAULT_INVESTMENT_TOTALS_SHEET, investmentSheetName || DEFAULT_INVESTMENT_SHEET);
   const category = movementInvestmentCategory_(movement, categories);
   if (!category) return;
   const amount = Math.abs(parseNumber_(movement && (movement.importe ?? movement.amount)));
   if (!Number.isFinite(amount) || amount <= 0) return;
-  syncInvestmentTotalsSheet_(totalsSheetName || DEFAULT_INVESTMENT_TOTALS_SHEET, dataSheetName || 'Datos', investmentSheetName || DEFAULT_INVESTMENT_SHEET, movementSheetName || DEFAULT_MOVEMENT_SHEET);
+  syncInvestmentTotalsSheet_(totalsSheetName || DEFAULT_INVESTMENT_TOTALS_SHEET, investmentSheetName || DEFAULT_INVESTMENT_SHEET, movementSheetName || DEFAULT_MOVEMENT_SHEET);
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(totalsSheetName || DEFAULT_INVESTMENT_TOTALS_SHEET);
   if (!sheet) return;
   const values = sheet.getRange(2, 1, Math.max(0, sheet.getLastRow() - 1), 2).getValues();
@@ -2540,7 +2441,7 @@ function ensureDataSheet_(sheetName) {
   return sheet;
 }
 
-function saveInvestmentCategories_(dataSheetName, investmentSheetName, investmentTypes, renames, movementSheetName, futureMovementSheetName, investmentTotalsSheetName) {
+function saveInvestmentCategories_(investmentSheetName, investmentTypes, renames, movementSheetName, futureMovementSheetName, investmentTotalsSheetName) {
   const categories = Array.from(new Set((investmentTypes || []).map(v => String(v || '').trim()).filter(Boolean)));
   if (!categories.length) throw new Error('Faltan categorías de inversión');
 
@@ -2677,7 +2578,7 @@ function parseMovementDate_(value) {
   const text = String(value).trim();
   let match = text.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
   if (match) return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
-  match = text.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
+  match = text.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})$/);
   if (match) {
     const year = Number(match[3].length === 2 ? `20${match[3]}` : match[3]);
     return new Date(year, Number(match[2]) - 1, Number(match[1]));
