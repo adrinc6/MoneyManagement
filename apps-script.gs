@@ -435,7 +435,7 @@ function doPost(e) {
     requireToken_(payload.token || '');
     // Tope de tamaño de lote: por encima del máximo que genera la app legítimamente
     // (366 fechas por recurrencia) solo puede ser un error o un abuso.
-    ['movements', 'transfers', 'investments', 'entries', 'banks', 'sids'].forEach(function(field) {
+    ['movements', 'transfers', 'investments', 'entries', 'banks'].forEach(function(field) {
       if (Array.isArray(payload[field]) && payload[field].length > 500) {
         throw new Error('VALIDATION: demasiados elementos en ' + field + ' (máximo 500).');
       }
@@ -504,7 +504,7 @@ function dispatchPostAction_(payload, pendingId) {
       // Para el resto, resincronizarla era trabajo caro tirado — y ahora que las altas
       // periódicas llegan de una en una, sería ese coste multiplicado por cada fecha.
       if (isInvestmentMovement_(payload.movement)) {
-        adjustInvestmentCostFromMovement_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.investmentSheet || DEFAULT_INVESTMENT_SHEET, payload.sheetName || DEFAULT_MOVEMENT_SHEET, payload.movement, 1);
+        adjustInvestmentCostFromMovement_(resolveSheets_(payload), payload.sheetName || DEFAULT_MOVEMENT_SHEET, payload.movement, 1);
         syncInvestmentTotalsSheet_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.investmentSheet || DEFAULT_INVESTMENT_SHEET, payload.sheetName || DEFAULT_MOVEMENT_SHEET);
       }
       if (payload.account) {
@@ -525,21 +525,21 @@ function dispatchPostAction_(payload, pendingId) {
       return finishPost_(pendingId, payload, { ok: true });
     }
     if (payload.action === 'updateMovement') {
-      if (payload.previousMovement) adjustInvestmentCostFromMovement_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.investmentSheet || DEFAULT_INVESTMENT_SHEET, payload.sheetName || DEFAULT_MOVEMENT_SHEET, payload.previousMovement, -1);
+      if (payload.previousMovement) adjustInvestmentCostFromMovement_(resolveSheets_(payload), payload.sheetName || DEFAULT_MOVEMENT_SHEET, payload.previousMovement, -1);
       updateMovement_(payload.movement, payload.sheetName || DEFAULT_MOVEMENT_SHEET, payload.previousMovement || null);
-      adjustInvestmentCostFromMovement_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.investmentSheet || DEFAULT_INVESTMENT_SHEET, payload.sheetName || DEFAULT_MOVEMENT_SHEET, payload.movement, 1);
+      adjustInvestmentCostFromMovement_(resolveSheets_(payload), payload.sheetName || DEFAULT_MOVEMENT_SHEET, payload.movement, 1);
       syncInvestmentTotalsSheet_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.investmentSheet || DEFAULT_INVESTMENT_SHEET, payload.sheetName || DEFAULT_MOVEMENT_SHEET);
       return finishPost_(pendingId, payload, { ok: true });
     }
     if (payload.action === 'deleteMovement') {
-      if (payload.movement) adjustInvestmentCostFromMovement_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.investmentSheet || DEFAULT_INVESTMENT_SHEET, payload.sheetName || DEFAULT_MOVEMENT_SHEET, payload.movement, -1);
+      if (payload.movement) adjustInvestmentCostFromMovement_(resolveSheets_(payload), payload.sheetName || DEFAULT_MOVEMENT_SHEET, payload.movement, -1);
       deleteMovement_(payload.rowNumber, payload.sheetName || DEFAULT_MOVEMENT_SHEET, payload.movement || null);
       syncInvestmentTotalsSheet_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.investmentSheet || DEFAULT_INVESTMENT_SHEET, payload.sheetName || DEFAULT_MOVEMENT_SHEET);
       return finishPost_(pendingId, payload, { ok: true });
     }
     if (payload.action === 'deleteMovementsBatch') {
       applyInvestmentCostChanges_(
-        { investmentTotals: payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, investment: payload.investmentSheet || DEFAULT_INVESTMENT_SHEET, movement: payload.sheetName || DEFAULT_MOVEMENT_SHEET },
+        resolveSheets_(payload),
         (payload.movements || []).map(function(item) { return { movement: item && (item.movement || item), sign: -1 }; }),
         payload.sheetName || DEFAULT_MOVEMENT_SHEET
       );
@@ -608,7 +608,7 @@ function dispatchPostAction_(payload, pendingId) {
       return finishPost_(pendingId, payload, Object.assign({ ok: true }, deleted));
     }
     if (payload.action === 'reassignFutureMovementsAccount') {
-      const changed = reassignFutureMovementsAccount_(payload.futureMovementSheet || DEFAULT_FUTURE_MOVEMENT_SHEET, payload.sids || [], payload.oldName || '', payload.newName || '');
+      const changed = reassignFutureMovementsAccount_(payload.futureMovementSheet || DEFAULT_FUTURE_MOVEMENT_SHEET, payload.oldName || '', payload.newName || '');
       return finishPost_(pendingId, payload, { ok: true, changed });
     }
     return finishPost_(pendingId, payload, { ok: false, error: 'Unknown action' });
@@ -1345,7 +1345,7 @@ function saveInvestmentEstimateRules_(rules, sheetName) {
       safeFinite_(rule.fixedAmount || rule.importeFijo || rule.fijo)
     ];
   });
-  if (rows.length) sheet.getRange(2, 1, rows.length, investmentEstimateRuleHeaders_().length).setValues(rows);
+  if (rows.length) setRangeValuesSafe_(sheet.getRange(2, 1, rows.length, investmentEstimateRuleHeaders_().length), rows.map(function(row) { return row.map(sanitizeCell_); }));
 }
 
 function readInvestmentEstimateLedger_(sheetName) {
@@ -1434,7 +1434,7 @@ function saveInvestmentEstimateAllocations_(ledgerSheetName, entries) {
       shares,
       entry.origen || 'reparto confirmado'
     ];
-    sheet.appendRow(row);
+    appendRowSafe_(sheet, row.map(sanitizeCell_));
     saved.push(entry);
     existingIds[key] = true;
   });
@@ -1513,7 +1513,7 @@ function safeFinite_(value) {
 
 function readInvestmentGoals_(sheetName) {
   const sheet = getSheet_(sheetName);
-  const goals = { incomeMonthly: 0, expenseMonthly: 0, investmentMonthly: 0, monthly: 0, yearly: 0, total: 0 };
+  const goals = { expenseMonthly: 0, investmentMonthly: 0, monthly: 0, yearly: 0, total: 0 };
   if (!sheet) return goals;
   const values = sheet.getDataRange().getDisplayValues();
   values.slice(1).forEach(row => {
@@ -1637,7 +1637,7 @@ function renameAccountInMovementSheet_(sheetName, oldName, newName) {
   return changed;
 }
 
-function reassignFutureMovementsAccount_(sheetName, sids, oldName, newName) {
+function reassignFutureMovementsAccount_(sheetName, oldName, newName) {
   // La reasignación mueve TODOS los movimientos futuros de la cuenta antigua a la
   // nueva (es lo que pide el diálogo al borrar la cuenta). Los `sids` llegan como
   // pista del cliente, pero no dependemos de ellos: hacerlo por texto de cuenta
@@ -1663,7 +1663,7 @@ function renameAccount_(bankSheetName, movementSheetName, futureMovementSheetNam
     throw new Error(`Bank account not found: ${normalizedOld}`);
   }
   if (findBankRow_(bankSheet, normalizedNew)) throw new Error(`Ya existe una cuenta llamada ${normalizedNew}`);
-  bankSheet.getRange(bankRow, 1).setValue(normalizedNew);
+  setCellValueSafe_(bankSheet.getRange(bankRow, 1), sanitizeCell_(normalizedNew));
   const movementsUpdated = renameAccountInMovementSheet_(movementSheetName, normalizedOld, normalizedNew);
   const futureMovementsUpdated = renameAccountInMovementSheet_(futureMovementSheetName, normalizedOld, normalizedNew);
   return { movementsUpdated, futureMovementsUpdated };
@@ -1723,12 +1723,12 @@ function updateInvestment_(investment, sheetName, previousInvestment) {
 function writeInvestmentEditableFields_(sheet, row, item) {
   const col = investmentColumnMap_(sheet);
   const isCash = isCashInvestment_(item);
-  if (col.divisa) sheet.getRange(row, col.divisa).setValue(normalizeInvestmentCurrency_(item.divisa || 'EUR'));
-  if (col.data) sheet.getRange(row, col.data).setValue(item.data || '');
-  if (col.nombre) sheet.getRange(row, col.nombre).setValue(item.nombre || '');
-  if (col.shortName) sheet.getRange(row, col.shortName).setValue(item.shortName || item.short_name || item.shortname || '');
-  if (col.tipo) sheet.getRange(row, col.tipo).setValue(item.tipo || '');
-  if (!isCash && col.cantidad) sheet.getRange(row, col.cantidad).setValue(Number(item.cantidad || 0));
+  if (col.divisa) setCellValueSafe_(sheet.getRange(row, col.divisa), sanitizeCell_(normalizeInvestmentCurrency_(item.divisa || 'EUR')));
+  if (col.data) setCellValueSafe_(sheet.getRange(row, col.data), sanitizeCell_(item.data || ''));
+  if (col.nombre) setCellValueSafe_(sheet.getRange(row, col.nombre), sanitizeCell_(item.nombre || ''));
+  if (col.shortName) setCellValueSafe_(sheet.getRange(row, col.shortName), sanitizeCell_(item.shortName || ''));
+  if (col.tipo) setCellValueSafe_(sheet.getRange(row, col.tipo), sanitizeCell_(item.tipo || ''));
+  if (!isCash && col.cantidad) setCellValueSafe_(sheet.getRange(row, col.cantidad), Number(item.cantidad || 0));
   saveCashInvestmentValue_(sheet, row, item);
 }
 
@@ -1743,8 +1743,8 @@ function saveCashInvestmentValue_(sheet, row, item) {
   const col = investmentColumnMap_(sheet);
   const cash = parseNumber_(item.total ?? item.value ?? item.VALUE ?? item.valorTotal);
   if (!Number.isFinite(cash)) return;
-  if (col.total) sheet.getRange(row, col.total).setValue(cash);
-  if (col.valorAnterior) sheet.getRange(row, col.valorAnterior).setValue(cash);
+  if (col.total) setCellValueSafe_(sheet.getRange(row, col.total), cash);
+  if (col.valorAnterior) setCellValueSafe_(sheet.getRange(row, col.valorAnterior), cash);
 }
 
 function deleteInvestment_(investment, sheetName, rowNumber) {
@@ -1795,8 +1795,8 @@ function updateInvestmentQuoteRowFromYahoo_(sheet, rowNumber) {
   const sourceCurrency = normalizeInvestmentCurrency_(sheet.getRange(rowNumber, col.divisa || 1).getValue() || quote.currency || 'EUR');
   const priceEur = convertQuotePriceToEur_(quote.regularMarketPrice, sourceCurrency, rates);
   const previousEur = convertQuotePriceToEur_(quote.previousClose, sourceCurrency, rates);
-  if (Number.isFinite(priceEur) && col.valor) sheet.getRange(rowNumber, col.valor).setValue(priceEur);
-  if (Number.isFinite(previousEur) && col.valorAnterior) sheet.getRange(rowNumber, col.valorAnterior).setValue(previousEur);
+  if (Number.isFinite(priceEur) && col.valor) setCellValueSafe_(sheet.getRange(rowNumber, col.valor), priceEur);
+  if (Number.isFinite(previousEur) && col.valorAnterior) setCellValueSafe_(sheet.getRange(rowNumber, col.valorAnterior), previousEur);
   updateCurrencyHelperRow_(sheet, col, rates);
   return { row: rowNumber, ticker, price: priceEur, previousClose: previousEur, currency: sourceCurrency, yahooCurrency: quote.currency };
 }
@@ -2115,57 +2115,19 @@ function sendTelegramMessage_(text) {
   if (code < 200 || code >= 300) throw new Error(`Telegram error ${code}: ${response.getContentText()}`);
 }
 
+// El resumen de variación se construye SIEMPRE a partir de readInvestments_, que es la
+// misma lista de posiciones que ve la app.
+//
+// Antes había dos implementaciones: esta leía la hoja por su cuenta y descartaba
+// cualquier posición sin VALOR ANTERIOR (previousTotal salía NaN), mientras que la de
+// modo estimado le asignaba variación 0. Como el modo "real" es el de por defecto, una
+// posición recién añadida, sin cierre anterior, desaparecía del aviso de Telegram sin
+// que nada lo indicara; en modo estimado sí salía. Ahora las dos dan lo mismo.
 function buildInvestmentVariationSummary_(sheetName) {
   const resolvedSheetName = sheetName || DEFAULT_INVESTMENT_SHEET;
-  const sheet = requireSheet_(resolvedSheetName);
-  const col = investmentColumnMap_(sheet);
-  const values = sheet.getDataRange().getValues();
-  const categories = readInvestmentCategoriesForTotals_(DEFAULT_INVESTMENT_TOTALS_SHEET, resolvedSheetName);
-  const totals = { all: emptyVariationBucket_(), order: categories };
-  categories.forEach(function(type) { totals[type] = emptyVariationBucket_(); });
-
-  values.slice(1).forEach(row => {
-    const type = String(row[col.tipo - 1] || '').trim();
-    if (!isInvestmentPositionType_(type)) return;
-    const normalizedType = categories.find(item => normalizeType_(item) === normalizeType_(type)) || type;
-    if (!totals[normalizedType]) {
-      totals[normalizedType] = emptyVariationBucket_();
-      totals.order.push(normalizedType);
-    }
-    const name = String((col.shortName ? row[col.shortName - 1] : '') || (col.nombre ? row[col.nombre - 1] : '') || row[col.data - 1] || '').trim();
-    const quantity = parseNumber_(row[col.cantidad - 1]);
-    const currentPrice = parseNumber_(row[col.valor - 1]);
-    const currentTotal = parseNumber_(col.total ? row[col.total - 1] : NaN);
-    const previousPrice = parseNumber_(col.valorAnterior ? row[col.valorAnterior - 1] : NaN);
-    const isCash = isCashInvestment_({ data: row[col.data - 1], nombre: row[col.nombre - 1] });
-    const total = Number.isFinite(currentTotal)
-      ? currentTotal
-      : (Number.isFinite(quantity) && Number.isFinite(currentPrice) ? quantity * currentPrice : NaN);
-    const previousTotal = isCash
-      ? (Number.isFinite(parseNumber_(col.valorAnterior ? row[col.valorAnterior - 1] : NaN))
-        ? parseNumber_(col.valorAnterior ? row[col.valorAnterior - 1] : NaN)
-        : total)
-      : (Number.isFinite(quantity) && Number.isFinite(previousPrice) ? quantity * previousPrice : NaN);
-    if (!Number.isFinite(total) || !Number.isFinite(previousTotal)) return;
-    const variation = total - previousTotal;
-    const position = {
-      name,
-      type: normalizedType,
-      isCash,
-      price: currentPrice,
-      current: total,
-      previous: previousTotal,
-      variation,
-      pct: percentageChange_(total, previousTotal)
-    };
-    addVariationRow_(totals.all, position);
-    addVariationRow_(totals[normalizedType], position);
-  });
-  Object.keys(totals).forEach(key => {
-    if (key === 'order') return;
-    totals[key].positions.sort((a, b) => Number(b.current || 0) - Number(a.current || 0));
-  });
-  return totals;
+  const investments = readInvestments_(resolvedSheetName);
+  const categories = readInvestmentCategoriesForTotals_(DEFAULT_INVESTMENT_TOTALS_SHEET, resolvedSheetName, investments);
+  return buildInvestmentVariationSummaryFromInvestments_(investments, categories);
 }
 
 function emptyVariationBucket_() {
@@ -2416,7 +2378,12 @@ function isInvestmentMovement_(movement) {
 // Los deltas se aplican EN ORDEN y con el mismo corte en cero por movimiento que antes,
 // para no cambiar el resultado cuando un descuento deja el coste por debajo de cero.
 function applyInvestmentCostChanges_(sheets, changes, movementSheetName) {
-  if (normalizeType_(movementSheetName || '').indexOf('futuro') !== -1) return;
+  // Los movimientos FUTUROS no cuentan como coste hasta que vencen. Antes esto se
+  // decidía buscando la subcadena "futuro" en el nombre de la hoja, pero ese nombre es
+  // configurable desde Ajustes: llamarla "Programados" hacía que cada edición o borrado
+  // de un futuro de inversión corrompiera la columna COST. Ahora se compara con el
+  // nombre real de la hoja de futuros que viaja en la petición.
+  if (normalizeType_(movementSheetName || '') === normalizeType_(sheets.future || DEFAULT_FUTURE_MOVEMENT_SHEET)) return;
   const list = (changes || []).filter(function(change) { return change && change.movement; });
   if (!list.length) return;
 
@@ -2447,12 +2414,8 @@ function applyInvestmentCostChanges_(sheets, changes, movementSheetName) {
   setRangeValuesSafe_(sheet.getRange(2, 2, values.length, 1), values.map(function(row) { return [row[1]]; }));
 }
 
-function adjustInvestmentCostFromMovement_(totalsSheetName, investmentSheetName, movementSheetName, movement, sign) {
-  applyInvestmentCostChanges_(
-    { investmentTotals: totalsSheetName || DEFAULT_INVESTMENT_TOTALS_SHEET, investment: investmentSheetName || DEFAULT_INVESTMENT_SHEET, movement: movementSheetName || DEFAULT_MOVEMENT_SHEET },
-    [{ movement: movement, sign: sign }],
-    movementSheetName
-  );
+function adjustInvestmentCostFromMovement_(sheets, movementSheetName, movement, sign) {
+  applyInvestmentCostChanges_(sheets, [{ movement: movement, sign: sign }], movementSheetName);
 }
 
 function readCategories_(sheetName) {

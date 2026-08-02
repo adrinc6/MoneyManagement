@@ -560,8 +560,7 @@ function loadConfig() {
       investmentEstimateLedgerSheet: raw.investmentEstimateLedgerSheet || DEFAULT_CONFIG.investmentEstimateLedgerSheet,
       bankSheet: raw.bankSheet || DEFAULT_CONFIG.bankSheet,
       objectiveSheet: raw.objectiveSheet || DEFAULT_CONFIG.objectiveSheet,
-      dataSheet: raw.dataSheet || DEFAULT_CONFIG.dataSheet,
-      initialCash: DEFAULT_CONFIG.initialCash
+      dataSheet: raw.dataSheet || DEFAULT_CONFIG.dataSheet
     };
   } catch {
     return { ...DEFAULT_CONFIG };
@@ -576,7 +575,6 @@ function hydrateConfigForm() {
   document.getElementById("configInvestmentSheet").value = state.config.investmentSheet;
   document.getElementById("configBankSheet").value = state.config.bankSheet || "Bancos";
   document.getElementById("configDataSheet").value = state.config.dataSheet;
-  document.getElementById("configInitialCash").value = state.config.initialCash;
 }
 
 async function saveConfigFromForm() {
@@ -597,8 +595,7 @@ async function saveConfigFromForm() {
     investmentEstimateLedgerSheet: state.config.investmentEstimateLedgerSheet || "Inversiones Estimación Movimientos",
     bankSheet: document.getElementById("configBankSheet").value.trim() || "Bancos",
     objectiveSheet: state.config.objectiveSheet || "Objetivos",
-    dataSheet: document.getElementById("configDataSheet").value.trim() || "Datos",
-    initialCash: DEFAULT_CONFIG.initialCash
+    dataSheet: document.getElementById("configDataSheet").value.trim() || "Datos"
   };
   if (pendingOps.length && dataCacheConfigKey() !== previousConfigKey) {
     const proceed = await confirmDialog(
@@ -2654,8 +2651,9 @@ function syncOptions() {
   fillSelect("editMovementAccount", accounts, accounts.length ? null : "Sin cuentas");
 
   buildDescriptionSuggestions();
+  // syncRegistrarMode acaba en syncRegisterMode, que ya repinta el selector de días:
+  // llamarlo otra vez aquí lo repintaba dos veces en cada refresco de datos.
   syncRegistrarMode();
-  renderRecurrencePicker();
 
   syncSummaryPeriodOptions();
 }
@@ -3117,7 +3115,6 @@ async function deleteAccountManage() {
         queueOp({
           action: "reassignFutureMovementsAccount",
           futureMovementSheet: state.config.futureMovementSheet || "Movimientos futuros",
-          sids: futureMovements.map(m => m.sid).filter(Boolean),
           oldName: account,
           newName: futureResolution.newAccount
         });
@@ -3372,7 +3369,9 @@ function renderMovementMonths(year) {
     const summary = state.movementMode === "future" ? summarizeTransactions(monthRows) : calculateSummary(month);
     return movementDrillCard({
       attribute: "data-month", key: month, caption: "Mes", title: String(Number(month.slice(5, 7))),
-      metrics: { income: summary.income, expenses: summary.expenses, investment: summary.investedMonth, balance: summary.balance }
+      // summarizeTransactions devuelve `invested` y calculateSummary `investedMonth`:
+      // leer solo investedMonth hacía que en modo futuros la inversión saliera 0 €.
+      metrics: { income: summary.income, expenses: summary.expenses, investment: summary.investedMonth ?? summary.invested, balance: summary.balance }
     });
   }).join("") || emptyBlock("Sin meses.")}</div>`;
   document.querySelectorAll("[data-month]").forEach(btn => btn.addEventListener("click", () => {
@@ -4439,14 +4438,23 @@ function addMonthsClamped(date, months) {
   return next;
 }
 
+// Repinta el selector CONSERVANDO lo que el usuario tenga marcado. syncOptions se
+// ejecuta en cada actualización de datos y llega hasta aquí: al reconstruir el innerHTML
+// se perdían los días elegidos a media recurrencia, sin ningún aviso.
+function selectedRecurrenceValues() {
+  return [...document.querySelectorAll('#recurrencePicker input[type="checkbox"]:checked')].map(input => input.value);
+}
+
 function renderRecurrencePicker() {
   const picker = document.getElementById('recurrencePicker');
   if (!picker) return;
   const type = document.getElementById('recurrenceType')?.value || 'weekly';
+  const previous = picker.dataset.recurrenceType === type ? new Set(selectedRecurrenceValues()) : new Set();
   const items = type === 'weekly'
     ? ['L', 'M', 'X', 'J', 'V', 'S', 'D'].map((label, i) => ({ label, value: i }))
     : Array.from({ length: 31 }, (_, i) => ({ label: String(i + 1), value: i + 1 }));
-  picker.innerHTML = `<p>${type === 'weekly' ? 'Días de la semana' : 'Días del mes'}</p><div class="choice-grid ${type}">${items.map(item => `<label><input type="checkbox" value="${item.value}"><span>${item.label}</span></label>`).join('')}</div>`;
+  picker.dataset.recurrenceType = type;
+  picker.innerHTML = `<p>${type === 'weekly' ? 'Días de la semana' : 'Días del mes'}</p><div class="choice-grid ${type}">${items.map(item => `<label><input type="checkbox" value="${item.value}"${previous.has(String(item.value)) ? ' checked' : ''}><span>${item.label}</span></label>`).join('')}</div>`;
 }
 
 function setMovementModeFromClick(event) {
@@ -4622,14 +4630,14 @@ async function saveInvestmentGoalsFromDialog(event) {
 }
 
 function normalizeInvestmentGoals(value) {
-  const goals = { incomeMonthly: 0, expenseMonthly: 0, investmentMonthly: 0, monthly: 0, yearly: 0, total: 0 };
+  const goals = { expenseMonthly: 0, investmentMonthly: 0, monthly: 0, yearly: 0, total: 0 };
   if (!value || typeof value !== "object") return goals;
   Object.entries(value).forEach(([key, raw]) => {
     const normalized = normalizeGoalKey(key);
     const parsed = parseNumber(raw);
     if (normalized && Number.isFinite(parsed)) goals[normalized] = parsed;
   });
-  ["incomeMonthly", "expenseMonthly", "investmentMonthly", "monthly", "yearly", "total"].forEach(key => {
+  ["expenseMonthly", "investmentMonthly", "monthly", "yearly", "total"].forEach(key => {
     const parsed = parseNumber(value[key]);
     if (Number.isFinite(parsed)) goals[key] = parsed;
   });
@@ -6214,7 +6222,7 @@ async function saveInvestmentAllocationPrompt(event) {
   try {
     state.investmentEstimateLedger.push(...entries);
     writeDataCache({ dirtySections: ["investmentEstimateLedger"] });
-    queueOp({ action: "saveInvestmentEstimateAllocations", movement: serializeTransaction(movement), entries });
+    queueOp({ action: "saveInvestmentEstimateAllocations", entries });
     setNotice("Reparto guardado como estimación.", "ok");
     document.getElementById("investmentAllocationDialog")?.close();
     renderInvestments();

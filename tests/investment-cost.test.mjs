@@ -30,6 +30,14 @@ function setup(gs, { totals = [["Bolsa", 100], ["Fondos", 50]], movementRows = [
   ]);
 }
 
+const hojas = gs => gs.resolveSheets_({
+  movementSheet: MOVEMENT_SHEET,
+  futureMovementSheet: FUTURE_SHEET,
+  investmentSheet: INVESTMENT_SHEET,
+  investmentTotalsSheet: TOTALS_SHEET,
+  bankSheet: BANK_SHEET
+});
+
 const costeDe = (gs, tipo) => {
   const fila = gs.readInvestmentTotals_(TOTALS_SHEET).find(r => r.tipo === tipo);
   return fila ? fila.cost : null;
@@ -43,7 +51,7 @@ test("un alta de inversión suma su importe al coste de su categoría", () => {
   const gs = loadAppsScript();
   setup(gs);
 
-  gs.adjustInvestmentCostFromMovement_(TOTALS_SHEET, INVESTMENT_SHEET, MOVEMENT_SHEET, movimiento("Bolsa", -400), 1);
+  gs.adjustInvestmentCostFromMovement_(hojas(gs), MOVEMENT_SHEET, movimiento("Bolsa", -400), 1);
 
   assert.equal(costeDe(gs, "Bolsa"), 500, "100 + 400");
   assert.equal(costeDe(gs, "Fondos"), 50, "las demás categorías no se tocan");
@@ -53,10 +61,10 @@ test("un borrado resta, y el coste nunca baja de cero", () => {
   const gs = loadAppsScript();
   setup(gs);
 
-  gs.adjustInvestmentCostFromMovement_(TOTALS_SHEET, INVESTMENT_SHEET, MOVEMENT_SHEET, movimiento("Bolsa", -30), -1);
+  gs.adjustInvestmentCostFromMovement_(hojas(gs), MOVEMENT_SHEET, movimiento("Bolsa", -30), -1);
   assert.equal(costeDe(gs, "Bolsa"), 70);
 
-  gs.adjustInvestmentCostFromMovement_(TOTALS_SHEET, INVESTMENT_SHEET, MOVEMENT_SHEET, movimiento("Bolsa", -999), -1);
+  gs.adjustInvestmentCostFromMovement_(hojas(gs), MOVEMENT_SHEET, movimiento("Bolsa", -999), -1);
   assert.equal(costeDe(gs, "Bolsa"), 0, "se corta en 0, no queda negativo");
 });
 
@@ -65,7 +73,7 @@ test("varios movimientos seguidos acumulan como la suma de sus importes", () => 
   setup(gs);
 
   [200, 300, 45.5].forEach((importe, i) => {
-    gs.adjustInvestmentCostFromMovement_(TOTALS_SHEET, INVESTMENT_SHEET, MOVEMENT_SHEET, movimiento("Bolsa", -importe, `mov_${i}`), 1);
+    gs.adjustInvestmentCostFromMovement_(hojas(gs), MOVEMENT_SHEET, movimiento("Bolsa", -importe, `mov_${i}`), 1);
   });
 
   assert.equal(costeDe(gs, "Bolsa"), 100 + 200 + 300 + 45.5);
@@ -75,7 +83,7 @@ test("un movimiento que no es de inversión no toca ninguna categoría", () => {
   const gs = loadAppsScript();
   setup(gs);
 
-  gs.adjustInvestmentCostFromMovement_(TOTALS_SHEET, INVESTMENT_SHEET, MOVEMENT_SHEET,
+  gs.adjustInvestmentCostFromMovement_(hojas(gs), MOVEMENT_SHEET,
     { sid: "m", fecha: "2026-05-10", tipo: "Gasto", concepto: "Bolsa", descripcion: "Bolsa", importe: -400 }, 1);
 
   assert.equal(costeDe(gs, "Bolsa"), 100);
@@ -85,7 +93,7 @@ test("un movimiento de inversión sin categoría reconocida no toca nada", () =>
   const gs = loadAppsScript();
   setup(gs);
 
-  gs.adjustInvestmentCostFromMovement_(TOTALS_SHEET, INVESTMENT_SHEET, MOVEMENT_SHEET, movimiento("Cripto", -400), 1);
+  gs.adjustInvestmentCostFromMovement_(hojas(gs), MOVEMENT_SHEET, movimiento("Cripto", -400), 1);
 
   assert.equal(costeDe(gs, "Bolsa"), 100);
   assert.equal(costeDe(gs, "Fondos"), 50);
@@ -95,8 +103,8 @@ test("un importe ilegible o cero no mueve el coste", () => {
   const gs = loadAppsScript();
   setup(gs);
 
-  gs.adjustInvestmentCostFromMovement_(TOTALS_SHEET, INVESTMENT_SHEET, MOVEMENT_SHEET, movimiento("Bolsa", "no es un número"), 1);
-  gs.adjustInvestmentCostFromMovement_(TOTALS_SHEET, INVESTMENT_SHEET, MOVEMENT_SHEET, movimiento("Bolsa", 0), 1);
+  gs.adjustInvestmentCostFromMovement_(hojas(gs), MOVEMENT_SHEET, movimiento("Bolsa", "no es un número"), 1);
+  gs.adjustInvestmentCostFromMovement_(hojas(gs), MOVEMENT_SHEET, movimiento("Bolsa", 0), 1);
 
   assert.equal(costeDe(gs, "Bolsa"), 100);
 });
@@ -105,10 +113,10 @@ test("editar un movimiento (restar el anterior y sumar el nuevo) deja la diferen
   const gs = loadAppsScript();
   setup(gs);
 
-  gs.adjustInvestmentCostFromMovement_(TOTALS_SHEET, INVESTMENT_SHEET, MOVEMENT_SHEET, movimiento("Bolsa", -400), 1);
+  gs.adjustInvestmentCostFromMovement_(hojas(gs), MOVEMENT_SHEET, movimiento("Bolsa", -400), 1);
   // Igual que doPost en updateMovement: primero -1 el anterior, luego +1 el nuevo.
-  gs.adjustInvestmentCostFromMovement_(TOTALS_SHEET, INVESTMENT_SHEET, MOVEMENT_SHEET, movimiento("Bolsa", -400), -1);
-  gs.adjustInvestmentCostFromMovement_(TOTALS_SHEET, INVESTMENT_SHEET, MOVEMENT_SHEET, movimiento("Bolsa", -250), 1);
+  gs.adjustInvestmentCostFromMovement_(hojas(gs), MOVEMENT_SHEET, movimiento("Bolsa", -400), -1);
+  gs.adjustInvestmentCostFromMovement_(hojas(gs), MOVEMENT_SHEET, movimiento("Bolsa", -250), 1);
 
   assert.equal(costeDe(gs, "Bolsa"), 350, "100 + 250");
 });
@@ -117,8 +125,8 @@ test("mover a otra categoría descuenta de la vieja y suma en la nueva", () => {
   const gs = loadAppsScript();
   setup(gs);
 
-  gs.adjustInvestmentCostFromMovement_(TOTALS_SHEET, INVESTMENT_SHEET, MOVEMENT_SHEET, movimiento("Bolsa", -40), -1);
-  gs.adjustInvestmentCostFromMovement_(TOTALS_SHEET, INVESTMENT_SHEET, MOVEMENT_SHEET, movimiento("Fondos", -40), 1);
+  gs.adjustInvestmentCostFromMovement_(hojas(gs), MOVEMENT_SHEET, movimiento("Bolsa", -40), -1);
+  gs.adjustInvestmentCostFromMovement_(hojas(gs), MOVEMENT_SHEET, movimiento("Fondos", -40), 1);
 
   assert.equal(costeDe(gs, "Bolsa"), 60);
   assert.equal(costeDe(gs, "Fondos"), 90);
@@ -134,7 +142,7 @@ test("varios futuros de inversión vencidos acumulan su coste al moverse", () =>
 
   const movidos = gs.moveDueFutureMovementsLocked_(FUTURE_SHEET, MOVEMENT_SHEET, BANK_SHEET, []);
   // Igual que doGet en las acciones 'all' y 'moveDueFutureMovements'.
-  movidos.forEach(m => gs.adjustInvestmentCostFromMovement_(TOTALS_SHEET, INVESTMENT_SHEET, MOVEMENT_SHEET, m, 1));
+  movidos.forEach(m => gs.adjustInvestmentCostFromMovement_(hojas(gs), MOVEMENT_SHEET, m, 1));
 
   assert.equal(movidos.length, 2);
   assert.equal(costeDe(gs, "Bolsa"), 300, "100 + 200");
@@ -167,4 +175,32 @@ test("writeColumnUpdates_ no escribe nada si no hay ninguna actualización", () 
   gs.writeColumnUpdates_(hoja, 2, 2, 1, {}, hoja.getRange(2, 1, 1, 2).getValues(), 2);
 
   assert.equal(hoja.getRange(2, 2).getValue(), 100);
+});
+
+// La hoja de futuros es configurable desde Ajustes. Antes, decidir si un movimiento era
+// futuro se hacía buscando la subcadena "futuro" en el nombre de la hoja: llamarla
+// "Programados" hacía que cada edición o borrado de un futuro de inversión moviera el
+// COST de una categoría que no debía tocarse.
+test("un movimiento de la hoja de futuros no toca el coste, se llame como se llame", () => {
+  for (const nombreFuturos of ["Movimientos futuros", "Programados", "Pendientes 2026"]) {
+    const gs = loadAppsScript();
+    gs.__spreadsheet.addSheet(MOVEMENT_SHEET, [MOVEMENT_HEADERS]);
+    gs.__spreadsheet.addSheet(nombreFuturos, [MOVEMENT_HEADERS]);
+    gs.__spreadsheet.addSheet(INVESTMENT_SHEET, [
+      ["DATA", "NOMBRE", "SHORT NAME", "TIPO", "CANTIDAD", "VALOR", "VALOR TOTAL", "VALOR ANTERIOR", "DIVISA"],
+      ["IWDA", "ETF World", "IWDA", "Bolsa", 10, 100, 1000, 1000, "EUR"]
+    ]);
+    gs.__spreadsheet.addSheet(TOTALS_SHEET, [gs.investmentTotalsHeaders_(), ["Bolsa", 100, 0, 0, 0, 0, 0, 0, 1]]);
+
+    const sheets = gs.resolveSheets_({
+      movementSheet: MOVEMENT_SHEET,
+      futureMovementSheet: nombreFuturos,
+      investmentSheet: INVESTMENT_SHEET,
+      investmentTotalsSheet: TOTALS_SHEET
+    });
+
+    gs.adjustInvestmentCostFromMovement_(sheets, nombreFuturos, movimiento("Bolsa", -400), 1);
+
+    assert.equal(costeDe(gs, "Bolsa"), 100, `la hoja "${nombreFuturos}" no debe mover el coste`);
+  }
 });
