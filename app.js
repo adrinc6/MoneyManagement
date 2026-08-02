@@ -1,22 +1,6 @@
-const INVESTMENT_DEBUG_PREFIX = "[MM-INV]";
-// Traza de depuración de inversión. Silenciada por defecto en producción; se activa
-// desde la consola con `localStorage.setItem("moneyDebug","1")` o `window.MONEY_DEBUG = true`.
-function investmentDebugEnabled() {
-  try {
-    return Boolean(window.MONEY_DEBUG) || localStorage.getItem("moneyDebug") === "1";
-  } catch (_) {
-    return Boolean(window.MONEY_DEBUG);
-  }
-}
-
-function investmentDebug(step, details = {}) {
-  if (!investmentDebugEnabled()) return;
-  console.log(`${INVESTMENT_DEBUG_PREFIX} ${step}`, details);
-}
-
 let lastGlobalErrorNotice = { message: "", at: 0 };
 function notifyGlobalError(message, detail) {
-  console.error(`${INVESTMENT_DEBUG_PREFIX} ${message}`, detail);
+  console.error(`[MM] ${message}`, detail);
   const now = Date.now();
   if (message === lastGlobalErrorNotice.message && now - lastGlobalErrorNotice.at < 4000) return;
   lastGlobalErrorNotice = { message, at: now };
@@ -172,7 +156,6 @@ function refreshIcons() {
 }
 
 document.addEventListener("DOMContentLoaded", () => {
-  investmentDebug("app cargada", { version: "local-mirror-v19" });
   applySavedTheme();
   applySavedInvestmentEstimateMode();
   refreshIcons();
@@ -1264,46 +1247,43 @@ function restoreButton(button) {
   refreshIcons();
 }
 
-function confirmDialog(message, title = "Confirmar") {
+// Abre un <dialog> como promesa. El arnés garantiza que se resuelve EXACTAMENTE una vez
+// y que se limpian los listeners, incluida la vía de Esc o cierre externo (evento
+// "close"): sin ella la promesa quedaba pendiente para siempre y bloqueaba a quien la
+// esperase. Estaba copiado literalmente en cada diálogo que devolvía promesa.
+function dialogPromise(dialogId, wire, closedResult = null) {
   return new Promise(resolve => {
-    const dialog = document.getElementById("genericConfirmDialog");
-    document.getElementById("genericConfirmTitle").textContent = title;
-    document.getElementById("genericConfirmMessage").textContent = message;
-    const acceptBtn = document.getElementById("genericConfirmAcceptBtn");
-    const cancelBtn = document.getElementById("genericConfirmCancelBtn");
-    const closeBtn = document.getElementById("closeGenericConfirmBtn");
-    // "close" cubre Esc y cualquier cierre externo: sin él la promesa quedaba
-    // pendiente para siempre y bloqueaba a quien la esperase (p. ej. refreshData).
+    const dialog = document.getElementById(dialogId);
+    const listeners = [];
     let settled = false;
     const settle = result => {
       if (settled) return;
       settled = true;
-      acceptBtn.removeEventListener("click", onAccept);
-      cancelBtn.removeEventListener("click", onCancel);
-      closeBtn.removeEventListener("click", onCancel);
+      listeners.forEach(([target, type, handler]) => target.removeEventListener(type, handler));
       dialog.removeEventListener("close", onClose);
       if (dialog.open) dialog.close();
       resolve(result);
     };
-    const onAccept = () => settle(true);
-    const onCancel = () => settle(false);
-    const onClose = () => settle(false);
-    acceptBtn.addEventListener("click", onAccept);
-    cancelBtn.addEventListener("click", onCancel);
-    closeBtn.addEventListener("click", onCancel);
+    const on = (target, type, handler) => {
+      if (!target) return;
+      listeners.push([target, type, handler]);
+      target.addEventListener(type, handler);
+    };
+    const onClose = () => settle(closedResult);
     dialog.addEventListener("close", onClose);
+    wire({ settle, on });
     dialog.showModal();
   });
 }
 
-async function withButtonState(button, action) {
-  try {
-    return await action();
-  } catch (error) {
-    restoreButton(button);
-    setNotice(`No se pudo completar la acción: ${error?.message || error}`, "warn");
-    return undefined;
-  }
+function confirmDialog(message, title = "Confirmar") {
+  document.getElementById("genericConfirmTitle").textContent = title;
+  document.getElementById("genericConfirmMessage").textContent = message;
+  return dialogPromise("genericConfirmDialog", ({ settle, on }) => {
+    on(document.getElementById("genericConfirmAcceptBtn"), "click", () => settle(true));
+    on(document.getElementById("genericConfirmCancelBtn"), "click", () => settle(false));
+    on(document.getElementById("closeGenericConfirmBtn"), "click", () => settle(false));
+  }, false);
 }
 
 function ensureMovedFutureMovementsVisible(movedFutureMovements) {
@@ -2442,8 +2422,7 @@ function formatCacheAge(ageMs) {
 }
 
 function findDueFutureMovements(futureTransactions = []) {
-  const today = new Date();
-  today.setHours(23, 59, 59, 999);
+  const today = endOfToday();
   return (futureTransactions || [])
     .map(normalizeTransaction)
     .filter(movement => movement && movement.date && movement.date <= today);
@@ -2871,13 +2850,9 @@ function renderMonthSituationDialog(summary) {
   });
 
   const rows = getSituationBreakdown(summary.month, state.summaryModes.situation);
-  const total = sum(rows.map(e => e[1]));
-  renderTable("monthSituationTable", ["", "Detalle", "Cantidad", ""], rows.map(([label, value], idx) => [
-    colorDot(chartColor(PIE_CHART_COLORS, idx)),
-    escapeHtml(label),
-    money(value),
-    pct(value / Math.max(total, 1))
-  ]));
+  renderColorRowsTable("monthSituationTable", rows.map(([label, value], idx) => ({
+    label, value, color: chartColor(PIE_CHART_COLORS, idx)
+  })), ["", "Detalle", "Cantidad", ""]);
   upsertChart("monthSituationChart", "doughnut", {
     labels: rows.map(([label]) => label),
     datasets: [{ data: rows.map(e => e[1]), backgroundColor: rows.map((_, idx) => chartColor(PIE_CHART_COLORS, idx)), borderWidth: 2, borderColor: chartSurfaceColor() }]
@@ -3170,41 +3145,31 @@ async function deleteAccountManage() {
 }
 
 function promptFutureMovementAccountResolution({ account, count, otherAccounts }) {
-  return new Promise(resolve => {
-    const dialog = document.getElementById("futureMovementAccountDialog");
-    document.getElementById("futureMovementAccountInfo").textContent =
-      `"${account}" tiene ${count} ${plural(count, "movimiento futuro", "movimientos futuros")} asociado(s). Elige qué hacer con ${plural(count, "él", "ellos")} antes de eliminar la cuenta.`;
-    const select = document.getElementById("futureMovementAccountSelect");
-    select.innerHTML = [
-      `<option value="__delete__">Eliminar estos movimientos futuros</option>`,
-      ...otherAccounts.map(a => `<option value="${escapeAttr(a)}">Moverlos a "${escapeHtml(a)}"</option>`)
-    ].join("");
-    const form = document.getElementById("futureMovementAccountForm");
-    const closeBtn = document.getElementById("closeFutureMovementAccountBtn");
-    // Esc dispara "close" sin pasar por los botones: hay que resolver también ahí
-    // para no dejar la promesa (y a deleteAccountManage) colgada para siempre.
-    let settled = false;
-    const settle = result => {
-      if (settled) return;
-      settled = true;
-      form.removeEventListener("submit", onSubmit);
-      closeBtn.removeEventListener("click", onCancel);
-      dialog.removeEventListener("close", onClose);
-      if (dialog.open) dialog.close();
-      resolve(result);
-    };
-    const onSubmit = event => {
+  document.getElementById("futureMovementAccountInfo").textContent =
+    `"${account}" tiene ${count} ${plural(count, "movimiento futuro", "movimientos futuros")} asociado(s). Elige qué hacer con ${plural(count, "él", "ellos")} antes de eliminar la cuenta.`;
+  const select = document.getElementById("futureMovementAccountSelect");
+  select.innerHTML = [
+    `<option value="__delete__">Eliminar estos movimientos futuros</option>`,
+    ...otherAccounts.map(a => `<option value="${escapeAttr(a)}">Moverlos a "${escapeHtml(a)}"</option>`)
+  ].join("");
+  return dialogPromise("futureMovementAccountDialog", ({ settle, on }) => {
+    on(document.getElementById("futureMovementAccountForm"), "submit", event => {
       event.preventDefault();
       const value = select.value;
       settle(value === "__delete__" ? { mode: "delete" } : { mode: "reassign", newAccount: value });
-    };
-    const onCancel = () => settle(null);
-    const onClose = () => settle(null);
-    form.addEventListener("submit", onSubmit);
-    closeBtn.addEventListener("click", onCancel);
-    dialog.addEventListener("close", onClose);
-    dialog.showModal();
+    });
+    on(document.getElementById("closeFutureMovementAccountBtn"), "click", () => settle(null));
   });
+}
+
+async function withButtonState(button, action) {
+  try {
+    return await action();
+  } catch (error) {
+    restoreButton(button);
+    setNotice(`No se pudo completar la acción: ${error?.message || error}`, "warn");
+    return undefined;
+  }
 }
 
 function calculateSummary(month) {
@@ -3363,25 +3328,33 @@ function renderMovements() {
   if (drill.level === "entries") renderMovementEntries(drill.year, drill.month);
 }
 
+// Tarjeta de la vista jerárquica de movimientos. Es la misma en el nivel de años y en
+// el de meses: mismo marcado y los mismos cuatro bloques de métrica en el mismo orden.
+function movementDrillCard({ attribute, key, caption, title, extraClass = "", metrics }) {
+  return `<button class="month-card${extraClass}" ${attribute}="${escapeAttr(key)}">
+      <div class="month-number">
+        <span>${caption}</span>
+        <strong>${escapeHtml(title)}</strong>
+      </div>
+      <div class="month-metrics">
+        ${metricBlock(movementLabels().income, metrics.income, "positive")}
+        ${metricBlock(movementLabels().expenses, metrics.expenses, "negative")}
+        ${metricBlock(movementLabels().investment, metrics.investment, "")}
+        ${metricBlock("Balance", metrics.balance, metrics.balance >= 0 ? "positive" : "negative")}
+      </div>
+    </button>`;
+}
+
 function renderMovementYears() {
   const source = getDisplayedMovements();
   const years = unique(source.map(t => String(t.date.getFullYear()))).sort((a, b) => Number(b) - Number(a));
   document.getElementById("movementDrillTitle").textContent = "Selecciona un año";
   document.getElementById("movementDrill").innerHTML = `<div class="year-grid">${years.map(year => {
-    const tx = source.filter(t => String(t.date.getFullYear()) === year);
-    const yearly = summarizeTransactions(tx);
-    return `<button class="month-card year-card" data-year="${year}">
-      <div class="month-number">
-        <span>Año</span>
-        <strong>${year}</strong>
-      </div>
-      <div class="month-metrics">
-        ${metricBlock(movementLabels().income, yearly.income, "positive")}
-        ${metricBlock(movementLabels().expenses, yearly.expenses, "negative")}
-        ${metricBlock(movementLabels().investment, yearly.invested, "")}
-        ${metricBlock("Balance", yearly.balance, yearly.balance >= 0 ? "positive" : "negative")}
-      </div>
-    </button>`;
+    const yearly = summarizeTransactions(source.filter(t => String(t.date.getFullYear()) === year));
+    return movementDrillCard({
+      attribute: "data-year", key: year, caption: "Año", title: year, extraClass: " year-card",
+      metrics: { income: yearly.income, expenses: yearly.expenses, investment: yearly.invested, balance: yearly.balance }
+    });
   }).join("") || emptyBlock("Sin movimientos.")}</div>`;
   document.querySelectorAll("[data-year]").forEach(btn => btn.addEventListener("click", () => {
     state.movementBulkEdit = false;
@@ -3396,20 +3369,11 @@ function renderMovementMonths(year) {
   document.getElementById("movementDrillTitle").textContent = `Año ${year}`;
   document.getElementById("movementDrill").innerHTML = `<div class="month-card-list">${months.map(month => {
     const monthRows = source.filter(t => monthKey(t.date) === month);
-    const s = state.movementMode === "future" ? summarizeTransactions(monthRows) : calculateSummary(month);
-    const monthNumber = String(Number(month.slice(5, 7)));
-    return `<button class="month-card" data-month="${month}">
-      <div class="month-number">
-        <span>Mes</span>
-        <strong>${monthNumber}</strong>
-      </div>
-      <div class="month-metrics">
-        ${metricBlock(movementLabels().income, s.income, "positive")}
-        ${metricBlock(movementLabels().expenses, s.expenses, "negative")}
-        ${metricBlock(movementLabels().investment, s.investedMonth, "")}
-        ${metricBlock("Balance", s.balance, s.balance >= 0 ? "positive" : "negative")}
-      </div>
-    </button>`;
+    const summary = state.movementMode === "future" ? summarizeTransactions(monthRows) : calculateSummary(month);
+    return movementDrillCard({
+      attribute: "data-month", key: month, caption: "Mes", title: String(Number(month.slice(5, 7))),
+      metrics: { income: summary.income, expenses: summary.expenses, investment: summary.investedMonth, balance: summary.balance }
+    });
   }).join("") || emptyBlock("Sin meses.")}</div>`;
   document.querySelectorAll("[data-month]").forEach(btn => btn.addEventListener("click", () => {
     state.movementBulkEdit = false;
@@ -4099,14 +4063,6 @@ async function deleteInvestmentDetail(event) {
 
 async function submitMovement(event) {
   event.preventDefault();
-  investmentDebug("submitMovement inicio", {
-    formType: document.getElementById("formType")?.value,
-    formConcept: document.getElementById("formConcept")?.value,
-    formDescription: document.getElementById("formDescription")?.value,
-    formDate: document.getElementById("formDate")?.value,
-    formAmount: document.getElementById("formAmount")?.value,
-    recurring: isRecurringMode()
-  });
   if (!state.config.scriptUrl) {
     setNotice("Configura Apps Script antes de enviar movimientos.", "warn");
     return;
@@ -4232,21 +4188,6 @@ async function submitMovement(event) {
         || normalizeType(document.getElementById("formType")?.value) === "inversion"
         || normalizeType(document.getElementById("formConcept")?.value) === "inversion"
       );
-      investmentDebug("movimiento puntual clasificado", {
-        movement: movement ? {
-          sid: movement.sid,
-          date: formatDate(movement.date),
-          tipo: movement.tipo,
-          concepto: movement.concepto,
-          descripcion: movement.descripcion,
-          amount: movement.amount
-        } : null,
-        future,
-        isInvestmentMovement: isInvestmentMovement(movement),
-        rawTypeNormalized: normalizeType(document.getElementById("formType")?.value),
-        rawConceptNormalized: normalizeType(document.getElementById("formConcept")?.value),
-        isInvestmentRegistration
-      });
       const account = document.getElementById("formAccount").value;
       movement.cuenta = account;
       const bankBefore = getBankAmount(account);
@@ -4275,10 +4216,8 @@ async function submitMovement(event) {
         account
       });
       if (isInvestmentRegistration) {
-        investmentDebug("programando popup de reparto", { sid: movement.sid });
         scheduleInvestmentAllocationForRegistration([movement], { source: "registro", respectDay: false });
       } else {
-        investmentDebug("abriendo resumen directamente", { reason: future ? "movimiento futuro" : "no clasificado como inversión" });
         showMovementPopup(
           future ? "Movimiento futuro guardado" : "Movimiento guardado",
           movement,
@@ -4294,7 +4233,7 @@ async function submitMovement(event) {
     syncRegistrarMode();
     markButtonSaved(btn);
   } catch (error) {
-    console.error(`${INVESTMENT_DEBUG_PREFIX} submitMovement falló`, error);
+    console.error("[MM] submitMovement falló", error);
     restoreButton(btn);
     setNotice(`No se pudo enviar: ${error.message}`, "warn");
   } finally {
@@ -4622,15 +4561,6 @@ function movedFutureMovementsPopupHtml(movements) {
 
 function showMovementPopup(title, movement, account = '', extra = '') {
   const dialog = document.getElementById('movementPopup');
-  investmentDebug("showMovementPopup solicitado", {
-    title,
-    sid: movement?.sid || null,
-    dialogExists: Boolean(dialog),
-    dialogOpen: Boolean(dialog?.open),
-    pendingAllocationCount: state.pendingInvestmentAllocationPrompts.length,
-    allocationDialogOpen: Boolean(document.getElementById("investmentAllocationDialog")?.open),
-    hasPendingSummary: Boolean(state.pendingInvestmentSummaryPopup)
-  });
   if (!dialog) return;
   if (state.pendingInvestmentSummaryPopup && state.pendingInvestmentAllocationPrompts.length) {
     state.pendingInvestmentSummaryPopup = { title, movement, account, extra };
@@ -5578,17 +5508,11 @@ function renderInvestmentGainBreakdown(summary) {
     if (gain > 0) gainRows.push({ label: `${type} ganancia`, value: gain, color: gainColor });
   });
   const rows = [...investedRows, ...gainRows];
-  const total = sum(rows.map(item => item.value));
   const globalRows = [
     { label: "Invertido global", value: summary.investedTotal, color: "#111111" },
     { label: "Ganancias globales", value: Math.max(summary.profitLoss, 0), color: "#556b2f" }
   ].filter(row => row.value > 0);
-  renderTable("investmentOverviewTable", ["", "Detalle", "Total", ""], rows.map(row => [
-    colorDot(row.color),
-    escapeHtml(row.label),
-    money(row.value),
-    pct(row.value / Math.max(total, 1))
-  ]));
+  renderColorRowsTable("investmentOverviewTable", rows, ["", "Detalle", "Total", ""]);
   upsertChart("investmentBreakdownDonut", "doughnut", {
     labels: rows.map(row => row.label),
     datasets: [{
@@ -5917,16 +5841,6 @@ function isInvestmentMovement(movement) {
 }
 
 function enqueueInvestmentAllocationPrompts(movements = [], options = {}) {
-  investmentDebug("enqueue inicio", {
-    movementCount: movements?.length || 0,
-    options,
-    movements: (movements || []).map(item => ({
-      tipo: item?.tipo,
-      concepto: item?.concepto,
-      descripcion: item?.descripcion,
-      amount: item?.amount ?? item?.importe
-    }))
-  });
   const prompts = (movements || [])
     .map(normalizeTransaction)
     .filter(isInvestmentMovement)
@@ -5935,42 +5849,22 @@ function enqueueInvestmentAllocationPrompts(movements = [], options = {}) {
     source: options.source || "registro",
     respectDay: Boolean(options.respectDay)
   }));
-  investmentDebug("enqueue filtrado", {
-    promptCount: prompts.length,
-    prompts: prompts.map(prompt => ({
-      sid: prompt.movement.sid,
-      tipo: prompt.movement.tipo,
-      concepto: prompt.movement.concepto,
-      descripcion: prompt.movement.descripcion
-    }))
-  });
   if (!prompts.length) return 0;
   state.pendingInvestmentAllocationPrompts.push(...prompts);
   return prompts.length;
 }
 
 function openInvestmentAllocationForRegistration(movements = [], options = {}) {
-  investmentDebug("openInvestmentAllocationForRegistration inicio", {
-    movementCount: movements.length,
-    options
-  });
   const promptCount = enqueueInvestmentAllocationPrompts(movements, options);
   if (!promptCount) {
-    investmentDebug("sin prompts para abrir", {});
     return false;
   }
   const summaryDialog = document.getElementById("movementPopup");
-  investmentDebug("estado antes de procesar popup", {
-    promptCount,
-    summaryDialogOpen: Boolean(summaryDialog?.open),
-    allocationDialogExists: Boolean(document.getElementById("investmentAllocationDialog")),
-    allocationDialogOpen: Boolean(document.getElementById("investmentAllocationDialog")?.open)
-  });
   if (summaryDialog?.open) summaryDialog.close();
   try {
     processPendingInvestmentAllocationPrompts();
   } catch (error) {
-    console.error(`${INVESTMENT_DEBUG_PREFIX} error abriendo reparto`, error);
+    console.error("[MM] error abriendo reparto", error);
     state.pendingInvestmentAllocationPrompts = [];
     state.currentInvestmentAllocationPrompt = null;
     setNotice(lineMessage("No se pudo abrir el reparto de inversión.", error.message), "warn");
@@ -5981,122 +5875,57 @@ function openInvestmentAllocationForRegistration(movements = [], options = {}) {
     || state.currentInvestmentAllocationPrompt
     || state.pendingInvestmentAllocationPrompts.length
   );
-  investmentDebug("resultado apertura reparto", {
-    opened,
-    dialogOpen: Boolean(document.getElementById("investmentAllocationDialog")?.open),
-    hasCurrentPrompt: Boolean(state.currentInvestmentAllocationPrompt),
-    pendingCount: state.pendingInvestmentAllocationPrompts.length
-  });
   return opened;
 }
 
 function scheduleInvestmentAllocationForRegistration(movements = [], options = {}) {
-  investmentDebug("schedule solicitado", {
-    movementCount: movements.length,
-    options,
-    hasPendingSummary: Boolean(state.pendingInvestmentSummaryPopup)
-  });
   window.setTimeout(() => {
-    investmentDebug("schedule ejecutándose", {
-      movementCount: movements.length,
-      hasPendingSummary: Boolean(state.pendingInvestmentSummaryPopup)
-    });
     const allocationOpened = openInvestmentAllocationForRegistration(movements, options);
     if (allocationOpened) {
-      investmentDebug("schedule terminó con reparto abierto", {});
       return;
     }
     const summary = state.pendingInvestmentSummaryPopup;
     state.pendingInvestmentSummaryPopup = null;
-    investmentDebug("schedule usa resumen como fallback", {
-      hasSummaryMovement: Boolean(summary?.movement),
-      title: summary?.title
-    });
     if (summary) {
       showMovementPopup(summary.title || "Movimiento guardado", summary.movement, summary.account || "", summary.extra || "");
     }
   }, 0);
 }
 
-
 function processPendingInvestmentAllocationPrompts() {
   const allocationDialog = document.getElementById("investmentAllocationDialog");
   const summaryDialog = document.getElementById("movementPopup");
-  investmentDebug("processPendingInvestmentAllocationPrompts", {
-    allocationDialogExists: Boolean(allocationDialog),
-    allocationDialogOpen: Boolean(allocationDialog?.open),
-    summaryDialogOpen: Boolean(summaryDialog?.open),
-    pendingCount: state.pendingInvestmentAllocationPrompts.length
-  });
   if (allocationDialog?.open) {
-    investmentDebug("process cancelado: reparto ya abierto", {});
     return;
   }
   if (summaryDialog?.open) {
-    investmentDebug("process cancelado: resumen abierto", {});
     return;
   }
   const next = state.pendingInvestmentAllocationPrompts.shift();
   if (!next) {
-    investmentDebug("process sin siguiente prompt", {});
     return;
   }
-  investmentDebug("process abre siguiente prompt", {
-    sid: next.movement?.sid,
-    descripcion: next.movement?.descripcion
-  });
   openInvestmentAllocationDialog(next);
 }
 
 function openInvestmentAllocationDialog(prompt) {
   const movement = normalizeTransaction(prompt?.movement);
-  investmentDebug("openInvestmentAllocationDialog inicio", {
-    prompt,
-    normalizedMovement: movement ? {
-      sid: movement.sid,
-      tipo: movement.tipo,
-      concepto: movement.concepto,
-      descripcion: movement.descripcion,
-      amount: movement.amount
-    } : null
-  });
   if (!movement) {
-    investmentDebug("open cancelado: movimiento no normalizable", {});
     return;
   }
   state.currentInvestmentAllocationPrompt = { ...prompt, movement };
   const amount = Math.abs(safeNumber(movement.amount));
   const dialog = document.getElementById("investmentAllocationDialog");
-  investmentDebug("diálogo de reparto localizado", {
-    exists: Boolean(dialog),
-    openBefore: Boolean(dialog?.open),
-    amount
-  });
   document.getElementById("investmentAllocationTitle").textContent = `Repartir inversión · ${money(amount)}`;
   document.getElementById("investmentAllocationContext").textContent = `${formatDate(movement.date)} · ${movement.concepto || "Inversión"} · ${movement.descripcion || "Sin descripción"}`;
   if (dialog && !dialog.open) {
     dialog.showModal();
-    investmentDebug("showModal reparto ejecutado", { openAfter: dialog.open });
   }
   try {
-    const matchedRules = matchingInvestmentAllocationRules(movement, Boolean(prompt.respectDay));
-    investmentDebug("reglas antes de renderizar", {
-      loadedRuleCount: state.investmentEstimateRules.length,
-      matchedRuleCount: matchedRules.length,
-      matchedRules: matchedRules.map(rule => ({
-        id: rule.id,
-        activa: rule.activa,
-        dayOfMonth: rule.dayOfMonth,
-        movementDescription: rule.movementDescription,
-        data: rule.data,
-        percentage: rule.percentage,
-        fixedAmount: rule.fixedAmount
-      }))
-    });
     renderInvestmentAllocationExistingSelect();
     renderInvestmentAllocationTable(initialInvestmentAllocationRows(movement, prompt));
   } catch (error) {
-    console.error(`${INVESTMENT_DEBUG_PREFIX} error renderizando reparto`, error);
+    console.error("[MM] error renderizando reparto", error);
     renderInvestmentAllocationFallbackRow(amount, movement);
     setNotice(lineMessage("Se abrió un reparto editable sin precargar las reglas.", error.message), "warn");
   }
@@ -6133,10 +5962,6 @@ function renderInvestmentAllocationFallbackRow(amount, movement) {
 }
 
 function handleInvestmentAllocationDialogClosed() {
-  investmentDebug("diálogo de reparto cerrado", {
-    pendingCount: state.pendingInvestmentAllocationPrompts.length,
-    hasPendingSummary: Boolean(state.pendingInvestmentSummaryPopup)
-  });
   state.currentInvestmentAllocationPrompt = null;
   if (state.pendingInvestmentAllocationPrompts.length) {
     processPendingInvestmentAllocationPrompts();
@@ -6165,7 +5990,6 @@ function initialInvestmentAllocationRows(movement, prompt = {}) {
 function matchingInvestmentAllocationRules(movement, respectDay = false) {
   const normalized = normalizeTransaction(movement);
   if (!isInvestmentMovement(normalized)) {
-    investmentDebug("matching descartado: no es inversión", { movement });
     return [];
   }
   const active = (state.investmentEstimateRules || []).filter(rule => rule && rule.activa);
@@ -6179,15 +6003,6 @@ function matchingInvestmentAllocationRules(movement, respectDay = false) {
     if (!ruleDescription || !movementDescription) return false;
     return movementDescription.includes(ruleDescription)
       || ruleDescription.includes(movementDescription);
-  });
-  investmentDebug("matching de reglas", {
-    respectDay,
-    movementDate: formatDate(normalized.date),
-    movementDescription,
-    totalRules: state.investmentEstimateRules.length,
-    activeRules: active.length,
-    dayFilteredRules: dayFiltered.length,
-    matchedRules: matched.length
   });
   return matched.sort((a, b) => safeNumber(a.order) - safeNumber(b.order));
 }
