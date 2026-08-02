@@ -92,7 +92,6 @@ const BAR_CHART_COLORS = [
   "#475569", // slate
 ];
 const DATA_CACHE_KEY = "moneyDataCache";
-const PENDING_CACHE_KEY = "moneyPendingChanges";
 const OP_QUEUE_KEY = "moneyOpQueue";
 const SENT_HISTORY_KEY = "moneySentHistory";
 const SYNC_LOG_KEY = "moneySyncLog";
@@ -662,7 +661,6 @@ async function saveConfigFromForm() {
   }
   safeSetItem("moneyConfig", JSON.stringify(state.config));
   clearDataCache();
-  clearPendingCache();
   await refreshData({ force: true, scope: refreshScopeForView(activeViewId()) });
   markButtonSaved(btn);
 }
@@ -999,11 +997,7 @@ async function refreshDataImpl(options = {}) {
   }
 
   try {
-    const shouldFlushPending = updateInvestments || sendNotifications;
-    syncStatusStep(showProgress && shouldFlushPending, "Enviando cambios pendientes", "");
-    const flushedPending = shouldFlushPending ? await flushPendingChangesBeforeDownload() : [];
-    const queuedPendingFlushed = await flushOpQueueBeforeDownload({ showProgress });
-    flushedPending.push(...queuedPendingFlushed);
+    const flushedPending = await flushOpQueueBeforeDownload({ showProgress });
     let freshData = {};
     let movedFutureMovements = [];
     let syncedSections = [];
@@ -1161,12 +1155,6 @@ async function refreshDataImpl(options = {}) {
       if (isFullDownload && syncedSectionsFromData(freshData).length === CACHE_SECTION_KEYS.length) applyDataSnapshot(freshData);
       else mergeDataSnapshot(freshData);
       syncedSections = unique([...syncedSections, ...syncedSectionsFromData(freshData)]);
-    }
-
-    if (pendingOpsCount() === 0) {
-      if (isFullDownload && syncedSections.length === CACHE_SECTION_KEYS.length) clearPendingCache();
-      else if (syncedSections.includes("investments")) dropPendingSections("investments", "investmentTotals", "investmentEstimateRules", "investmentEstimateLedger", "investmentGoals");
-      else if (syncedSections.includes("transactions")) dropPendingSections("transactions");
     }
 
     if (movedFutureMovements.length) {
@@ -1627,93 +1615,6 @@ function warnCacheQuota(recovered) {
 
 function clearDataCache() {
   localStorage.removeItem(DATA_CACHE_KEY);
-}
-
-let pendingCacheCorruptNotified = false;
-function readPendingCache() {
-  const raw = localStorage.getItem(PENDING_CACHE_KEY);
-  try {
-    const pending = JSON.parse(raw || "null");
-    if (!pending || pending.configKey !== dataCacheConfigKey()) return null;
-    return pending;
-  } catch {
-    if (!pendingCacheCorruptNotified) {
-      pendingCacheCorruptNotified = true;
-      safeSetItem(`${PENDING_CACHE_KEY}.corrupt`, String(raw || ""));
-      logSyncEvent("Cambios pendientes corruptos; se guardó una copia y se descartaron.", "warn");
-    }
-    return null;
-  }
-}
-
-function writePendingCache(pending) {
-  const next = { ...pending, configKey: dataCacheConfigKey(), savedAt: Date.now() };
-  const hasPending = ["investments", "banks"].some(key => Array.isArray(next[key])) || Boolean(next.investmentGoals);
-  if (!hasPending) return clearPendingCache();
-  safeSetItem(PENDING_CACHE_KEY, JSON.stringify(next));
-}
-
-function clearPendingCache() {
-  localStorage.removeItem(PENDING_CACHE_KEY);
-}
-
-async function flushPendingChangesBeforeDownload() {
-  const pending = readPendingCache();
-  if (!pending || !state.config.scriptUrl) return [];
-
-  const flushed = [];
-  const nextPending = { ...pending };
-
-  if (Array.isArray(pending.investments)) {
-    await postAppsScript({
-      action: "saveInvestments",
-      sheetName: state.config.investmentSheet,
-      investments: pending.investments
-    });
-    delete nextPending.investments;
-    flushed.push("inversiones");
-  }
-
-  if (Array.isArray(pending.banks)) {
-    await postAppsScript({
-      action: "saveBanks",
-      bankSheet: state.config.bankSheet || "Bancos",
-      banks: pending.banks
-    });
-    delete nextPending.banks;
-    flushed.push("cuentas");
-  }
-
-  if (pending.investmentGoals) {
-    await postAppsScript({
-      action: "saveInvestmentGoals",
-      sheetName: state.config.objectiveSheet || "Objetivos",
-      goals: pending.investmentGoals
-    });
-    delete nextPending.investmentGoals;
-    flushed.push("objetivos");
-  }
-
-  delete nextPending.transactions;
-  writePendingCache(nextPending);
-  return flushed;
-}
-
-function dropPendingSections(...sections) {
-  const pending = readPendingCache();
-  if (!pending) return;
-  sections.forEach(section => delete pending[section]);
-  writePendingCache(pending);
-}
-
-function rememberPendingSnapshot(...sections) {
-  const pending = readPendingCache() || {};
-  sections.forEach(section => {
-    if (section === "investments") pending.investments = state.investments;
-    if (section === "banks") pending.banks = state.banks;
-    if (section === "investmentGoals") pending.investmentGoals = state.investmentGoals;
-  });
-  writePendingCache(pending);
 }
 
 function readSyncLogs() {
@@ -2335,9 +2236,6 @@ function queueOps(payloads, { label = "" } = {}) {
       batchSize: list.length,
       payload: queuedPayload
     });
-    if (payload.action === "saveInvestments") rememberPendingSnapshot("investments");
-    if (payload.action === "saveBanks") rememberPendingSnapshot("banks");
-    if (payload.action === "saveInvestmentGoals") rememberPendingSnapshot("investmentGoals");
   });
   logSyncEvent(list.length > 1
     ? `${list.length} operaciones en cola: ${batchLabel}.`
@@ -2474,9 +2372,6 @@ function completeQueuedOp(item) {
   writeOpQueue(next);
   logSyncEvent(`Operación confirmada: ${item.payload?.action || "cambio"}.`, "ok");
   rememberSentOp(item.payload, item);
-  if (item.payload?.action === "saveInvestments") dropPendingSections("investments");
-  if (item.payload?.action === "saveBanks") dropPendingSections("banks");
-  if (item.payload?.action === "saveInvestmentGoals") dropPendingSections("investmentGoals");
   const synced = queuePayloadSections(item.payload);
   markCacheSectionsSynced(synced);
   writeDataCache({ syncedSections: synced });
@@ -4016,7 +3911,6 @@ async function saveInvestments() {
   const payload = { action: "saveInvestments", sheetName: state.config.investmentSheet, investments: state.investments };
   if (!state.config.scriptUrl) {
     writeDataCache({ dirtySections: ["investments"] });
-    rememberPendingSnapshot("investments");
     setNotice(lineMessage("Para modificar inversiones necesitas Apps Script.", "Cambio guardado solo en cache local."), "warn");
     renderInvestments();
     return;
@@ -4310,7 +4204,6 @@ async function saveInvestmentDetail(event) {
       setNotice("Cambio aplicado en caché y enviado a Sheets.", "ok");
       setSyncStatus("Subiendo cambio", "");
     } else {
-      rememberPendingSnapshot("investments");
       setNotice(lineMessage("Cambio local.", "Para guardar en Sheets necesitas Apps Script."), "warn");
     }
     markButtonSaved(btn);
@@ -4349,7 +4242,6 @@ async function deleteInvestmentDetail(event) {
     } else if (state.config.scriptUrl) {
       setNotice("Posición nueva eliminada localmente.", "ok");
     } else {
-      rememberPendingSnapshot("investments");
       setNotice(lineMessage("Eliminada solo en pantalla.", "Para borrar en Sheets necesitas Apps Script."), "warn");
     }
     markButtonSaved(btn, "Eliminado");
@@ -4934,7 +4826,6 @@ async function saveInvestmentGoalsFromDialog(event) {
   state.investmentGoals = normalizeInvestmentGoals({ expenseMonthly, investmentMonthly, monthly: investmentMonthly, yearly, total });
   safeSetItem('investmentGoals', JSON.stringify(state.investmentGoals));
   writeDataCache({ dirtySections: ["investmentGoals"] });
-  rememberPendingSnapshot("investmentGoals");
   renderDataScope("investments");
   if (state.config.scriptUrl) {
     try {
@@ -5116,7 +5007,6 @@ async function saveBanks() {
   });
   if (!state.config.scriptUrl) {
     writeDataCache({ dirtySections: ["banks"] });
-    rememberPendingSnapshot("banks");
     renderSummary();
     markButtonSaved(document.getElementById("saveBanksBtn") || btn);
     renderPendingOpsBadge();
@@ -5203,26 +5093,6 @@ async function fireAppsScript(payload) {
   return finalPayload;
 }
 
-async function postAppsScript(payload) {
-  const finalPayload = await fireAppsScript(payload);
-  await confirmClientOp(finalPayload.clientOpId);
-}
-
-async function confirmClientOp(clientOpId) {
-  if (!clientOpId) return;
-  const maxAttempts = 8;
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    await sleep(Math.min(350 + attempt * 300, 2000));
-    try {
-      const payload = await fetchAppsScriptData({ action: "checkClientOp", clientOpId });
-      if (payload?.ok && payload.completed) return;
-      if (payload?.ok && payload.pending) continue;
-    } catch (error) {
-      if (attempt >= maxAttempts - 1) throw error;
-    }
-  }
-  throw new Error("Apps Script no confirmó la operación todavía; se queda en cola y se reintentará.");
-}
 
 function createSid(prefix = "id") {
   if (window.crypto?.randomUUID) return `${prefix}_${window.crypto.randomUUID()}`;

@@ -266,6 +266,34 @@ test("groupPendingOps agrupa un lote en una sola fila con su progreso", () => {
   assert.equal(groups[1].label, "Guardar cuentas");
 });
 
+// Hubo dos colas de escritura en paralelo: la de operaciones y una "caché de
+// pendientes" que reenviaba saveInvestments/saveBanks/saveInvestmentGoals por su
+// cuenta, con un clientOpId nuevo, así que la deduplicación del backend no la
+// protegía y podía reescribir en Sheets una instantánea más antigua. Solo debe
+// quedar una.
+test("una operación pendiente se registra en la cola y en ningún otro sitio", () => {
+  try {
+    app.state.config.scriptUrl = "https://example.test/exec";
+    app.state.banks = [{ cuenta: "Santander", dinero: 1000 }];
+    app.writeOpQueue([]);
+    const clavesAntes = new Set(app.__store.keys());
+
+    app.queueOp({ action: "saveBanks", bankSheet: "Bancos", banks: app.state.banks });
+
+    const cola = app.readOpQueue();
+    assert.equal(cola.length, 1, "la operación queda en la cola");
+    assert.equal(cola[0].payload.action, "saveBanks");
+
+    const clavesNuevas = [...app.__store.keys()].filter(k => !clavesAntes.has(k));
+    const colasDeEnvio = clavesNuevas.filter(k => k !== app.OP_QUEUE_KEY && /pending|queue|cola/i.test(k));
+    assert.deepEqual(colasDeEnvio, [], `ninguna segunda cola de envío: ${clavesNuevas.join(", ")}`);
+  } finally {
+    app.writeOpQueue([]);
+    app.state.config.scriptUrl = "";
+    app.state.banks = [];
+  }
+});
+
 test("runOpQueue envía de una en una y en orden, sin bloquearse por una en error", async () => {
   const originalFire = app.fireAppsScript;
   const originalCheck = app.fetchAppsScriptData;
