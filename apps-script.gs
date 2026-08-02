@@ -24,15 +24,18 @@ function doGet(e) {
   const params = e && e.parameter ? e.parameter : {};
   const callback = params.callback || '';
   const action = params.action || 'all';
-  const movementSheet = params.movementSheet || DEFAULT_MOVEMENT_SHEET;
-  const investmentSheet = params.investmentSheet || DEFAULT_INVESTMENT_SHEET;
-  const bankSheet = params.bankSheet || DEFAULT_BANK_SHEET;
-  const dataSheet = params.dataSheet || 'Datos';
-  const futureMovementSheet = params.futureMovementSheet || DEFAULT_FUTURE_MOVEMENT_SHEET;
-  const objectiveSheet = params.objectiveSheet || DEFAULT_OBJECTIVE_SHEET;
-  const investmentTotalsSheet = params.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET;
-  const investmentEstimateRulesSheet = params.investmentEstimateRulesSheet || DEFAULT_INVESTMENT_ESTIMATE_RULES_SHEET;
-  const investmentEstimateLedgerSheet = params.investmentEstimateLedgerSheet || DEFAULT_INVESTMENT_ESTIMATE_LEDGER_SHEET;
+  // Los nombres de hoja viajan juntos en todas las lecturas: se resuelven una vez y se
+  // pasan como un objeto, en vez de como nueve argumentos posicionales que había que
+  // mantener en el mismo orden en cada llamada.
+  const sheets = resolveSheets_(params);
+  const movementSheet = sheets.movement;
+  const investmentSheet = sheets.investment;
+  const bankSheet = sheets.bank;
+  const dataSheet = sheets.data;
+  const futureMovementSheet = sheets.future;
+  const investmentTotalsSheet = sheets.investmentTotals;
+  const investmentEstimateRulesSheet = sheets.investmentEstimateRules;
+  const investmentEstimateLedgerSheet = sheets.investmentEstimateLedger;
   const investmentMode = params.investmentMode || investmentModePreference_();
   const skipFutureSids = String(params.skipFutureSids || '').split(',').map(function(s) { return s.trim(); }).filter(Boolean);
 
@@ -44,11 +47,11 @@ function doGet(e) {
     } else if (action === 'quickStatus') {
       payload = buildQuickStatusPayload_(movementSheet, futureMovementSheet, investmentSheet, bankSheet, dataSheet, investmentTotalsSheet);
     } else if (action === 'downloadData') {
-      payload = buildAllDataPayload_(movementSheet, futureMovementSheet, investmentSheet, bankSheet, objectiveSheet, dataSheet, [], investmentTotalsSheet, investmentEstimateRulesSheet, investmentEstimateLedgerSheet);
+      payload = buildDataPayload_(sheets, { movements: true, banks: true, movedFutureMovements: [] });
     } else if (action === 'downloadCoreData') {
-      payload = buildCoreDataPayload_(investmentSheet, bankSheet, objectiveSheet, dataSheet, movementSheet, investmentTotalsSheet, investmentEstimateRulesSheet, investmentEstimateLedgerSheet);
+      payload = buildDataPayload_(sheets, { banks: true, movedFutureMovements: [] });
     } else if (action === 'downloadInvestments') {
-      payload = buildInvestmentDataPayload_(investmentSheet, objectiveSheet, movementSheet, dataSheet, investmentTotalsSheet, investmentEstimateRulesSheet, investmentEstimateLedgerSheet);
+      payload = buildDataPayload_(sheets);
     } else if (action === 'downloadMovementsPage') {
       payload = buildMovementPagePayload_(
         params.movementKind === 'future' ? futureMovementSheet : movementSheet,
@@ -74,14 +77,14 @@ function doGet(e) {
         movedFutureMovements.forEach(function(movement) { adjustInvestmentCostFromMovement_(investmentTotalsSheet, investmentSheet, movementSheet, movement, 1); });
         syncInvestmentTotalsSheet_(investmentTotalsSheet, investmentSheet, movementSheet);
       }
-      payload = buildAllDataPayload_(movementSheet, futureMovementSheet, investmentSheet, bankSheet, objectiveSheet, dataSheet, movedFutureMovements, investmentTotalsSheet, investmentEstimateRulesSheet, investmentEstimateLedgerSheet);
+      payload = buildDataPayload_(sheets, { movements: true, banks: true, movedFutureMovements });
     } else if (action === 'updateInvestmentPrices') {
       payload = withScriptLock_(function() {
         const priceUpdateResult = updateInvestmentQuotesFromYahoo(investmentSheet);
         // Los precios han cambiado: aquí sí hay que recalcular la hoja de totales, porque
         // los payloads de descarga ya no la sincronizan por su cuenta.
         syncInvestmentTotalsSheet_(investmentTotalsSheet, investmentSheet, movementSheet);
-        const result = buildInvestmentDataPayload_(investmentSheet, objectiveSheet, movementSheet, dataSheet, investmentTotalsSheet, investmentEstimateRulesSheet, investmentEstimateLedgerSheet);
+        const result = buildDataPayload_(sheets);
         result.pricesUpdated = true;
         result.priceUpdateResult = priceUpdateResult;
         return result;
@@ -101,61 +104,47 @@ function doGet(e) {
     payload = errorPayload_(err);
   }
 
-  const json = JSON.stringify(payload);
-  const output = callback ? `${callback}(${json});` : json;
-  return ContentService
-    .createTextOutput(output)
-    .setMimeType(callback ? ContentService.MimeType.JAVASCRIPT : ContentService.MimeType.JSON);
+  return json_(payload, callback);
 }
 
-function buildAllDataPayload_(movementSheet, futureMovementSheet, investmentSheet, bankSheet, objectiveSheet, dataSheet, movedFutureMovements, investmentTotalsSheet, investmentEstimateRulesSheet, investmentEstimateLedgerSheet) {
-  const investmentTotals = investmentTotalsForRead_(investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, investmentSheet, movementSheet);
-  const investments = readInvestments_(investmentSheet);
+function resolveSheets_(source) {
+  const from = source || {};
   return {
-    ok: true,
-    transactions: readMovements_(movementSheet),
-    futureTransactions: readFutureMovements_(futureMovementSheet),
-    movedFutureMovements: movedFutureMovements || [],
-    investments,
-    investmentTotals,
-    investmentEstimateRules: readInvestmentEstimateRules_(investmentEstimateRulesSheet || DEFAULT_INVESTMENT_ESTIMATE_RULES_SHEET),
-    investmentEstimateLedger: readInvestmentEstimateLedger_(investmentEstimateLedgerSheet || DEFAULT_INVESTMENT_ESTIMATE_LEDGER_SHEET),
-    banks: readBanks_(bankSheet),
-    investmentGoals: readInvestmentGoals_(objectiveSheet),
-    categories: readAppCategories_(dataSheet, investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, investmentSheet, investments)
+    movement: from.movementSheet || DEFAULT_MOVEMENT_SHEET,
+    future: from.futureMovementSheet || DEFAULT_FUTURE_MOVEMENT_SHEET,
+    investment: from.investmentSheet || DEFAULT_INVESTMENT_SHEET,
+    investmentTotals: from.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET,
+    investmentEstimateRules: from.investmentEstimateRulesSheet || DEFAULT_INVESTMENT_ESTIMATE_RULES_SHEET,
+    investmentEstimateLedger: from.investmentEstimateLedgerSheet || DEFAULT_INVESTMENT_ESTIMATE_LEDGER_SHEET,
+    bank: from.bankSheet || DEFAULT_BANK_SHEET,
+    objective: from.objectiveSheet || DEFAULT_OBJECTIVE_SHEET,
+    data: from.dataSheet || 'Datos'
   };
 }
 
-function buildCoreDataPayload_(investmentSheet, bankSheet, objectiveSheet, dataSheet, movementSheet, investmentTotalsSheet, investmentEstimateRulesSheet, investmentEstimateLedgerSheet) {
-  const investmentTotals = investmentTotalsForRead_(investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, investmentSheet, movementSheet || DEFAULT_MOVEMENT_SHEET);
-  const investments = readInvestments_(investmentSheet);
-  return {
-    ok: true,
-    // Este payload no mueve futuros vencidos (eso es 'moveDueFutureMovements'/'all'):
-    // el campo va siempre vacío para que el cliente lo trate igual que los demás.
-    movedFutureMovements: [],
-    investments,
-    investmentTotals,
-    investmentEstimateRules: readInvestmentEstimateRules_(investmentEstimateRulesSheet || DEFAULT_INVESTMENT_ESTIMATE_RULES_SHEET),
-    investmentEstimateLedger: readInvestmentEstimateLedger_(investmentEstimateLedgerSheet || DEFAULT_INVESTMENT_ESTIMATE_LEDGER_SHEET),
-    banks: readBanks_(bankSheet),
-    investmentGoals: readInvestmentGoals_(objectiveSheet),
-    categories: readAppCategories_(dataSheet, investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, investmentSheet, investments)
-  };
-}
-
-function buildInvestmentDataPayload_(investmentSheet, objectiveSheet, movementSheet, dataSheet, investmentTotalsSheet, investmentEstimateRulesSheet, investmentEstimateLedgerSheet) {
-  const investmentTotals = investmentTotalsForRead_(investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, investmentSheet, movementSheet || DEFAULT_MOVEMENT_SHEET);
-  const investments = readInvestments_(investmentSheet);
-  return {
+// Único constructor de payload de lectura. Antes eran tres funciones
+// (buildAllDataPayload_, buildCoreDataPayload_, buildInvestmentDataPayload_) con el
+// mismo preámbulo y la misma lista de campos recortada de distinta forma. Los flags
+// deciden qué bloques se añaden, y con ellos qué secciones ve el cliente como
+// sincronizadas.
+function buildDataPayload_(sheets, { movements = false, banks = false, movedFutureMovements } = {}) {
+  const investments = readInvestments_(sheets.investment);
+  const payload = {
     ok: true,
     investments,
-    investmentTotals,
-    investmentEstimateRules: readInvestmentEstimateRules_(investmentEstimateRulesSheet || DEFAULT_INVESTMENT_ESTIMATE_RULES_SHEET),
-    investmentEstimateLedger: readInvestmentEstimateLedger_(investmentEstimateLedgerSheet || DEFAULT_INVESTMENT_ESTIMATE_LEDGER_SHEET),
-    investmentGoals: readInvestmentGoals_(objectiveSheet),
-    categories: readAppCategories_(dataSheet || 'Datos', investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, investmentSheet, investments)
+    investmentTotals: investmentTotalsForRead_(sheets.investmentTotals, sheets.investment, sheets.movement),
+    investmentEstimateRules: readInvestmentEstimateRules_(sheets.investmentEstimateRules),
+    investmentEstimateLedger: readInvestmentEstimateLedger_(sheets.investmentEstimateLedger),
+    investmentGoals: readInvestmentGoals_(sheets.objective),
+    categories: readAppCategories_(sheets.data, sheets.investmentTotals, sheets.investment, investments)
   };
+  if (movements) {
+    payload.transactions = readMovements_(sheets.movement);
+    payload.futureTransactions = readFutureMovements_(sheets.future);
+  }
+  if (banks) payload.banks = readBanks_(sheets.bank);
+  if (movedFutureMovements) payload.movedFutureMovements = movedFutureMovements;
+  return payload;
 }
 
 function buildQuickStatusPayload_(movementSheet, futureMovementSheet, investmentSheet, bankSheet, dataSheet, investmentTotalsSheet) {
@@ -178,7 +167,7 @@ function buildQuickStatusPayload_(movementSheet, futureMovementSheet, investment
 }
 
 function sheetDataRowCount_(sheetName) {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
+  const sheet = getSheet_(sheetName);
   return sheet ? Math.max(0, sheet.getLastRow() - 1) : 0;
 }
 
@@ -416,7 +405,7 @@ function wasClientOpProcessed_(clientOpId) {
 }
 
 function isClientOpPending_(clientOpId) {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(DEFAULT_PENDING_SHEET);
+  const sheet = getSheet_(DEFAULT_PENDING_SHEET);
   if (!sheet || sheet.getLastRow() < 2) return false;
   // Columnas: Fecha (2) y Payload (4).
   const values = sheet.getRange(2, 2, sheet.getLastRow() - 1, 3).getValues();
@@ -433,7 +422,6 @@ function isClientOpPending_(clientOpId) {
 function doPost(e) {
   let payload = {};
   let pendingId = '';
-  let lock = null;
   try {
     try {
       payload = JSON.parse(e && e.postData && e.postData.contents || '{}');
@@ -464,28 +452,48 @@ function doPost(e) {
     // "pendiente" mientras esta petición espera su turno, en vez de "no sé nada"
     // (que el cliente contabilizaba como intento fallido).
     rememberReceivedClientOp_(payload.clientOpId || '');
-    lock = LockService.getScriptLock();
-    try {
-      lock.waitLock(30000);
-    } catch (lockErr) {
-      lock = null;
-      // Un choque con el lock es transitorio: se marca como reintentable para que el
-      // cliente lo reintente solo, en vez de registrarlo como fallo permanente.
-      throw new Error('LOCK_TIMEOUT: el servidor está ocupado con otra operación; reintenta en unos segundos.');
+    // withScriptLock_ es el único sitio que sabe esperar el lock, con su timeout y su
+    // error LOCK_TIMEOUT reintentable. doPost lo reimplementaba a mano, duplicando el
+    // literal de 30 s, el mensaje y el manejo de scriptLockHeld_.
+    return withScriptLock_(function() {
+      // Reevaluado dentro del lock: ya con el estado consolidado por otra petición.
+      if (payload.clientOpId && wasClientOpProcessed_(payload.clientOpId)) {
+        return json_({ ok: true, duplicate: true });
+      }
+      if (payload.clientOpId && isClientOpPending_(payload.clientOpId)) {
+        return json_({ ok: true, pending: true });
+      }
+      pendingId = appendPendingPost_(payload);
+      // Nuevo intento en marcha: el error registrado en el anterior ya no aplica.
+      forgetClientOpFailure_(payload.clientOpId || '');
+      return dispatchPostAction_(payload, pendingId);
+    });
+  } catch (err) {
+    // Si la acción falla a medias, no dejamos la fila en "Pendientes": si no se
+    // limpia aquí, isClientOpPending_ devolvería pending:true para siempre y
+    // el cliente se quedaría "Confirmando" sin reintentar nunca la operación real.
+    if (pendingId) {
+      try { removePendingPost_(pendingId); } catch (cleanupErr) {}
     }
-    // Esta ejecución ya posee el lock: los helpers que usan withScriptLock_ deben
-    // ejecutarse directamente en vez de intentar adquirirlo otra vez.
-    scriptLockHeld_ = true;
-    // Reevaluado dentro del lock: ya con el estado consolidado por otra petición.
-    if (payload.clientOpId && wasClientOpProcessed_(payload.clientOpId)) {
-      return json_({ ok: true, duplicate: true });
+    // El cliente no puede leer esta respuesta (no-cors): dejamos el error registrado
+    // para que lo recoja checkClientOp y lo muestre en vez de reintentar sin fin.
+    // Excepción: un timeout de lock NO es un fallo de la operación — si se registrara,
+    // el cliente la marcaría como error terminal por una colisión transitoria.
+    const message = String(err && err.message || err || '');
+    if (message.indexOf('LOCK_TIMEOUT') !== 0) {
+      rememberClientOpFailure_(payload && payload.clientOpId || '', message);
     }
-    if (payload.clientOpId && isClientOpPending_(payload.clientOpId)) {
-      return json_({ ok: true, pending: true });
-    }
-    pendingId = appendPendingPost_(payload);
-    // Nuevo intento en marcha: el error registrado en el intento anterior ya no aplica.
-    forgetClientOpFailure_(payload.clientOpId || '');
+    return json_(errorPayload_(err));
+  } finally {
+    forgetReceivedClientOp_(payload && payload.clientOpId || '');
+  }
+}
+
+// El token es OBLIGATORIO: sin él, cualquiera con la URL /exec podía leer y
+// modificar todas las finanzas. Configura APP_TOKEN arriba y el mismo valor en
+// Ajustes de la app.
+// Despacho de acciones de doPost. Se ejecuta siempre con el script lock tomado.
+function dispatchPostAction_(payload, pendingId) {
     if (payload.action === 'addMovement') {
       addMovement_(Object.assign({}, payload.movement || {}, { cuenta: payload.account || payload.movement && payload.movement.cuenta || '' }), payload.sheetName || DEFAULT_MOVEMENT_SHEET);
       // Solo los movimientos de inversión cambian el coste y, con él, la hoja de totales.
@@ -599,34 +607,8 @@ function doPost(e) {
       return finishPost_(pendingId, payload, { ok: true, changed });
     }
     return finishPost_(pendingId, payload, { ok: false, error: 'Unknown action' });
-  } catch (err) {
-    // Si la acción falla a medias, no dejamos la fila en "Pendientes": si no se
-    // limpia aquí, isClientOpPending_ devolvería pending:true para siempre y
-    // el cliente se quedaría "Confirmando" sin reintentar nunca la operación real.
-    if (pendingId) {
-      try { removePendingPost_(pendingId); } catch (cleanupErr) {}
-    }
-    // El cliente no puede leer esta respuesta (no-cors): dejamos el error registrado
-    // para que lo recoja checkClientOp y lo muestre en vez de reintentar sin fin.
-    // Excepción: un timeout de lock NO es un fallo de la operación — si se registrara,
-    // el cliente la marcaría como error terminal por una colisión transitoria.
-    const message = String(err && err.message || err || '');
-    if (message.indexOf('LOCK_TIMEOUT') !== 0) {
-      rememberClientOpFailure_(payload && payload.clientOpId || '', message);
-    }
-    return json_(errorPayload_(err));
-  } finally {
-    forgetReceivedClientOp_(payload && payload.clientOpId || '');
-    if (lock) {
-      scriptLockHeld_ = false;
-      try { lock.releaseLock(); } catch (releaseErr) {}
-    }
-  }
 }
 
-// El token es OBLIGATORIO: sin él, cualquiera con la URL /exec podía leer y
-// modificar todas las finanzas. Configura APP_TOKEN arriba y el mismo valor en
-// Ajustes de la app.
 function requireToken_(token) {
   if (!APP_TOKEN) {
     throw new Error('AUTH: configura APP_TOKEN en el Apps Script (es obligatorio) y en Ajustes de la app.');
@@ -700,7 +682,7 @@ function finishPost_(pendingId, requestPayload, responsePayload) {
 
 function removePendingPost_(pendingId) {
   if (!pendingId) return;
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(DEFAULT_PENDING_SHEET);
+  const sheet = getSheet_(DEFAULT_PENDING_SHEET);
   if (!sheet) return;
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) return;
@@ -895,9 +877,7 @@ function findMovementRowBySid_(sheet, sid, sidCol) {
 
 function addMovement_(movement, sheetName) {
   if (!movement) throw new Error('Missing movement');
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getSheetByName(sheetName);
-  if (!sheet) throw new Error(`Sheet not found: ${sheetName}`);
+  const sheet = requireSheet_(sheetName);
   ensureMovementSidColumnCached_(sheet);
   const row = sheet.getLastRow() + 1;
   writeMovementRow_(sheet, row, movement, movementSidFrom_(movement), movement.cuenta || movement.account || '');
@@ -909,7 +889,7 @@ function readMovements_(sheetName) {
 }
 
 function readMovementsPage_(sheetName, offset, limit, optional) {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
+  const sheet = getSheet_(sheetName);
   if (!sheet) {
     if (optional) return { rows: [], total: 0, offset: 0, limit: Math.max(1, Math.min(Number(limit || 500), 1000)), nextOffset: 0, hasMore: false };
     throw new Error(`Sheet not found: ${sheetName}`);
@@ -952,8 +932,7 @@ function movementObjectFromRow_(row, rowNumber, sidCol) {
 
 function updateMovement_(movement, sheetName, previousMovement) {
   if (!movement) throw new Error('Missing movement');
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
-  if (!sheet) throw new Error(`Sheet not found: ${sheetName}`);
+  const sheet = requireSheet_(sheetName);
   const sidCol = ensureMovementSidColumnCached_(sheet);
   const targetSid = String(movement.sid || previousMovement && previousMovement.sid || '').trim();
   let rowNumber = targetSid ? findMovementRowBySid_(sheet, targetSid, sidCol) : Number(movement.rowNumber || 0);
@@ -965,8 +944,7 @@ function updateMovement_(movement, sheetName, previousMovement) {
 }
 
 function deleteMovement_(rowNumber, sheetName, movement) {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
-  if (!sheet) throw new Error(`Sheet not found: ${sheetName}`);
+  const sheet = requireSheet_(sheetName);
   const sidCol = ensureMovementSidColumnCached_(sheet);
   const sid = String(movement && movement.sid || '').trim();
   let row = sid ? findMovementRowBySid_(sheet, sid, sidCol) : Number(rowNumber || 0);
@@ -982,8 +960,7 @@ function deleteMovement_(rowNumber, sheetName, movement) {
 
 function deleteMovementsBatch_(items, sheetName) {
   if (!items.length) return;
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
-  if (!sheet) throw new Error(`Sheet not found: ${sheetName}`);
+  const sheet = requireSheet_(sheetName);
   const rows = [];
   const sidCol = ensureMovementSidColumnCached_(sheet);
   items.forEach(item => {
@@ -1071,7 +1048,7 @@ function isInvestmentPositionType_(value) {
 }
 
 function readFutureMovements_(sheetName) {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
+  const sheet = getSheet_(sheetName);
   if (!sheet) return [];
   const page = readMovementsPage_(sheetName, 0, Number.MAX_SAFE_INTEGER);
   return page.rows;
@@ -1080,7 +1057,7 @@ function readFutureMovements_(sheetName) {
 // Comprobación barata y de solo lectura: ¿hay algún futuro vencido? Permite que la
 // carga normal (sin nada que mover) no tenga que esperar el script lock.
 function hasDueFutureMovements_(futureSheetName) {
-  const futureSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(futureSheetName);
+  const futureSheet = getSheet_(futureSheetName);
   if (!futureSheet || futureSheet.getLastRow() < 2) return false;
   const dates = futureSheet.getRange(2, 1, futureSheet.getLastRow() - 1, 1).getValues();
   const today = new Date();
@@ -1102,10 +1079,9 @@ function moveDueFutureMovements_(futureSheetName, movementSheetName, bankSheetNa
 }
 
 function moveDueFutureMovementsLocked_(futureSheetName, movementSheetName, bankSheetName, skipSids) {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const futureSheet = ss.getSheetByName(futureSheetName);
+  const futureSheet = getSheet_(futureSheetName);
   if (!futureSheet) return [];
-  const bankSheet = ss.getSheetByName(bankSheetName);
+  const bankSheet = getSheet_(bankSheetName);
   const skipSet = {};
   (skipSids || []).forEach(function(sid) { const trimmed = String(sid || '').trim(); if (trimmed) skipSet[trimmed] = true; });
   const sidCol = ensureMovementSidColumnCached_(futureSheet);
@@ -1142,17 +1118,35 @@ function moveDueFutureMovementsLocked_(futureSheetName, movementSheetName, bankS
     rowsToDelete.push(r + 1);
   }
   if (pendingAppends.length) {
-    const movementSheet = ss.getSheetByName(movementSheetName);
-    if (!movementSheet) throw new Error(`Sheet not found: ${movementSheetName}`);
+    const movementSheet = requireSheet_(movementSheetName);
     appendMovementRows_(movementSheet, pendingAppends);
   }
   rowsToDelete.sort((a, b) => b - a).forEach(rowNumber => futureSheet.deleteRow(rowNumber));
   return moved.reverse();
 }
 
+// Acceso a hojas. Antes había 31 llamadas sueltas a getActiveSpreadsheet() y el guard
+// "Sheet not found" estaba copiado en 15 sitios; getSheet_/requireSheet_ son la única
+// vía, y ss_() memoiza el documento para no volver a pedirlo en cada helper.
+var spreadsheetCache_ = null;
+
+function ss_() {
+  if (!spreadsheetCache_) spreadsheetCache_ = SpreadsheetApp.getActiveSpreadsheet();
+  return spreadsheetCache_;
+}
+
+function getSheet_(sheetName) {
+  return ss_().getSheetByName(sheetName);
+}
+
+function requireSheet_(sheetName) {
+  const sheet = getSheet_(sheetName);
+  if (!sheet) throw new Error(`Sheet not found: ${sheetName}`);
+  return sheet;
+}
+
 function getOrCreateSheet_(sheetName, headers) {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  let sheet = ss.getSheetByName(sheetName);
+  let sheet = getSheet_(sheetName);
   if (!sheet) {
     // El nombre viene de la petición: se valida antes de crear nada para que un
     // caller no pueda sembrar la hoja de cálculo de pestañas basura.
@@ -1160,17 +1154,17 @@ function getOrCreateSheet_(sheetName, headers) {
     if (!name || name.length > 80 || /[[\]*?:/\\]/.test(name)) {
       throw new Error('VALIDATION: nombre de hoja no válido: ' + name);
     }
-    if (ss.getSheets().length >= 40) {
+    if (ss_().getSheets().length >= 40) {
       throw new Error('VALIDATION: demasiadas hojas en el documento; no se crea "' + name + '".');
     }
-    sheet = ss.insertSheet(name);
+    sheet = ss_().insertSheet(name);
     sheet.appendRow(headers);
   }
   return sheet;
 }
 
 function readInvestments_(sheetName) {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
+  const sheet = getSheet_(sheetName);
   if (!sheet) return [];
   const range = sheet.getDataRange();
   const values = range.getValues();
@@ -1300,7 +1294,7 @@ function ledgerColumnMap_(sheet) {
 
 function readInvestmentEstimateRules_(sheetName) {
   const setup = ensureInvestmentEstimateSheets_(sheetName || DEFAULT_INVESTMENT_ESTIMATE_RULES_SHEET, DEFAULT_INVESTMENT_ESTIMATE_LEDGER_SHEET);
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName || DEFAULT_INVESTMENT_ESTIMATE_RULES_SHEET) || setup.rulesSheet;
+  const sheet = getSheet_(sheetName || DEFAULT_INVESTMENT_ESTIMATE_RULES_SHEET) || setup.rulesSheet;
   const values = sheet.getDataRange().getValues();
   const col = estimateColumnMap_(sheet);
   function cell(row, index) { return index ? row[index - 1] : ''; }
@@ -1512,7 +1506,7 @@ function safeFinite_(value) {
 }
 
 function readInvestmentGoals_(sheetName) {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
+  const sheet = getSheet_(sheetName);
   const goals = { incomeMonthly: 0, expenseMonthly: 0, investmentMonthly: 0, monthly: 0, yearly: 0, total: 0 };
   if (!sheet) return goals;
   const values = sheet.getDataRange().getDisplayValues();
@@ -1527,8 +1521,7 @@ function readInvestmentGoals_(sheetName) {
 }
 
 function readBanks_(sheetName) {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
-  if (!sheet) throw new Error(`Sheet not found: ${sheetName}`);
+  const sheet = requireSheet_(sheetName);
   const values = sheet.getDataRange().getDisplayValues();
   return values.slice(1)
     .map((row, index) => ({
@@ -1540,9 +1533,7 @@ function readBanks_(sheetName) {
 }
 
 function saveBanks_(banks, sheetName) {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getSheetByName(sheetName);
-  if (!sheet) throw new Error(`Sheet not found: ${sheetName}`);
+  const sheet = requireSheet_(sheetName);
 
   banks.forEach(item => {
     if (!item || !item.cuenta) return;
@@ -1577,8 +1568,7 @@ function transferBank_(sheetName, from, to, amount) {
 
 function adjustBank_(sheetName, account, delta) {
   if (!account || !Number.isFinite(delta) || delta === 0) return;
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
-  if (!sheet) throw new Error(`Sheet not found: ${sheetName}`);
+  const sheet = requireSheet_(sheetName);
   const row = findBankRow_(sheet, account);
   if (!row) throw new Error(`Bank account not found: ${account}`);
   const current = parseNumber_(sheet.getRange(row, 2).getValue());
@@ -1615,7 +1605,7 @@ function renameAccountTextValue_(value, oldName, newName) {
 }
 
 function renameAccountInMovementSheet_(sheetName, oldName, newName) {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
+  const sheet = getSheet_(sheetName);
   if (!sheet) return 0;
   const rowCount = sheet.getLastRow() - 1;
   if (rowCount <= 0 || sheet.getLastColumn() < 9) return 0;
@@ -1658,8 +1648,7 @@ function renameAccount_(bankSheetName, movementSheetName, futureMovementSheetNam
   const normalizedNew = String(newName || '').trim();
   if (!normalizedOld || !normalizedNew) throw new Error('Nombre de cuenta inválido');
   if (normalizedOld === normalizedNew) return { movementsUpdated: 0, futureMovementsUpdated: 0 };
-  const bankSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(bankSheetName);
-  if (!bankSheet) throw new Error(`Sheet not found: ${bankSheetName}`);
+  const bankSheet = requireSheet_(bankSheetName);
   const bankRow = findBankRow_(bankSheet, normalizedOld);
   if (!bankRow) {
     // Reintento de una operación ya aplicada (p.ej. tras un timeout de red): si la cuenta
@@ -1675,7 +1664,7 @@ function renameAccount_(bankSheetName, movementSheetName, futureMovementSheetNam
 }
 
 function accountReferenceCountInMovementSheet_(sheetName, account) {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
+  const sheet = getSheet_(sheetName);
   if (!sheet) return 0;
   const rowCount = sheet.getLastRow() - 1;
   if (rowCount <= 0 || sheet.getLastColumn() < 9) return 0;
@@ -1692,8 +1681,7 @@ function deleteAccount_(bankSheetName, movementSheetName, futureMovementSheetNam
   if (!force && (movementsCount || futureMovementsCount)) {
     throw new Error(`La cuenta tiene ${movementsCount + futureMovementsCount} movimientos asociados. Confirma para borrar igualmente.`);
   }
-  const bankSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(bankSheetName);
-  if (!bankSheet) throw new Error(`Sheet not found: ${bankSheetName}`);
+  const bankSheet = requireSheet_(bankSheetName);
   const row = findBankRow_(bankSheet, normalized);
   if (!row) return { movementsCount, futureMovementsCount, alreadyApplied: true };
   bankSheet.deleteRow(row);
@@ -1703,9 +1691,7 @@ function deleteAccount_(bankSheetName, movementSheetName, futureMovementSheetNam
 
 function updateInvestment_(investment, sheetName, previousInvestment) {
   if (!investment) throw new Error('Missing investment');
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getSheetByName(sheetName);
-  if (!sheet) throw new Error(`Sheet not found: ${sheetName}`);
+  const sheet = requireSheet_(sheetName);
 
   const rowNumber = Number(investment.rowNumber || previousInvestment && previousInvestment.rowNumber || 0);
   let targetRow = rowNumber >= 2 && rowNumber <= sheet.getLastRow()
@@ -1756,9 +1742,7 @@ function saveCashInvestmentValue_(sheet, row, item) {
 }
 
 function deleteInvestment_(investment, sheetName, rowNumber) {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getSheetByName(sheetName);
-  if (!sheet) throw new Error(`Sheet not found: ${sheetName}`);
+  const sheet = requireSheet_(sheetName);
   let targetRow = Number(rowNumber || investment && investment.rowNumber || 0);
   if (targetRow < 2 || targetRow > sheet.getLastRow()) {
     targetRow = findInvestmentRow_(sheet, investment || {}, null);
@@ -1812,8 +1796,7 @@ function updateInvestmentQuoteRowFromYahoo_(sheet, rowNumber) {
 }
 
 function updateInvestmentQuotesFromYahooOptimized_(sheetName) {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName || DEFAULT_INVESTMENT_SHEET);
-  if (!sheet) throw new Error(`Sheet not found: ${sheetName || DEFAULT_INVESTMENT_SHEET}`);
+  const sheet = requireSheet_(sheetName || DEFAULT_INVESTMENT_SHEET);
   const col = investmentColumnMap_(sheet);
   const rates = getCurrencyRates_();
   const lastRow = sheet.getLastRow();
@@ -2103,8 +2086,7 @@ function sendTelegramMessage_(text) {
 
 function buildInvestmentVariationSummary_(sheetName) {
   const resolvedSheetName = sheetName || DEFAULT_INVESTMENT_SHEET;
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(resolvedSheetName);
-  if (!sheet) throw new Error(`Sheet not found: ${resolvedSheetName}`);
+  const sheet = requireSheet_(resolvedSheetName);
   const col = investmentColumnMap_(sheet);
   const values = sheet.getDataRange().getValues();
   const categories = readInvestmentCategoriesForTotals_(DEFAULT_INVESTMENT_TOTALS_SHEET, resolvedSheetName);
@@ -2301,8 +2283,27 @@ function positionPreviousTotal_(item) {
   return parseNumber_(item.total ?? item.value ?? item.VALUE) || 0;
 }
 
+// Cabecera y escritura de la hoja de totales: estaban duplicadas literalmente en
+// syncInvestmentTotalsSheet_ y updateInvestmentCategoryNamesInTotals_, y el literal de
+// las nueve columnas aparecía cuatro veces.
+function investmentTotalsHeaders_() {
+  return ['TIPO', 'COST', 'VALUE', 'LAST VALUE', 'DAILY', '%D', 'GAIN', '%GAIN', 'ORDEN'];
+}
+
+function writeInvestmentTotalsRows_(sheet, rows) {
+  const previousLastRow = sheet.getLastRow();
+  sheet.getRange(1, 1, 1, 9).setValues([investmentTotalsHeaders_()]);
+  if (previousLastRow > 1) sheet.getRange(2, 1, previousLastRow - 1, Math.max(9, sheet.getLastColumn())).clearContent();
+  if (!rows.length) return;
+  sheet.getRange(2, 1, rows.length, 9).setValues(rows);
+  sheet.getRange(2, 2, rows.length, 4).setNumberFormat('0.00');
+  sheet.getRange(2, 6, rows.length, 1).setNumberFormat('0.00%');
+  sheet.getRange(2, 7, rows.length, 1).setNumberFormat('0.00');
+  sheet.getRange(2, 8, rows.length, 1).setNumberFormat('0.00%');
+}
+
 function syncInvestmentTotalsSheet_(totalsSheetName, investmentSheetName, movementSheetName) {
-  const totalsSheet = getOrCreateSheet_(totalsSheetName || DEFAULT_INVESTMENT_TOTALS_SHEET, ['TIPO', 'COST', 'VALUE', 'LAST VALUE', 'DAILY', '%D', 'GAIN', '%GAIN', 'ORDEN']);
+  const totalsSheet = getOrCreateSheet_(totalsSheetName || DEFAULT_INVESTMENT_TOTALS_SHEET, investmentTotalsHeaders_());
   const categories = readInvestmentCategoriesForTotals_(totalsSheetName || DEFAULT_INVESTMENT_TOTALS_SHEET, investmentSheetName || DEFAULT_INVESTMENT_SHEET);
   const investments = readInvestments_(investmentSheetName || DEFAULT_INVESTMENT_SHEET);
   const existing = {};
@@ -2327,15 +2328,7 @@ function syncInvestmentTotalsSheet_(totalsSheetName, investmentSheetName, moveme
     const gain = value - cost;
     return [type, cost, value, previous, daily, previous ? daily / previous : 0, gain, cost ? gain / cost : 0, Number.isFinite(old.order) ? old.order : idx + 1];
   }).sort((a, b) => Number(a[8] || 0) - Number(b[8] || 0));
-  totalsSheet.getRange(1, 1, 1, 9).setValues([['TIPO', 'COST', 'VALUE', 'LAST VALUE', 'DAILY', '%D', 'GAIN', '%GAIN', 'ORDEN']]);
-  if (lastRow > 1) totalsSheet.getRange(2, 1, lastRow - 1, Math.max(9, totalsSheet.getLastColumn())).clearContent();
-  if (rows.length) totalsSheet.getRange(2, 1, rows.length, 9).setValues(rows);
-  if (rows.length) {
-    totalsSheet.getRange(2, 2, rows.length, 4).setNumberFormat('0.00');
-    totalsSheet.getRange(2, 6, rows.length, 1).setNumberFormat('0.00%');
-    totalsSheet.getRange(2, 7, rows.length, 1).setNumberFormat('0.00');
-    totalsSheet.getRange(2, 8, rows.length, 1).setNumberFormat('0.00%');
-  }
+  writeInvestmentTotalsRows_(totalsSheet, rows);
   return readInvestmentTotals_(totalsSheetName || DEFAULT_INVESTMENT_TOTALS_SHEET);
 }
 
@@ -2348,13 +2341,13 @@ function syncInvestmentTotalsSheet_(totalsSheetName, investmentSheetName, moveme
 // quedan obsoletos; aquí solo se sincroniza si la hoja aún no existe o está vacía.
 function investmentTotalsForRead_(totalsSheetName, investmentSheetName, movementSheetName) {
   const name = totalsSheetName || DEFAULT_INVESTMENT_TOTALS_SHEET;
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(name);
+  const sheet = getSheet_(name);
   if (sheet && sheet.getLastRow() >= 2) return readInvestmentTotals_(name);
   return syncInvestmentTotalsSheet_(name, investmentSheetName, movementSheetName);
 }
 
 function readInvestmentTotals_(sheetName) {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName || DEFAULT_INVESTMENT_TOTALS_SHEET);
+  const sheet = getSheet_(sheetName || DEFAULT_INVESTMENT_TOTALS_SHEET);
   if (!sheet || sheet.getLastRow() < 2) return [];
   return sheet.getRange(2, 1, sheet.getLastRow() - 1, Math.max(9, sheet.getLastColumn())).getValues()
     .map((row, index) => ({
@@ -2386,7 +2379,7 @@ function adjustInvestmentCostFromMovement_(totalsSheetName, investmentSheetName,
   const amount = Math.abs(parseNumber_(movement && (movement.importe ?? movement.amount)));
   if (!Number.isFinite(amount) || amount <= 0) return;
   syncInvestmentTotalsSheet_(totalsSheetName || DEFAULT_INVESTMENT_TOTALS_SHEET, investmentSheetName || DEFAULT_INVESTMENT_SHEET, movementSheetName || DEFAULT_MOVEMENT_SHEET);
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(totalsSheetName || DEFAULT_INVESTMENT_TOTALS_SHEET);
+  const sheet = getSheet_(totalsSheetName || DEFAULT_INVESTMENT_TOTALS_SHEET);
   if (!sheet) return;
   const values = sheet.getRange(2, 1, Math.max(0, sheet.getLastRow() - 1), 2).getValues();
   for (let i = 0; i < values.length; i++) {
@@ -2422,7 +2415,7 @@ function saveInvestmentCategories_(investmentSheetName, investmentTypes, renames
   const categories = Array.from(new Set((investmentTypes || []).map(v => String(v || '').trim()).filter(Boolean)));
   if (!categories.length) throw new Error('Faltan categorías de inversión');
 
-  const investmentSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(investmentSheetName || DEFAULT_INVESTMENT_SHEET);
+  const investmentSheet = getSheet_(investmentSheetName || DEFAULT_INVESTMENT_SHEET);
   const renameEntries = Object.entries(renames || {}).filter(entry => entry[0] && entry[1]);
   if (investmentSheet && investmentSheet.getLastRow() >= 2 && renameEntries.length) {
     const col = investmentColumnMap_(investmentSheet);
@@ -2446,7 +2439,7 @@ function saveInvestmentCategories_(investmentSheetName, investmentTypes, renames
 }
 
 function updateInvestmentCategoryNamesInTotals_(sheetName, renames, orderedCategories, investmentSheetName) {
-  const sheet = getOrCreateSheet_(sheetName || DEFAULT_INVESTMENT_TOTALS_SHEET, ['TIPO', 'COST', 'VALUE', 'LAST VALUE', 'DAILY', '%D', 'GAIN', '%GAIN', 'ORDEN']);
+  const sheet = getOrCreateSheet_(sheetName || DEFAULT_INVESTMENT_TOTALS_SHEET, investmentTotalsHeaders_());
   const requested = (orderedCategories || []).map(v => String(v || '').trim()).filter(Boolean);
   const requestedKeys = new Set(requested.map(normalizeType_));
   const positionsByType = {};
@@ -2508,21 +2501,13 @@ function updateInvestmentCategoryNamesInTotals_(sheetName, renames, orderedCateg
     ];
   });
 
-  sheet.getRange(1, 1, 1, 9).setValues([['TIPO', 'COST', 'VALUE', 'LAST VALUE', 'DAILY', '%D', 'GAIN', '%GAIN', 'ORDEN']]);
-  if (sheet.getLastRow() > 1) sheet.getRange(2, 1, sheet.getLastRow() - 1, Math.max(9, sheet.getLastColumn())).clearContent();
-  if (rows.length) sheet.getRange(2, 1, rows.length, 9).setValues(rows);
-  if (rows.length) {
-    sheet.getRange(2, 2, rows.length, 4).setNumberFormat('0.00');
-    sheet.getRange(2, 6, rows.length, 1).setNumberFormat('0.00%');
-    sheet.getRange(2, 7, rows.length, 1).setNumberFormat('0.00');
-    sheet.getRange(2, 8, rows.length, 1).setNumberFormat('0.00%');
-  }
+  writeInvestmentTotalsRows_(sheet, rows);
 }
 
 function updateInvestmentCategoryNamesInMovements_(sheetName, renames) {
   const entries = Object.entries(renames || {}).filter(entry => entry[0] && entry[1]);
   if (!entries.length) return;
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
+  const sheet = getSheet_(sheetName);
   if (!sheet || sheet.getLastRow() < 2) return;
   const width = Math.max(sheet.getLastColumn(), 4);
   const range = sheet.getRange(2, 1, sheet.getLastRow() - 1, width);
@@ -2597,10 +2582,13 @@ function normalizeGoalKey_(value) {
   return '';
 }
 
-function json_(payload) {
+// Única forma de construir la respuesta. Con callback envuelve en JSONP (lo que pide
+// doGet desde el <script>); sin él, JSON a secas (doPost).
+function json_(payload, callback) {
+  const body = JSON.stringify(payload);
   return ContentService
-    .createTextOutput(JSON.stringify(payload))
-    .setMimeType(ContentService.MimeType.JSON);
+    .createTextOutput(callback ? `${callback}(${body});` : body)
+    .setMimeType(callback ? ContentService.MimeType.JAVASCRIPT : ContentService.MimeType.JSON);
 }
 
 function errorCode_(err) {
