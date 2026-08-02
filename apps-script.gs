@@ -36,7 +36,6 @@ function doGet(e) {
   const investmentTotalsSheet = sheets.investmentTotals;
   const investmentEstimateRulesSheet = sheets.investmentEstimateRules;
   const investmentEstimateLedgerSheet = sheets.investmentEstimateLedger;
-  const investmentMode = params.investmentMode || investmentModePreference_();
   const skipFutureSids = String(params.skipFutureSids || '').split(',').map(function(s) { return s.trim(); }).filter(Boolean);
 
   let payload;
@@ -62,7 +61,9 @@ function doGet(e) {
     } else if (action === 'moveDueFutureMovements') {
       const movedFutureMovements = moveDueFutureMovements_(futureMovementSheet, movementSheet, bankSheet, skipFutureSids);
       if (movedFutureMovements.length) {
-        movedFutureMovements.forEach(function(movement) { adjustInvestmentCostFromMovement_(investmentTotalsSheet, investmentSheet, movementSheet, movement, 1); });
+        applyInvestmentCostChanges_(sheets, movedFutureMovements.map(function(movement) {
+          return { movement: movement, sign: 1 };
+        }), movementSheet);
         syncInvestmentTotalsSheet_(investmentTotalsSheet, investmentSheet, movementSheet);
       }
       payload = {
@@ -74,7 +75,9 @@ function doGet(e) {
     } else if (action === 'all') {
       const movedFutureMovements = moveDueFutureMovements_(futureMovementSheet, movementSheet, bankSheet, skipFutureSids);
       if (movedFutureMovements.length) {
-        movedFutureMovements.forEach(function(movement) { adjustInvestmentCostFromMovement_(investmentTotalsSheet, investmentSheet, movementSheet, movement, 1); });
+        applyInvestmentCostChanges_(sheets, movedFutureMovements.map(function(movement) {
+          return { movement: movement, sign: 1 };
+        }), movementSheet);
         syncInvestmentTotalsSheet_(investmentTotalsSheet, investmentSheet, movementSheet);
       }
       payload = buildDataPayload_(sheets, { movements: true, banks: true, movedFutureMovements });
@@ -92,6 +95,7 @@ function doGet(e) {
     } else if (action === 'sendDailyNotifications') {
       // Sin withScriptLock_: sendInvestmentNotificationsOnce_ ya toma el script lock
       // internamente y el lock no es reentrante (se bloquearía contra sí mismo).
+      const investmentMode = params.investmentMode || investmentModePreference_();
       const notificationRequestId = String(params.notificationRequestId || '').trim();
       const notificationResult = sendInvestmentNotificationsOnce_(notificationRequestId, function() {
         sendInvestmentNotificationMessages_(investmentSheet, { mode: investmentMode, rulesSheet: investmentEstimateRulesSheet, ledgerSheet: investmentEstimateLedgerSheet, movementSheet: movementSheet, investmentTotalsSheet: investmentTotalsSheet });
@@ -534,10 +538,11 @@ function dispatchPostAction_(payload, pendingId) {
       return finishPost_(pendingId, payload, { ok: true });
     }
     if (payload.action === 'deleteMovementsBatch') {
-      (payload.movements || []).forEach(function(item) {
-        const movement = item && (item.movement || item);
-        if (movement) adjustInvestmentCostFromMovement_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.investmentSheet || DEFAULT_INVESTMENT_SHEET, payload.sheetName || DEFAULT_MOVEMENT_SHEET, movement, -1);
-      });
+      applyInvestmentCostChanges_(
+        { investmentTotals: payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, investment: payload.investmentSheet || DEFAULT_INVESTMENT_SHEET, movement: payload.sheetName || DEFAULT_MOVEMENT_SHEET },
+        (payload.movements || []).map(function(item) { return { movement: item && (item.movement || item), sign: -1 }; }),
+        payload.sheetName || DEFAULT_MOVEMENT_SHEET
+      );
       deleteMovementsBatch_(payload.movements || [], payload.sheetName || DEFAULT_MOVEMENT_SHEET);
       syncInvestmentTotalsSheet_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.investmentSheet || DEFAULT_INVESTMENT_SHEET, payload.sheetName || DEFAULT_MOVEMENT_SHEET);
       return finishPost_(pendingId, payload, { ok: true });
@@ -1202,12 +1207,15 @@ function investmentEstimateLedgerHeaders_() {
   return ['ID', 'Activo', 'Fecha Movimiento', 'SID Movimiento', 'Tipo Inversión', 'Data', 'Nombre', 'Short Name', 'Importe', 'Precio Usado', 'Shares Estimadas', 'Origen'];
 }
 
+// Asegura que las hojas existen; getOrCreateSheet_ ya escribe la cabecera al crearlas.
+// NO normaliza cabeceras: esto lo llama una ruta de LECTURA, y resetSheetHeaders_
+// reescribe la fila 1 y llega a borrar columnas. Cada descarga escribía en dos hojas
+// del usuario. La normalización se queda en las rutas de escritura, que sí la piden.
 function ensureInvestmentEstimateSheets_(rulesSheetName, ledgerSheetName) {
-  const rulesSheet = getOrCreateSheet_(rulesSheetName || DEFAULT_INVESTMENT_ESTIMATE_RULES_SHEET, investmentEstimateRuleHeaders_());
-  const ledgerSheet = getOrCreateSheet_(ledgerSheetName || DEFAULT_INVESTMENT_ESTIMATE_LEDGER_SHEET, investmentEstimateLedgerHeaders_());
-  resetSheetHeaders_(rulesSheet, investmentEstimateRuleHeaders_());
-  resetSheetHeaders_(ledgerSheet, investmentEstimateLedgerHeaders_());
-  return { rulesSheet, ledgerSheet };
+  return {
+    rulesSheet: getOrCreateSheet_(rulesSheetName || DEFAULT_INVESTMENT_ESTIMATE_RULES_SHEET, investmentEstimateRuleHeaders_()),
+    ledgerSheet: getOrCreateSheet_(ledgerSheetName || DEFAULT_INVESTMENT_ESTIMATE_LEDGER_SHEET, investmentEstimateLedgerHeaders_())
+  };
 }
 
 function resetSheetHeaders_(sheet, headers) {
@@ -1293,8 +1301,7 @@ function ledgerColumnMap_(sheet) {
 }
 
 function readInvestmentEstimateRules_(sheetName) {
-  const setup = ensureInvestmentEstimateSheets_(sheetName || DEFAULT_INVESTMENT_ESTIMATE_RULES_SHEET, DEFAULT_INVESTMENT_ESTIMATE_LEDGER_SHEET);
-  const sheet = getSheet_(sheetName || DEFAULT_INVESTMENT_ESTIMATE_RULES_SHEET) || setup.rulesSheet;
+  const sheet = ensureInvestmentEstimateSheets_(sheetName || DEFAULT_INVESTMENT_ESTIMATE_RULES_SHEET, DEFAULT_INVESTMENT_ESTIMATE_LEDGER_SHEET).rulesSheet;
   const values = sheet.getDataRange().getValues();
   const col = estimateColumnMap_(sheet);
   function cell(row, index) { return index ? row[index - 1] : ''; }
@@ -1343,7 +1350,6 @@ function saveInvestmentEstimateRules_(rules, sheetName) {
 
 function readInvestmentEstimateLedger_(sheetName) {
   const sheet = getOrCreateSheet_(sheetName || DEFAULT_INVESTMENT_ESTIMATE_LEDGER_SHEET, investmentEstimateLedgerHeaders_());
-  resetSheetHeaders_(sheet, investmentEstimateLedgerHeaders_());
   const values = sheet.getDataRange().getValues();
   const col = ledgerColumnMap_(sheet);
   return values.slice(1).map(function(row, index) {
@@ -1818,6 +1824,8 @@ function updateInvestmentQuotesFromYahooOptimized_(sheetName) {
   const quotes = getYahooQuotes_(tickers);
   const prices = [];
   const previous = [];
+  const pendingPrices = {};
+  const pendingPrevious = {};
 
   rowsToUpdate.forEach(({ row, rowNumber }) => {
     const ticker = String(row[col.data - 1] || '').trim();
@@ -1829,15 +1837,20 @@ function updateInvestmentQuotesFromYahooOptimized_(sheetName) {
 
     if (Number.isFinite(priceEur)) {
       // Yahoo solo actualiza PRICE. No se escribe VALUE: esa columna queda para fórmulas de Sheets.
-      sheet.getRange(rowNumber, col.valor).setValue(priceEur);
+      pendingPrices[rowNumber] = priceEur;
       prices.push({ row: rowNumber, ticker, price: priceEur, currency: sourceCurrency, yahooCurrency: quote.currency });
     }
     if (Number.isFinite(previousEur) && col.valorAnterior) {
       // Yahoo solo actualiza LAST PRICE. No se recalculan VALUE/VARIATION aquí.
-      sheet.getRange(rowNumber, col.valorAnterior).setValue(previousEur);
+      pendingPrevious[rowNumber] = previousEur;
       previous.push({ row: rowNumber, ticker, previousClose: previousEur, currency: sourceCurrency, yahooCurrency: quote.currency });
     }
   });
+
+  // Una escritura por columna en vez de dos por fila: con N posiciones eran 2N
+  // llamadas a la API. Las filas sin cotización conservan su valor actual.
+  writeColumnUpdates_(sheet, col.valor, 2, rowCount, pendingPrices, values, col.valor);
+  if (col.valorAnterior) writeColumnUpdates_(sheet, col.valorAnterior, 2, rowCount, pendingPrevious, values, col.valorAnterior);
 
   updateCurrencyHelperRow_(sheet, col, rates);
   // Los tickers que no se pudieron consultar viajan en la respuesta para que la app
@@ -1987,12 +2000,30 @@ function convertQuotePriceToEur_(price, currency, rates) {
   return value;
 }
 
+// Escribe de una vez una columna entera, conservando el valor actual de las filas que
+// no traen actualización.
+function writeColumnUpdates_(sheet, column, firstRow, rowCount, updatesByRow, currentValues, currentColumn) {
+  if (!column || !rowCount) return;
+  const keys = Object.keys(updatesByRow);
+  if (!keys.length) return;
+  const out = [];
+  for (let i = 0; i < rowCount; i++) {
+    const rowNumber = firstRow + i;
+    const current = currentValues[i] ? currentValues[i][currentColumn - 1] : '';
+    out.push([Object.prototype.hasOwnProperty.call(updatesByRow, rowNumber) ? updatesByRow[rowNumber] : current]);
+  }
+  setRangeValuesSafe_(sheet.getRange(firstRow, column, rowCount, 1), out);
+}
+
 function updateCurrencyHelperRow_(sheet, col, rates) {
-  const lastRow = sheet.getLastRow();
-  for (let row = 2; row <= Math.min(lastRow, 10); row++) {
-    const ticker = String(sheet.getRange(row, col.data).getValue() || '').trim();
+  const lastRow = Math.min(sheet.getLastRow(), 10);
+  if (lastRow < 2) return;
+  // Una lectura de rango en vez de hasta nueve getValue de una celda cada uno.
+  const tickers = sheet.getRange(2, col.data, lastRow - 1, 1).getValues();
+  for (let i = 0; i < tickers.length; i++) {
+    const ticker = String(tickers[i][0] || '').trim();
     if (ticker === 'EUR-USD' || ticker === 'EUR/USD') {
-      sheet.getRange(row, col.valor).setValue(Number(rates.eurUsd || 0));
+      setCellValueSafe_(sheet.getRange(i + 2, col.valor), Number(rates.eurUsd || 0));
       return;
     }
   }
@@ -2329,7 +2360,6 @@ function syncInvestmentTotalsSheet_(totalsSheetName, investmentSheetName, moveme
     return [type, cost, value, previous, daily, previous ? daily / previous : 0, gain, cost ? gain / cost : 0, Number.isFinite(old.order) ? old.order : idx + 1];
   }).sort((a, b) => Number(a[8] || 0) - Number(b[8] || 0));
   writeInvestmentTotalsRows_(totalsSheet, rows);
-  return readInvestmentTotals_(totalsSheetName || DEFAULT_INVESTMENT_TOTALS_SHEET);
 }
 
 // Totales para las DESCARGAS. syncInvestmentTotalsSheet_ no es una lectura: reescribe la
@@ -2343,7 +2373,10 @@ function investmentTotalsForRead_(totalsSheetName, investmentSheetName, movement
   const name = totalsSheetName || DEFAULT_INVESTMENT_TOTALS_SHEET;
   const sheet = getSheet_(name);
   if (sheet && sheet.getLastRow() >= 2) return readInvestmentTotals_(name);
-  return syncInvestmentTotalsSheet_(name, investmentSheetName, movementSheetName);
+  // Solo aquí hace falta releer: los otros doce llamantes de la sincronización
+  // descartaban este resultado, que era una lectura completa de la hoja por mutación.
+  syncInvestmentTotalsSheet_(name, investmentSheetName, movementSheetName);
+  return readInvestmentTotals_(name);
 }
 
 function readInvestmentTotals_(sheetName) {
@@ -2371,24 +2404,55 @@ function isInvestmentMovement_(movement) {
   return Boolean(movement) && normalizeType_(movement.tipo) === 'inversion';
 }
 
-function adjustInvestmentCostFromMovement_(totalsSheetName, investmentSheetName, movementSheetName, movement, sign) {
+// Aplica los cambios de coste de VARIOS movimientos de una vez.
+//
+// Antes esto era una función por movimiento que, para cada uno, releía las categorías
+// (dos lecturas completas), reescribía la hoja de totales entera vía
+// syncInvestmentTotalsSheet_ (dos lecturas más y una escritura), volvía a leer los
+// totales y escribía una celda. Y se llamaba dentro de bucles: mover M futuros
+// vencidos costaba M veces todo eso. Ahora es una sincronización, una lectura y una
+// escritura para todo el lote.
+//
+// Los deltas se aplican EN ORDEN y con el mismo corte en cero por movimiento que antes,
+// para no cambiar el resultado cuando un descuento deja el coste por debajo de cero.
+function applyInvestmentCostChanges_(sheets, changes, movementSheetName) {
   if (normalizeType_(movementSheetName || '').indexOf('futuro') !== -1) return;
-  const categories = readInvestmentCategoriesForTotals_(totalsSheetName || DEFAULT_INVESTMENT_TOTALS_SHEET, investmentSheetName || DEFAULT_INVESTMENT_SHEET);
-  const category = movementInvestmentCategory_(movement, categories);
-  if (!category) return;
-  const amount = Math.abs(parseNumber_(movement && (movement.importe ?? movement.amount)));
-  if (!Number.isFinite(amount) || amount <= 0) return;
-  syncInvestmentTotalsSheet_(totalsSheetName || DEFAULT_INVESTMENT_TOTALS_SHEET, investmentSheetName || DEFAULT_INVESTMENT_SHEET, movementSheetName || DEFAULT_MOVEMENT_SHEET);
-  const sheet = getSheet_(totalsSheetName || DEFAULT_INVESTMENT_TOTALS_SHEET);
-  if (!sheet) return;
-  const values = sheet.getRange(2, 1, Math.max(0, sheet.getLastRow() - 1), 2).getValues();
-  for (let i = 0; i < values.length; i++) {
-    if (normalizeType_(values[i][0]) === normalizeType_(category)) {
-      const current = parseNumber_(values[i][1]);
-      sheet.getRange(i + 2, 2).setValue(Math.max(0, (Number.isFinite(current) ? current : 0) + sign * amount));
-      return;
-    }
-  }
+  const list = (changes || []).filter(function(change) { return change && change.movement; });
+  if (!list.length) return;
+
+  const categories = readInvestmentCategoriesForTotals_(sheets.investmentTotals, sheets.investment);
+  const entries = [];
+  list.forEach(function(change) {
+    const category = movementInvestmentCategory_(change.movement, categories);
+    if (!category) return;
+    const amount = Math.abs(parseNumber_(change.movement.importe ?? change.movement.amount));
+    if (!Number.isFinite(amount) || amount <= 0) return;
+    entries.push({ category: category, delta: change.sign * amount });
+  });
+  if (!entries.length) return;
+
+  syncInvestmentTotalsSheet_(sheets.investmentTotals, sheets.investment, sheets.movement);
+  const sheet = getSheet_(sheets.investmentTotals);
+  if (!sheet || sheet.getLastRow() < 2) return;
+  const values = sheet.getRange(2, 1, sheet.getLastRow() - 1, 2).getValues();
+  let touched = false;
+  entries.forEach(function(entry) {
+    const row = values.find(function(candidate) { return normalizeType_(candidate[0]) === normalizeType_(entry.category); });
+    if (!row) return;
+    const current = parseNumber_(row[1]);
+    row[1] = Math.max(0, (Number.isFinite(current) ? current : 0) + entry.delta);
+    touched = true;
+  });
+  if (!touched) return;
+  setRangeValuesSafe_(sheet.getRange(2, 2, values.length, 1), values.map(function(row) { return [row[1]]; }));
+}
+
+function adjustInvestmentCostFromMovement_(totalsSheetName, investmentSheetName, movementSheetName, movement, sign) {
+  applyInvestmentCostChanges_(
+    { investmentTotals: totalsSheetName || DEFAULT_INVESTMENT_TOTALS_SHEET, investment: investmentSheetName || DEFAULT_INVESTMENT_SHEET, movement: movementSheetName || DEFAULT_MOVEMENT_SHEET },
+    [{ movement: movement, sign: sign }],
+    movementSheetName
+  );
 }
 
 function readCategories_(sheetName) {

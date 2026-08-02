@@ -140,3 +140,31 @@ test("varios futuros de inversión vencidos acumulan su coste al moverse", () =>
   assert.equal(costeDe(gs, "Bolsa"), 300, "100 + 200");
   assert.equal(costeDe(gs, "Fondos"), 125, "50 + 75");
 });
+
+// writeColumnUpdates_ sustituye a dos setValue por fila en la actualización de
+// cotizaciones. Lo importante es que una fila sin cotización nueva conserve su valor:
+// escribir la columna entera de golpe la habría machacado con un hueco.
+test("writeColumnUpdates_ actualiza solo las filas con dato nuevo y respeta el resto", () => {
+  const gs = loadAppsScript();
+  const hoja = gs.__spreadsheet.addSheet("Cotizaciones", [
+    ["TICKER", "PRECIO"],
+    ["IWDA", 100],
+    ["EUNL", 200],
+    ["VWCE", 300]
+  ]);
+
+  // Solo llegan precios para las filas 2 y 4.
+  gs.writeColumnUpdates_(hoja, 2, 2, 3, { 2: 111, 4: 333 }, hoja.getRange(2, 1, 3, 2).getValues(), 2);
+
+  assert.deepEqual(hoja.getRange(2, 2, 3, 1).getValues().map(r => r[0]), [111, 200, 333],
+    "la fila sin cotización mantiene su precio anterior");
+});
+
+test("writeColumnUpdates_ no escribe nada si no hay ninguna actualización", () => {
+  const gs = loadAppsScript();
+  const hoja = gs.__spreadsheet.addSheet("Cotizaciones", [["TICKER", "PRECIO"], ["IWDA", 100]]);
+
+  gs.writeColumnUpdates_(hoja, 2, 2, 1, {}, hoja.getRange(2, 1, 1, 2).getValues(), 2);
+
+  assert.equal(hoja.getRange(2, 2).getValue(), 100);
+});
