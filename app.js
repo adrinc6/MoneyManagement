@@ -1,4 +1,3 @@
-const ENABLE_TEST_MODE = false;
 const INVESTMENT_DEBUG_PREFIX = "[MM-INV]";
 // Traza de depuración de inversión. Silenciada por defecto en producción; se activa
 // desde la consola con `localStorage.setItem("moneyDebug","1")` o `window.MONEY_DEBUG = true`.
@@ -21,7 +20,7 @@ function notifyGlobalError(message, detail) {
   const now = Date.now();
   if (message === lastGlobalErrorNotice.message && now - lastGlobalErrorNotice.at < 4000) return;
   lastGlobalErrorNotice = { message, at: now };
-  if (typeof logSyncEvent === "function") logSyncEvent(message, "warn", String(detail?.message || detail || ""));
+  logSyncEvent(message, "warn", String(detail?.message || detail || ""));
   setNotice("Ha ocurrido un error inesperado. Revisa Ajustes > Sync si se repite.", "warn");
 }
 
@@ -41,11 +40,11 @@ window.addEventListener("unhandledrejection", event => {
 
 window.addEventListener("offline", () => {
   setNotice("Sin conexión. Los cambios se guardan en cola y se enviarán al volver.", "warn", 3200);
-  if (typeof logSyncEvent === "function") logSyncEvent("Sin conexión", "warn");
+  logSyncEvent("Sin conexión", "warn");
 });
 window.addEventListener("online", () => {
   setNotice("Conexión recuperada.", "ok");
-  if (typeof logSyncEvent === "function") logSyncEvent("Conexión recuperada", "ok");
+  logSyncEvent("Conexión recuperada", "ok");
 });
 
 const DEFAULT_CONFIG = {
@@ -119,7 +118,7 @@ function safeSetItem(key, value) {
       return true;
     } catch (secondErr) {
       console.warn(`safeSetItem: no se pudo guardar ${key}`, secondErr || firstErr);
-      if (!storageFullNotified && typeof setNotice === "function") {
+      if (!storageFullNotified) {
         storageFullNotified = true;
         setNotice("Almacenamiento local lleno: algunos cambios podrían no conservarse sin conexión.", "warn");
       }
@@ -133,22 +132,6 @@ const CACHE_SECTION_KEYS = ["transactions", "futureTransactions", "investments",
 // El servidor lo limita a 1000. Cuantas menos páginas, menos veces se re-escanea la
 // columna SID de la hoja entera (readMovementsPage_ la asegura en cada petición).
 const MOVEMENT_PAGE_SIZE = 1000;
-
-const TEST_TRANSACTIONS = ENABLE_TEST_MODE ? [
-  ["2026-05-10", "Ingreso", "Otros", "Nomina", 2100],
-  ["2026-05-12", "Gasto", "Supermercado", "Compra", -83.4],
-  ["2026-05-25", "Retiro", "Otros", "Cajero", -120],
-  ["2026-06-03", "Gasto", "Comida", "Menu", -14.5],
-  ["2026-06-10", "Ingreso", "Otros", "Nomina", 2100],
-  ["2026-06-11", "Gasto", "Ocio", "Libro", -19.99],
-  ["2026-06-16", "Inversión", "Inversión", "Cartera", -400]
-].map(row => normalizeTransaction({ fecha: row[0], tipo: row[1], concepto: row[2], descripcion: row[3], importe: row[4] })) : [];
-
-const TEST_INVESTMENTS = ENABLE_TEST_MODE ? [
-  { rowNumber: 10, data: "IWDA", nombre: "ETF MSCI World", shortName: "IWDA", tipo: "Cartera", cantidad: 23, valor: 89.4, total: 2056.2 },
-  { rowNumber: 11, data: "EUNL", nombre: "ETF Core", shortName: "EUNL", tipo: "Bolsa", cantidad: 8, valor: 102.2, total: 817.6 },
-  { rowNumber: 12, data: "Fondo Global", nombre: "Fondo indexado", shortName: "Fondo", tipo: "Fondos", cantidad: 1, valor: 3240, total: 3240 }
-] : [];
 
 const state = {
   config: loadConfig(),
@@ -427,8 +410,6 @@ function refreshActiveViewData() {
     force: true,
     manualRefresh: true,
     showProgress: true,
-    userRefresh: true,
-    cacheOnly: true,
     scope,
     successMessage: successByScope[scope] || "Vista actualizada desde Sheets."
   });
@@ -822,11 +803,7 @@ function safeRender(label, fn) {
   try {
     fn();
   } catch (error) {
-    if (typeof notifyGlobalError === "function") {
-      notifyGlobalError(`No se pudo renderizar: ${label}`, error);
-    } else {
-      console.error(`No se pudo renderizar: ${label}`, error);
-    }
+    notifyGlobalError(`No se pudo renderizar: ${label}`, error);
   }
 }
 
@@ -874,6 +851,21 @@ function syncedSectionsFromData(data = {}) {
   return sections;
 }
 
+// Texto del aviso de carga. Un refresco pedido por el usuario dice "Descargando ...
+// desde Sheets"; el resto (guardar configuración, refresco tras confirmar una
+// operación) dice "Actualizando ...". Un scope sin entrada cae en el texto genérico.
+const DOWNLOAD_TEXT_BY_SCOPE = {
+  all: "Descargando todo desde Sheets...",
+  movements: "Descargando solo movimientos desde Sheets...",
+  investments: "Descargando solo inversiones desde Sheets...",
+  summary: "Descargando datos de resumen desde Sheets..."
+};
+const UPDATE_TEXT_BY_SCOPE = {
+  movements: "Actualizando solo movimientos...",
+  investments: "Actualizando solo inversiones...",
+  summary: "Actualizando resumen por secciones..."
+};
+
 // Evita descargas simultáneas: dos refresh a la vez aplicaban snapshots y escribían
 // la caché entrelazados, y el primero en terminar apagaba el indicador de carga
 // mientras el otro seguía descargando.
@@ -884,8 +876,7 @@ function syncedSectionsFromData(data = {}) {
 let refreshInFlight = null;
 
 function refreshData(options = {}) {
-  const mustRunOnItsOwn = Boolean(options.force || options.manualRefresh || options.userRefresh
-    || options.updateInvestments || options.sendNotifications);
+  const mustRunOnItsOwn = Boolean(options.force || options.updateInvestments);
   const start = () => {
     const run = refreshDataImpl(options).finally(() => {
       if (refreshInFlight === run) refreshInFlight = null;
@@ -906,16 +897,13 @@ function refreshData(options = {}) {
 async function refreshDataImpl(options = {}) {
   const force = Boolean(options.force);
   const updateInvestments = Boolean(options.updateInvestments);
-  const sendNotifications = Boolean(options.sendNotifications);
-  const scope = options.scope || (updateInvestments || sendNotifications ? "investments" : "all");
+  const scope = options.scope || (updateInvestments ? "investments" : "all");
   const isFullDownload = scope === "all";
-  const showProgress = Boolean(options.showProgress || force || updateInvestments || sendNotifications);
+  const showProgress = Boolean(options.showProgress || force || updateInvestments);
   const requestedSections = cacheSectionsForScope(scope);
   const manualRefresh = Boolean(options.manualRefresh);
-  const userRefresh = Boolean(options.userRefresh);
-  const forceRequestedSections = force || manualRefresh;
   setRefreshLoading(true);
-  syncStatusStep(showProgress, refreshStartStatus({ scope, updateInvestments, sendNotifications }), "");
+  syncStatusStep(showProgress, refreshStartStatus({ scope, updateInvestments }), "");
 
   const cached = readDataCache();
   if (cached) {
@@ -923,7 +911,7 @@ async function refreshDataImpl(options = {}) {
     applyDataSnapshot(cached.data);
     syncOptions();
     renderDataScope(scope);
-    if (cacheIsStale(cached) && !force && !updateInvestments && !sendNotifications) {
+    if (cacheIsStale(cached) && !force && !updateInvestments) {
       setNotice(staleCacheMessage(cached), "warn");
     }
   }
@@ -932,7 +920,7 @@ async function refreshDataImpl(options = {}) {
   const dueFutureMovementsFromCache = findDueFutureMovements(cached?.data?.futureTransactions || state.futureTransactions || []);
   const shouldMoveDueFutureMovements = Boolean(scope !== "investments" && scope !== "banks" && dueFutureMovementsFromCache.length);
 
-  if (cached && options.cacheOnly && !force && !updateInvestments && !sendNotifications && !shouldMoveDueFutureMovements) {
+  if (cached && options.cacheOnly && !force && !updateInvestments && !shouldMoveDueFutureMovements) {
     setNotice(
       cacheIsStale(cached)
         ? staleCacheMessage(cached)
@@ -957,37 +945,13 @@ async function refreshDataImpl(options = {}) {
     return true;
   }
 
-  const loadingText = sendNotifications
-    ? "Enviando notificaciones..."
-    : updateInvestments
-      ? "Actualizando precios y solo inversiones..."
-      : manualRefresh && scope === "all"
-        ? "Descargando todo desde Sheets..."
-        : manualRefresh && scope === "movements"
-          ? "Descargando solo movimientos desde Sheets..."
-          : manualRefresh && scope === "investments"
-            ? "Descargando solo inversiones desde Sheets..."
-            : manualRefresh && scope === "summary"
-              ? "Descargando datos de resumen desde Sheets..."
-              : userRefresh && scope === "all"
-                ? "Comprobando cambios rápidos..."
-                : userRefresh && scope === "movements"
-                  ? "Comprobando movimientos..."
-                  : userRefresh && scope === "investments"
-                    ? "Comprobando inversiones..."
-                    : userRefresh && scope === "summary"
-                      ? "Comprobando resumen..."
-              : scope === "movements"
-                ? "Actualizando solo movimientos..."
-                : scope === "investments"
-                  ? "Actualizando solo inversiones..."
-                  : scope === "summary"
-                    ? "Actualizando resumen por secciones..."
-                    : "Actualizando datos por secciones...";
-  if (force || userRefresh || !cached || shouldMoveDueFutureMovements) setNotice(loadingText, "");
-  logSyncEvent(refreshStartStatus({ scope, updateInvestments, sendNotifications }).replace(/\n/g, " · "), "");
+  const loadingText = updateInvestments
+    ? "Actualizando precios y solo inversiones..."
+    : (manualRefresh && DOWNLOAD_TEXT_BY_SCOPE[scope]) || UPDATE_TEXT_BY_SCOPE[scope] || "Actualizando datos por secciones...";
+  if (force || !cached || shouldMoveDueFutureMovements) setNotice(loadingText, "");
+  logSyncEvent(refreshStartStatus({ scope, updateInvestments }).replace(/\n/g, " · "), "");
 
-  if (!ENABLE_TEST_MODE && !state.config.scriptUrl) {
+  if (!state.config.scriptUrl) {
     syncOptions();
     renderDataScope(scope);
     setNotice("Configura la URL de Apps Script en Ajustes para sincronizar con Google Sheets.", "warn");
@@ -1009,15 +973,15 @@ async function refreshDataImpl(options = {}) {
     const opQueueBusy = readOpQueue().some(op => op.status !== "done" && op.status !== "error");
     const skipDirty = section => {
       if (!cachedSectionIsDirty(cached, section)) return false;
-      if (forceRequestedSections && !opQueueBusy) return false;
+      if (force && !opQueueBusy) return false;
       return true;
     };
-    let neededSections = updateInvestments || sendNotifications
+    let neededSections = updateInvestments
       ? ["investments", "investmentTotals", "investmentEstimateRules", "investmentEstimateLedger", "investmentGoals"]
-      : !cached || forceRequestedSections
+      : !cached || force
         ? requestedSections.filter(section => !skipDirty(section))
         : [];
-    if (forceRequestedSections && opQueueBusy && requestedSections.some(section => cachedSectionIsDirty(cached, section))) {
+    if (force && opQueueBusy && requestedSections.some(section => cachedSectionIsDirty(cached, section))) {
       setNotice("Hay cambios pendientes de confirmar: se conserva la caché local de esas secciones hasta que se envíen.", "warn");
     }
 
@@ -1029,13 +993,13 @@ async function refreshDataImpl(options = {}) {
     }
 
     if (shouldMoveDueFutureMovements) {
-      neededSections = forceRequestedSections
+      neededSections = force
         ? unique([...neededSections, "transactions", "futureTransactions", "banks"])
         : unique([...neededSections, "banks", "investmentTotals"]);
       setNotice(`Hay ${dueFutureMovementsFromCache.length} movimiento(s) futuro(s) vencido(s). Los muevo y actualizo lo necesario...`, "warn");
     }
 
-    if (cached && neededSections.length && !forceRequestedSections && !updateInvestments && !sendNotifications && !shouldMoveDueFutureMovements) {
+    if (cached && neededSections.length && !force && !updateInvestments && !shouldMoveDueFutureMovements) {
       const changedLabels = neededSections.map(formatCacheSectionName).join(", ");
       syncOptions();
       renderDataScope(scope);
@@ -1050,26 +1014,7 @@ async function refreshDataImpl(options = {}) {
       return true;
     }
 
-    if (ENABLE_TEST_MODE) {
-      syncStatusStep(showProgress, "Modo prueba\nPreparando datos locales", "");
-      freshData = {
-        transactions: [...TEST_TRANSACTIONS],
-        futureTransactions: [],
-        investments: [...TEST_INVESTMENTS],
-        investmentGoals: state.investmentGoals,
-        investmentTotals: [],
-        banks: [
-          { rowNumber: 2, cuenta: "Santander-Cuenta", dinero: 2400 },
-          { rowNumber: 3, cuenta: "Revolut-Ahorro", dinero: 1300 }
-        ],
-        categories: { types: STATIC_TYPES, concepts: STATIC_CONCEPTS, investmentTypes: INVESTMENT_TYPES }
-      };
-      syncedSections = [...CACHE_SECTION_KEYS];
-    } else if (sendNotifications) {
-      syncStatusStep(showProgress, "Enviando notificaciones", "");
-      const payload = await fetchAppsScriptData({ action: "sendDailyNotifications" });
-      assertPayloadOk(payload);
-    } else if (!neededSections.length && cached) {
+    if (!neededSections.length && cached) {
       syncOptions();
       renderDataScope(scope);
       setNotice(options.successMessage || `Datos cargados desde caché (${formatCacheAge(cacheAgeMs(cached))}).`, cacheIsStale(cached) ? "warn" : "ok");
@@ -1084,7 +1029,7 @@ async function refreshDataImpl(options = {}) {
       const onlyInvestments = neededSections.every(section => ["investments", "investmentTotals", "investmentEstimateRules", "investmentEstimateLedger", "investmentGoals", "categories"].includes(section));
 
       if (updateInvestments || (onlyInvestments && !needsMovements)) {
-        syncStatusStep(showProgress, investmentRequestStatus({ updateInvestments, sendNotifications }), "");
+        syncStatusStep(showProgress, investmentRequestStatus({ updateInvestments }), "");
         const payload = await fetchDownloadData({ updateInvestments, scope: "investments" }, { label: "inversiones", showProgress });
         assertPayloadOk(payload);
         freshData = {
@@ -1181,9 +1126,7 @@ async function refreshDataImpl(options = {}) {
     syncOptions();
     renderDataScope(scope);
     writeDataCache({ syncedSections });
-    const defaultSuccess = sendNotifications
-      ? "Notificaciones enviadas."
-      : updateInvestments
+    const defaultSuccess = updateInvestments
         ? "Precios actualizados y caché de inversiones renovada."
         : scope === "movements"
           ? "Movimientos actualizados por bloques."
@@ -1228,8 +1171,7 @@ async function refreshDataImpl(options = {}) {
   }
 }
 
-function refreshStartStatus({ scope, updateInvestments, sendNotifications } = {}) {
-  if (sendNotifications) return "Preparando notificaciones\nSin descargar datos";
+function refreshStartStatus({ scope, updateInvestments } = {}) {
   if (updateInvestments) return "Preparando precios\nSolo inversiones";
   if (scope === "investments") return "Preparando inversiones";
   if (scope === "movements") return "Preparando movimientos";
@@ -1238,8 +1180,7 @@ function refreshStartStatus({ scope, updateInvestments, sendNotifications } = {}
   return "Preparando actualización";
 }
 
-function investmentRequestStatus({ updateInvestments, sendNotifications } = {}) {
-  if (sendNotifications) return "Enviando notificaciones";
+function investmentRequestStatus({ updateInvestments } = {}) {
   if (updateInvestments) return "Actualizando precios\nDescargando inversiones";
   return "Descargando inversiones\nObjetivos";
 }
@@ -1605,10 +1546,10 @@ function warnCacheQuota(recovered) {
   if (now - quotaWarningAt < 60000) return;
   quotaWarningAt = now;
   if (recovered) {
-    if (typeof logSyncEvent === "function") logSyncEvent("Caché local llena: se guardó una versión reducida (histórico antiguo se recargará al sincronizar).", "warn");
+    logSyncEvent("Caché local llena: se guardó una versión reducida (histórico antiguo se recargará al sincronizar).", "warn");
     setNotice("Caché local casi llena: se guardó una versión reducida. Los datos siguen a salvo en Sheets.", "warn", 3600);
   } else {
-    if (typeof logSyncEvent === "function") logSyncEvent("Caché local llena: no se pudo guardar copia local; se descargará desde Sheets al abrir.", "warn");
+    logSyncEvent("Caché local llena: no se pudo guardar copia local; se descargará desde Sheets al abrir.", "warn");
     setNotice("No se pudo guardar la caché local (almacenamiento lleno). La app funcionará descargando desde Sheets.", "warn", 3600);
   }
 }
@@ -1732,7 +1673,7 @@ function readOpQueue() {
       opQueueCorruptNotified = true;
       safeSetItem(`${OP_QUEUE_KEY}.corrupt`, String(raw || ""));
       logSyncEvent("Cola de operaciones corrupta; se guardó una copia y se vació.", "warn");
-      if (typeof setNotice === "function") setNotice("La cola de cambios pendientes estaba corrupta y se ha vaciado. Revisa que tus últimos cambios estén en Sheets.", "warn");
+      setNotice("La cola de cambios pendientes estaba corrupta y se ha vaciado. Revisa que tus últimos cambios estén en Sheets.", "warn");
     }
     return [];
   }
@@ -2666,13 +2607,11 @@ async function resolveDueFutureMovementsToMove(dueMovements) {
 async function fetchAppsScriptData(options = {}) {
   if (!state.config.scriptUrl) throw new Error("falta la URL de Apps Script");
   if (navigator.onLine === false) throw new Error("Sin conexión");
-  const action = options.action || (options.sendNotifications
-    ? "sendDailyNotifications"
-    : options.updateInvestments
-      ? "updateInvestmentPrices"
-      : options.scope === "investments"
-        ? "downloadInvestments"
-        : "downloadData");
+  const action = options.action || (options.updateInvestments
+    ? "updateInvestmentPrices"
+    : options.scope === "investments"
+      ? "downloadInvestments"
+      : "downloadData");
   const params = new URLSearchParams({
     action,
     token: state.config.appToken,
@@ -2813,7 +2752,7 @@ function syncRegistrarMode() {
     : `<i data-lucide="save"></i> Guardar registro`;
   document.getElementById("submitMovement").innerHTML = submitLabel;
   syncRegistrarActionButton();
-  if (typeof syncRegisterMode === "function") syncRegisterMode();
+  syncRegisterMode();
   refreshIcons();
 }
 
@@ -3783,7 +3722,7 @@ function setInvestmentPanelFromClick(event) {
   if (!btn) return;
   state.summaryModes.investmentPanel = btn.dataset.investmentPanel;
   renderInvestments();
-  requestAnimationFrame(() => fitInvestmentTables?.());
+  requestAnimationFrame(() => fitInvestmentTables());
 }
 
 function renderInvestmentEditTable() {
@@ -3871,7 +3810,7 @@ function debounce(fn, wait = 100) {
   };
 }
 
-const refitInvestmentTablesOnViewportChange = debounce(() => fitInvestmentTables?.(), 150);
+const refitInvestmentTablesOnViewportChange = debounce(() => fitInvestmentTables(), 150);
 window.addEventListener("resize", refitInvestmentTablesOnViewportChange);
 window.addEventListener("orientationchange", refitInvestmentTablesOnViewportChange);
 
@@ -6108,7 +6047,6 @@ function enqueueInvestmentAllocationPrompts(movements = [], options = {}) {
   });
   if (!prompts.length) return 0;
   state.pendingInvestmentAllocationPrompts.push(...prompts);
-  if (options.openNow) processPendingInvestmentAllocationPrompts();
   return prompts.length;
 }
 
@@ -6117,7 +6055,7 @@ function openInvestmentAllocationForRegistration(movements = [], options = {}) {
     movementCount: movements.length,
     options
   });
-  const promptCount = enqueueInvestmentAllocationPrompts(movements, { ...options, openNow: false });
+  const promptCount = enqueueInvestmentAllocationPrompts(movements, options);
   if (!promptCount) {
     investmentDebug("sin prompts para abrir", {});
     return false;
