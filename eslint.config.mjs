@@ -9,33 +9,18 @@ const browserGlobals = {
   document: "readonly",
   localStorage: "readonly",
   navigator: "readonly",
-  location: "readonly",
   fetch: "readonly",
-  Response: "readonly",
-  Request: "readonly",
   AbortController: "readonly",
   URL: "readonly",
   URLSearchParams: "readonly",
   Blob: "readonly",
-  FormData: "readonly",
-  Image: "readonly",
   console: "readonly",
   crypto: "readonly",
-  atob: "readonly",
-  btoa: "readonly",
   alert: "readonly",
-  confirm: "readonly",
   requestAnimationFrame: "readonly",
-  cancelAnimationFrame: "readonly",
   setTimeout: "readonly",
   clearTimeout: "readonly",
   setInterval: "readonly",
-  clearInterval: "readonly",
-  queueMicrotask: "readonly",
-  CustomEvent: "readonly",
-  Event: "readonly",
-  MutationObserver: "readonly",
-  ResizeObserver: "readonly",
   getComputedStyle: "readonly",
   Intl: "readonly",
   Chart: "readonly",
@@ -47,7 +32,6 @@ const serviceWorkerGlobals = {
   caches: "readonly",
   fetch: "readonly",
   Response: "readonly",
-  Request: "readonly",
   URL: "readonly",
   clients: "readonly",
   console: "readonly",
@@ -85,8 +69,35 @@ export default [
     }
   },
   {
-    // El backend de Apps Script se comprueba con scripts/check-gs.mjs: sus globals
-    // (SpreadsheetApp, UrlFetchApp, ...) no existen fuera del entorno de Google.
-    ignores: ["apps-script.gs"]
+    // El backend de Apps Script también se lintea: `node --check` (y vm.Script en
+    // scripts/check-gs.mjs) solo ven errores de sintaxis, así que una referencia a
+    // una variable inexistente —por ejemplo tras quitar un parámetro sin limpiar su
+    // uso— compilaba igual y reventaba en producción. no-undef sí lo caza; para eso
+    // hay que declarar los globals del entorno de Google.
+    files: ["apps-script.gs"],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: "script",
+      globals: {
+        SpreadsheetApp: "readonly",
+        PropertiesService: "readonly",
+        LockService: "readonly",
+        Utilities: "readonly",
+        ContentService: "readonly",
+        UrlFetchApp: "readonly",
+        ScriptApp: "readonly",
+        Session: "readonly",
+        Logger: "readonly",
+        console: "readonly"
+      }
+    },
+    rules: {
+      // Aviso, no error: las funciones sin llamante interno son justo los entry points
+      // de Apps Script (doGet, doPost, el handler del disparador diario y los dos
+      // utilidades que se ejecutan a mano desde el editor). Si aparece una sexta,
+      // es código muerto.
+      "no-unused-vars": ["warn", { args: "none", caughtErrors: "none" }],
+      "no-empty": "off"
+    }
   }
 ];

@@ -62,7 +62,6 @@ MoneyManagement permite:
 - Configuración de Apps Script.
 - Configuración del ID de Google Sheet.
 - Nombres de las hojas de movimientos, futuros, inversiones, bancos y datos.
-- Selector de modo de lectura.
 
 ## Funcionalidades actuales
 
@@ -75,7 +74,6 @@ MoneyManagement permite:
 - Cache local con copia completa de los datos.
 - Cola de cambios pendientes para inversiones y bancos.
 - Sincronización con Sheets sin descargar más de lo necesario cuando no hace falta.
-- Soporte para lectura desde Apps Script o CSV público.
 
 ## Temas y colores
 
@@ -158,17 +156,21 @@ El archivo `apps-script.gs` actúa como puente con Google Sheets:
 - guarda movimientos nuevos;
 - actualiza y borra movimientos;
 - guarda bancos;
-- guarda inversiones;
-- guarda objetivos.
+- guarda objetivos;
+- actualiza cotizaciones desde Yahoo;
+- manda el aviso diario de inversión por Telegram.
 
-## Modo lectura
+## Aviso diario por Telegram (opcional)
 
-Hay dos opciones:
+El backend puede mandarte un resumen diario de la variación de tus inversiones.
 
-- `Apps Script`: recomendado para leer y escribir.
-- `CSV público`: útil solo para lectura.
+1. En `apps-script.gs`, rellena `TELEGRAM_BOT_TOKEN` y `TELEGRAM_CHAT_ID`.
+   Para saber tu chat id, escribe a tu bot y ejecuta `getTelegramChatId` desde el
+   editor de Apps Script: deja el id en el registro.
+2. Ejecuta `setupDailyMoneyManagementNotifications` una vez desde el editor. Crea
+   un disparador diario a la hora de `DAILY_NOTIFICATION_HOUR` (por defecto, las 22).
 
-En modo CSV público no podrás guardar cambios en la hoja.
+Si dejas el token vacío, no se manda nada y el resto de la app funciona igual.
 
 ## Configuración rápida
 
@@ -210,6 +212,9 @@ En `Ajustes > Conexión`, sobre la lista de envíos correctos del día, hay un b
 ## Robustez
 
 - El endpoint exige token: sin `APP_TOKEN` configurado no se sirve ninguna petición.
+- Una sola vía de escritura: todo cambio pasa por la cola de operaciones y viaja por POST
+  con su `clientOpId`, que es lo que hace que un reenvío no se aplique dos veces. `doGet`
+  solo lee (más mover futuros vencidos, actualizar precios y mandar el aviso diario).
 - Las mutaciones que llegan por GET (mover futuros vencidos, inversiones, precios) se serializan con el script lock: dos pestañas a la vez ya no duplican movimientos ni aplican dos veces los ajustes de saldo.
 - Un choque transitorio con el bloqueo se reintenta solo en vez de detener la operación con un error definitivo.
 - Las transferencias periódicas no escriben en `CUENTA`: el par de cuentas viaja en `DESCRIPCION`, de donde ya lo leen tanto la app como el backend. Así un desplegable de validación en esa columna no puede rechazarlas (era la causa de que no llegaran a guardarse nunca).
@@ -232,10 +237,10 @@ Requisitos: Node 18+.
 
 ```bash
 npm install     # dependencias de desarrollo (ESLint)
-npm run check   # comprobación de sintaxis de app.js y sw.js
+npm run check   # comprobación de sintaxis de app.js, sw.js y apps-script.gs
 npm test        # tests de las funciones de cálculo (node --test)
-npm run lint    # ESLint sobre los archivos nuevos
-npm run verify  # check + test
+npm run lint    # ESLint sobre app.js, sw.js, apps-script.gs, tests y scripts
+npm run verify  # check + check:versions + test
 ```
 
 Los tests cargan el `app.js` real en un contexto aislado (`node:vm`) y verifican las funciones puras de dinero (parseo de importes, redondeo, clasificación de movimientos, fechas, etiquetas y la lógica de deshacer) sin necesidad de navegador. La CI de GitHub Actions ejecuta `check`, `test` y `lint` en cada push y pull request.

@@ -221,3 +221,40 @@ test("pasada la ventana de gracia, la falta de noticias sí cuenta como intento"
     resetQueue();
   }
 });
+
+// El selector de días de una recurrencia se repinta desde syncOptions, que corre en cada
+// actualización de datos. Al reconstruir el innerHTML se perdían los días ya marcados:
+// si entraba un refresco mientras rellenabas una recurrencia, la selección desaparecía.
+test("repintar el selector de recurrencia conserva los días marcados", () => {
+  const app = loadApp();
+  const picker = { dataset: {}, innerHTML: "" };
+  let marcados = [];
+  app.document.getElementById = id => (id === "recurrencePicker" ? picker : (id === "recurrenceType" ? { value: "weekly" } : null));
+  app.document.querySelectorAll = () => marcados.map(value => ({ value }));
+
+  app.renderRecurrencePicker();
+  assert.equal(picker.innerHTML.includes("checked"), false, "sin nada marcado, ninguna casilla activa");
+
+  // El usuario marca miércoles (2) y viernes (4).
+  marcados = ["2", "4"];
+  app.renderRecurrencePicker();
+
+  assert.match(picker.innerHTML, /value="2" checked/, "miércoles sigue marcado tras repintar");
+  assert.match(picker.innerHTML, /value="4" checked/, "viernes sigue marcado tras repintar");
+  assert.equal(picker.innerHTML.match(/checked/g).length, 2, "solo los dos que estaban marcados");
+});
+
+test("cambiar de semanal a mensual empieza sin selección", () => {
+  const app = loadApp();
+  const picker = { dataset: {}, innerHTML: "" };
+  let tipo = "weekly";
+  app.document.getElementById = id => (id === "recurrencePicker" ? picker : (id === "recurrenceType" ? { value: tipo } : null));
+  app.document.querySelectorAll = () => ["2", "4"].map(value => ({ value }));
+
+  app.renderRecurrencePicker();
+  tipo = "monthly";
+  app.renderRecurrencePicker();
+
+  assert.equal(picker.innerHTML.includes("checked"), false,
+    "los días de la semana no se arrastran a los días del mes");
+});

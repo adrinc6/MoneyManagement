@@ -65,7 +65,6 @@ export function loadApp() {
     setInterval: () => 0,
     clearInterval: noop,
     crypto: globalThis.crypto,
-    MONEY_DEBUG: false,
     localStorage
   };
   context.document = documentStub;

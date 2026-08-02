@@ -11,21 +11,26 @@ import { loadApp } from "./load-app.mjs";
 
 const FUTURE_SHEET = "Movimientos futuros";
 const BANK_SHEET = "Bancos";
+const MOVEMENT_SHEET = "Control Finanzas";
 const FUTURE_HEADERS = ["FECHA", "AÑO", "MES", "DIA", "TIPO", "CONCEPTO", "DESCRIPCION", "IMPORTE", "Cuenta", "SID"];
+const MOVEMENT_HEADERS = FUTURE_HEADERS;
 
 // Cuentas válidas del desplegable: NO incluye el texto "A → B" de las transferencias,
 // que es justo lo que reproduce el fallo del usuario.
 const ACCOUNTS = ["Santander", "Revolut"];
 const accountDropdown = value => ACCOUNTS.includes(String(value).trim());
 
-function setupSheets(gs, { futureRows = [] } = {}) {
+function setupSheets(gs, { futureRows = [], movementRows = null } = {}) {
   const future = gs.__spreadsheet.addSheet(FUTURE_SHEET, [FUTURE_HEADERS, ...futureRows]);
   const banks = gs.__spreadsheet.addSheet(BANK_SHEET, [
     ["CUENTA", "DINERO"],
     ["Santander", 1000],
     ["Revolut", 500]
   ]);
-  return { future, banks };
+  const movements = movementRows
+    ? gs.__spreadsheet.addSheet(MOVEMENT_SHEET, [MOVEMENT_HEADERS, ...movementRows])
+    : null;
+  return { future, banks, movements };
 }
 
 function bankAmount(banks, account) {
@@ -157,6 +162,52 @@ test("al vencer, la transferencia mueve el saldo y desaparece de futuros", () =>
   assert.equal(bankAmount(banks, "Santander"), 800);
   assert.equal(bankAmount(banks, "Revolut"), 700);
   assert.equal(future.getLastRow(), 1, "solo queda la cabecera");
+});
+
+// Los movimientos vencidos NO transferencia son la otra mitad de moveDueFutureMovements_,
+// y son los que ahora se escriben en un solo rango en vez de fila a fila.
+test("al vencer, los movimientos normales se escriben en la hoja y ajustan el saldo", () => {
+  const gs = loadAppsScript();
+  const ayer = new Date();
+  ayer.setDate(ayer.getDate() - 1);
+  const manana = new Date();
+  manana.setDate(manana.getDate() + 1);
+  const fila = (fecha, concepto, importe, sid) =>
+    [fecha, fecha.getFullYear(), fecha.getMonth() + 1, fecha.getDate(), "Gasto", concepto, concepto, importe, "Santander", sid];
+
+  const { future, banks, movements } = setupSheets(gs, {
+    movementRows: [],
+    futureRows: [
+      fila(ayer, "Alquiler", -700, "mov_a"),
+      fila(ayer, "Gimnasio", -40, "mov_b"),
+      fila(manana, "Todavía no vence", -10, "mov_c")
+    ]
+  });
+
+  const moved = gs.moveDueFutureMovementsLocked_(FUTURE_SHEET, MOVEMENT_SHEET, BANK_SHEET, []);
+
+  assert.equal(moved.length, 2, "solo se mueven los dos vencidos");
+  assert.equal(bankAmount(banks, "Santander"), 1000 - 700 - 40, "el saldo se ajusta una vez por movimiento");
+  assert.equal(future.getLastRow(), 2, "en futuros queda la cabecera y el que no ha vencido");
+
+  const escritos = movements.getRange(2, 1, movements.getLastRow() - 1, 10).getValues();
+  assert.equal(escritos.length, 2, "las dos filas llegan a la hoja de movimientos");
+  assert.deepEqual(escritos.map(r => r[6]).sort(), ["Alquiler", "Gimnasio"]);
+  assert.deepEqual(escritos.map(r => r[7]).sort((a, b) => a - b), [-700, -40]);
+  assert.deepEqual(escritos.map(r => r[9]).sort(), ["mov_a", "mov_b"], "conservan su SID de origen");
+});
+
+test("un movimiento vencido no se duplica si su SID ya está en la hoja", () => {
+  const gs = loadAppsScript();
+  const ayer = new Date();
+  ayer.setDate(ayer.getDate() - 1);
+  const fila = [ayer, ayer.getFullYear(), ayer.getMonth() + 1, ayer.getDate(), "Gasto", "Alquiler", "Alquiler", -700, "Santander", "mov_a"];
+
+  const { movements } = setupSheets(gs, { movementRows: [fila], futureRows: [fila] });
+
+  gs.moveDueFutureMovementsLocked_(FUTURE_SHEET, MOVEMENT_SHEET, BANK_SHEET, []);
+
+  assert.equal(movements.getLastRow(), 2, "sigue habiendo una sola fila con ese SID");
 });
 
 test("reenviar la misma transferencia no mueve el dinero dos veces", () => {
