@@ -238,8 +238,8 @@ function wireUi() {
   document.getElementById("clearSyncLogsBtn")?.addEventListener("click", clearSyncLogs);
   document.getElementById("undoSentOpsBtn")?.addEventListener("click", openUndoDialog);
   document.getElementById("closeUndoDialogBtn")?.addEventListener("click", () => document.getElementById("undoDialog")?.close());
-  document.getElementById("summaryYear")?.addEventListener("change", syncSummaryPeriodAndRender);
-  document.getElementById("summaryMonth")?.addEventListener("change", syncSummaryPeriodAndRender);
+  document.getElementById("summaryYear")?.addEventListener("change", () => renderCurrentView());
+  document.getElementById("summaryMonth")?.addEventListener("change", () => renderCurrentView());
   document.getElementById("openMonthSituationBtn")?.addEventListener("click", () => {
     document.getElementById("monthSituationDialog").showModal();
     renderSummary();
@@ -253,8 +253,6 @@ function wireUi() {
   document.getElementById("movementBulkDeleteBtn")?.addEventListener("click", deleteSelectedMovements);
   document.getElementById("addInvestmentRowBtn")?.addEventListener("click", addInvestmentRow);
   document.getElementById("addAccountGroupBtn")?.addEventListener("click", () => openAccountGroupDialog(null));
-  document.getElementById("saveInvestmentsBtn")?.classList.add("hidden");
-  document.getElementById("saveInvestmentsBtn")?.addEventListener("click", saveInvestments);
   ensureInvestmentCategoryDialog();
   document.getElementById("formDescription")?.addEventListener("input", suggestTypeConceptFromDescription);
   document.getElementById("closeMovementDetailBtn")?.addEventListener("click", () => document.getElementById("movementDetailDialog").close());
@@ -375,20 +373,14 @@ function refreshScopeForView(id = activeViewId()) {
   if (id === "movimientos") return "movements";
   if (id === "inversiones") return "investments";
   if (id === "resumen") return "summary";
-  if (id === "ajustes") return "all";
   return "all";
-}
-
-function refreshLabelForScope(scope, viewId = activeViewId()) {
-  return "Actualizar";
 }
 
 function syncRefreshButtonLabel(viewId = activeViewId()) {
   const btn = document.getElementById("refreshBtn");
   if (!btn) return;
-  const scope = refreshScopeForView(viewId);
   const isFullDownload = viewId === "ajustes";
-  const label = isFullDownload ? "Forzar descarga completa ALL desde Sheets" : refreshLabelForScope(scope, viewId);
+  const label = isFullDownload ? "Forzar descarga completa ALL desde Sheets" : "Actualizar";
   btn.title = label;
   btn.setAttribute("aria-label", label);
   btn.classList.toggle("refresh-all", isFullDownload);
@@ -434,7 +426,7 @@ async function compareLocalWithSheets() {
       state.cacheMeta = normalizeCacheMeta(cached);
       applyDataSnapshot(cached.data);
       syncOptions();
-      renderDataScope("all");
+      renderCurrentView();
     }
     if (!state.config.scriptUrl) {
       setNotice("Configura la URL de Apps Script para comparar con Sheets.", "warn");
@@ -661,7 +653,6 @@ function setThemeFromToggle(event) {
   refreshChartTheme();
 }
 
-
 function loadInvestmentEstimateMode() {
   return localStorage.getItem(INVESTMENT_ESTIMATE_MODE_KEY) === "estimated" ? "estimated" : "real";
 }
@@ -833,22 +824,8 @@ function renderCurrentView(viewId = activeViewId()) {
   refreshIcons();
 }
 
-function renderDataScope(scope = "all") {
-  renderCurrentView(activeViewId());
-}
-
 function syncedSectionsFromData(data = {}) {
-  const sections = [];
-  if (Object.prototype.hasOwnProperty.call(data, "transactions")) sections.push("transactions");
-  if (Object.prototype.hasOwnProperty.call(data, "futureTransactions")) sections.push("futureTransactions");
-  if (Object.prototype.hasOwnProperty.call(data, "investments")) sections.push("investments");
-  if (Object.prototype.hasOwnProperty.call(data, "investmentTotals")) sections.push("investmentTotals");
-  if (Object.prototype.hasOwnProperty.call(data, "investmentEstimateRules")) sections.push("investmentEstimateRules");
-  if (Object.prototype.hasOwnProperty.call(data, "investmentEstimateLedger")) sections.push("investmentEstimateLedger");
-  if (Object.prototype.hasOwnProperty.call(data, "banks")) sections.push("banks");
-  if (Object.prototype.hasOwnProperty.call(data, "investmentGoals")) sections.push("investmentGoals");
-  if (Object.prototype.hasOwnProperty.call(data, "categories")) sections.push("categories");
-  return sections;
+  return CACHE_SECTION_KEYS.filter(section => Object.prototype.hasOwnProperty.call(data, section));
 }
 
 // Texto del aviso de carga. Un refresco pedido por el usuario dice "Descargando ...
@@ -898,7 +875,6 @@ async function refreshDataImpl(options = {}) {
   const force = Boolean(options.force);
   const updateInvestments = Boolean(options.updateInvestments);
   const scope = options.scope || (updateInvestments ? "investments" : "all");
-  const isFullDownload = scope === "all";
   const showProgress = Boolean(options.showProgress || force || updateInvestments);
   const requestedSections = cacheSectionsForScope(scope);
   const manualRefresh = Boolean(options.manualRefresh);
@@ -910,7 +886,7 @@ async function refreshDataImpl(options = {}) {
     state.cacheMeta = normalizeCacheMeta(cached);
     applyDataSnapshot(cached.data);
     syncOptions();
-    renderDataScope(scope);
+    renderCurrentView();
     if (cacheIsStale(cached) && !force && !updateInvestments) {
       setNotice(staleCacheMessage(cached), "warn");
     }
@@ -953,7 +929,7 @@ async function refreshDataImpl(options = {}) {
 
   if (!state.config.scriptUrl) {
     syncOptions();
-    renderDataScope(scope);
+    renderCurrentView();
     setNotice("Configura la URL de Apps Script en Ajustes para sincronizar con Google Sheets.", "warn");
     syncStatusStep(showProgress, "Falta URL de Apps Script", "warn");
     setRefreshLoading(false);
@@ -1002,7 +978,7 @@ async function refreshDataImpl(options = {}) {
     if (cached && neededSections.length && !force && !updateInvestments && !shouldMoveDueFutureMovements) {
       const changedLabels = neededSections.map(formatCacheSectionName).join(", ");
       syncOptions();
-      renderDataScope(scope);
+      renderCurrentView();
       setNotice(lineMessage(
         `Sheets indica cambios en: ${changedLabels}.`,
         "Mantengo la caché local intacta; usa la descarga completa de Ajustes solo si quieres reemplazarla desde Sheets."
@@ -1016,7 +992,7 @@ async function refreshDataImpl(options = {}) {
 
     if (!neededSections.length && cached) {
       syncOptions();
-      renderDataScope(scope);
+      renderCurrentView();
       setNotice(options.successMessage || `Datos cargados desde caché (${formatCacheAge(cacheAgeMs(cached))}).`, cacheIsStale(cached) ? "warn" : "ok");
       syncStatusStep(showProgress, cacheIsStale(cached) ? "Caché antigua" : "Usando caché", cacheIsStale(cached) ? "warn" : "ok");
       logSyncEvent("Se mantiene caché local; sin manifiesto ni descarga automática.", cacheIsStale(cached) ? "warn" : "ok");
@@ -1097,8 +1073,7 @@ async function refreshDataImpl(options = {}) {
 
     syncStatusStep(showProgress, "Actualizando pantalla\nGuardando caché", "");
     if (Object.keys(freshData).length) {
-      if (isFullDownload && syncedSectionsFromData(freshData).length === CACHE_SECTION_KEYS.length) applyDataSnapshot(freshData);
-      else mergeDataSnapshot(freshData);
+      applyDataSnapshot(freshData, { onlyPresentSections: true });
       syncedSections = unique([...syncedSections, ...syncedSectionsFromData(freshData)]);
     }
 
@@ -1124,7 +1099,7 @@ async function refreshDataImpl(options = {}) {
     // Si se re-descargó el histórico completo, la caché deja de estar podada.
     if (state.cacheMeta?.partial && syncedSections.includes("transactions")) delete state.cacheMeta.partial;
     syncOptions();
-    renderDataScope(scope);
+    renderCurrentView();
     writeDataCache({ syncedSections });
     const defaultSuccess = updateInvestments
         ? "Precios actualizados y caché de inversiones renovada."
@@ -1154,7 +1129,7 @@ async function refreshDataImpl(options = {}) {
       syncStatusStep(showProgress, cached ? "Usando caché" : "Datos mantenidos", "warn");
       logSyncEvent(cached ? "No se pudo actualizar; usando caché." : "No se pudo actualizar; datos existentes mantenidos.", "warn", error.message || String(error));
       syncOptions();
-      renderDataScope(scope);
+      renderCurrentView();
       renderSyncSettingsPanel();
       return false;
     }
@@ -1242,7 +1217,6 @@ async function downloadMovementPages(kind, label, options = {}) {
   }
   return rows;
 }
-
 
 function setRefreshLoading(loading) {
   const btn = document.getElementById("refreshBtn");
@@ -1378,50 +1352,31 @@ function persistMintedSids(data) {
   if (minted > 0) writeDataCache();
 }
 
-function applyDataSnapshot(data) {
-  const dropped = [];
-  state.transactions = normalizeRows(data.transactions, normalizeTransaction, dropped, "movimientos");
-  state.futureTransactions = normalizeRows(data.futureTransactions, normalizeTransaction, dropped, "futuros");
-  state.investments = normalizeRows(data.investments, normalizeInvestment, dropped, "inversiones").map(recalculateInvestmentTotal);
-  state.investmentTotals = (data.investmentTotals || []).map(normalizeInvestmentTotal).filter(Boolean);
-  state.investmentEstimateRules = (data.investmentEstimateRules || []).map(normalizeInvestmentEstimateRule).filter(Boolean);
-  state.investmentEstimateLedger = (data.investmentEstimateLedger || []).map(normalizeInvestmentEstimateLedger).filter(Boolean);
-  state.banks = normalizeRows(data.banks, normalizeBank, dropped, "bancos");
-  state.investmentGoals = normalizeInvestmentGoals(data.investmentGoals ?? state.investmentGoals);
-  state.categories = normalizeCategories(data.categories);
-  reportDroppedRows(dropped);
-  persistMintedSids(data);
-}
+// Un normalizador por sección. Antes esta lista de nueve secciones estaba escrita a
+// mano tres veces (applyDataSnapshot, mergeDataSnapshot y syncedSectionsFromData) y
+// añadir una sección obligaba a acordarse de las tres. La única lista es
+// CACHE_SECTION_KEYS; esta tabla debe tener exactamente esas claves.
+const SECTION_NORMALIZERS = {
+  transactions: (data, dropped) => normalizeRows(data.transactions, normalizeTransaction, dropped, "movimientos"),
+  futureTransactions: (data, dropped) => normalizeRows(data.futureTransactions, normalizeTransaction, dropped, "futuros"),
+  investments: (data, dropped) => normalizeRows(data.investments, normalizeInvestment, dropped, "inversiones").map(recalculateInvestmentTotal),
+  investmentTotals: data => (data.investmentTotals || []).map(normalizeInvestmentTotal).filter(Boolean),
+  investmentEstimateRules: data => (data.investmentEstimateRules || []).map(normalizeInvestmentEstimateRule).filter(Boolean),
+  investmentEstimateLedger: data => (data.investmentEstimateLedger || []).map(normalizeInvestmentEstimateLedger).filter(Boolean),
+  banks: (data, dropped) => normalizeRows(data.banks, normalizeBank, dropped, "bancos"),
+  investmentGoals: data => normalizeInvestmentGoals(data.investmentGoals ?? state.investmentGoals),
+  categories: data => normalizeCategories(data.categories)
+};
 
-function mergeDataSnapshot(data = {}) {
+// onlyPresentSections: aplica solo las secciones que vengan en el snapshot y deja las
+// demás como estén (descarga parcial). Sin él, una sección ausente se resetea a su
+// valor por defecto, que es lo que hace falta al cargar una copia completa.
+function applyDataSnapshot(data = {}, { onlyPresentSections = false } = {}) {
   const dropped = [];
-  if (Object.prototype.hasOwnProperty.call(data, "transactions")) {
-    state.transactions = normalizeRows(data.transactions, normalizeTransaction, dropped, "movimientos");
-  }
-  if (Object.prototype.hasOwnProperty.call(data, "futureTransactions")) {
-    state.futureTransactions = normalizeRows(data.futureTransactions, normalizeTransaction, dropped, "futuros");
-  }
-  if (Object.prototype.hasOwnProperty.call(data, "investments")) {
-    state.investments = normalizeRows(data.investments, normalizeInvestment, dropped, "inversiones").map(recalculateInvestmentTotal);
-  }
-  if (Object.prototype.hasOwnProperty.call(data, "investmentTotals")) {
-    state.investmentTotals = (data.investmentTotals || []).map(normalizeInvestmentTotal).filter(Boolean);
-  }
-  if (Object.prototype.hasOwnProperty.call(data, "investmentEstimateRules")) {
-    state.investmentEstimateRules = (data.investmentEstimateRules || []).map(normalizeInvestmentEstimateRule).filter(Boolean);
-  }
-  if (Object.prototype.hasOwnProperty.call(data, "investmentEstimateLedger")) {
-    state.investmentEstimateLedger = (data.investmentEstimateLedger || []).map(normalizeInvestmentEstimateLedger).filter(Boolean);
-  }
-  if (Object.prototype.hasOwnProperty.call(data, "banks")) {
-    state.banks = normalizeRows(data.banks, normalizeBank, dropped, "bancos");
-  }
-  if (Object.prototype.hasOwnProperty.call(data, "investmentGoals")) {
-    state.investmentGoals = normalizeInvestmentGoals(data.investmentGoals ?? state.investmentGoals);
-  }
-  if (Object.prototype.hasOwnProperty.call(data, "categories")) {
-    state.categories = normalizeCategories(data.categories);
-  }
+  CACHE_SECTION_KEYS.forEach(section => {
+    if (onlyPresentSections && !Object.prototype.hasOwnProperty.call(data, section)) return;
+    state[section] = SECTION_NORMALIZERS[section](data, dropped);
+  });
   reportDroppedRows(dropped);
   persistMintedSids(data);
 }
@@ -1754,7 +1709,6 @@ const OP_LABELS = {
   deleteMovementsBatch: "Borrar múltiple",
   deleteInvestment: "Borrar inversión",
   saveBanks: "Guardar cuentas",
-  saveInvestments: "Guardar inversiones",
   saveInvestmentCategories: "Guardar categorías inversión",
   saveInvestmentEstimateRules: "Guardar reglas estimación",
   clearInvestmentEstimates: "Borrar estimaciones",
@@ -1994,7 +1948,6 @@ function undoReasonFor(action) {
     deleteMovement: "Vuelve a registrarlo desde la pantalla Registrar.",
     deleteMovementsBatch: "Vuelve a registrarlos desde la pantalla Registrar.",
     saveBanks: "Ajusta el saldo de nuevo en Dinero.",
-    saveInvestments: "Corrige las posiciones en Inversión.",
     updateInvestment: "Corrige la posición en Inversión.",
     saveInvestmentGoals: "Vuelve a editar los objetivos.",
     renameAccount: "Renómbrala de nuevo en Dinero.",
@@ -2067,7 +2020,7 @@ async function undoSentOp(entryId) {
     queueOps(undos.map(undo => undo.inverse), { label: `Deshacer ${label}` });
     logSyncEvent(`Deshacer: ${label}.`, "");
     renderSummary();
-    renderDataScope("movements");
+    renderCurrentView();
     renderUndoDialogList();
     renderPendingOpsBadge();
     if (!sentOpsToday().length) document.getElementById("undoDialog")?.close();
@@ -2092,7 +2045,7 @@ function queuePayloadSections(payload = {}) {
   if (["transferBank", "saveBanks"].includes(action)) return ["banks"];
   if (["renameAccount", "deleteAccount"].includes(action)) return ["banks", "transactions", "futureTransactions"];
   if (action === "reassignFutureMovementsAccount") return ["futureTransactions"];
-  if (["saveInvestments", "updateInvestment", "deleteInvestment"].includes(action)) return ["investments", "investmentTotals", "investmentEstimateLedger"];
+  if (["updateInvestment", "deleteInvestment"].includes(action)) return ["investments", "investmentTotals", "investmentEstimateLedger"];
   if (action === "saveInvestmentCategories") return ["categories", "investments", "investmentTotals", "transactions", "futureTransactions"];
   if (action === "saveInvestmentEstimateRules") return ["investmentEstimateRules", "investmentEstimateLedger"];
   if (["clearInvestmentEstimates", "saveInvestmentEstimateAllocations"].includes(action)) return ["investmentEstimateLedger"];
@@ -2803,10 +2756,6 @@ function getSelectedSummaryMonth() {
   return `${year}-${month}`;
 }
 
-function syncSummaryPeriodAndRender() {
-  renderDataScope("summary");
-}
-
 function fillSelect(id, values, placeholder = null) {
   const el = document.getElementById(id);
   if (!el) {
@@ -3215,7 +3164,7 @@ async function deleteAccountManage() {
     markButtonSaved(btn, "Eliminada");
     dialog.close();
     refreshAfterAccountChange();
-    renderDataScope("movements");
+    renderCurrentView();
     setNotice("Cuenta eliminada.", "ok");
   });
 }
@@ -3266,7 +3215,7 @@ function calculateSummary(month) {
   const expenses = Math.abs(sum(txMonth.filter(isMonthlyExpense).map(t => t.amount)));
   const investedMonth = Math.abs(sum(txMonth.filter(isInvestment).map(t => t.amount)));
   const balance = sum(txMonth.map(t => t.amount));
-  const computedBank = getInitialCash()
+  const computedBank = DEFAULT_CONFIG.initialCash
     + sumTransactionsByType(untilToday, "Ingreso")
     + sumTransactionsByType(untilToday, "Gasto")
     - sumTransactionsByType(untilToday, "Retiro")
@@ -3310,10 +3259,6 @@ function calculateSummary(month) {
     profitLoss: valueTotal - investedTotal,
     profitLossPct: investedTotal ? (valueTotal - investedTotal) / investedTotal : 0
   };
-}
-
-function getInitialCash() {
-  return DEFAULT_CONFIG.initialCash;
 }
 
 function sumTransactionsByType(transactions, type) {
@@ -3631,7 +3576,7 @@ async function deleteSelectedMovements() {
       }
       state.movementBulkEdit = false;
       syncOptions();
-      renderDataScope("movements");
+      renderCurrentView();
     };
     if (state.banks.length) {
       const totalAmount = sum(movements.map(movement => Number(movement.amount || 0)));
@@ -3688,7 +3633,6 @@ function movementLabels() {
 function metricBlock(label, value, tone) {
   return `<div class="metric ${tone || ""}"><strong>${money(value, 0)}</strong><span>${escapeHtml(label)}</span></div>`;
 }
-
 
 function setSettingsPanelFromClick(event) {
   const btn = event.target.closest("[data-settings-panel]");
@@ -3759,7 +3703,6 @@ function renderInvestmentEditTable() {
     if (!investmentEstimateEnabled()) row.addEventListener("click", () => openInvestmentDetail(Number(row.dataset.investmentIndex)));
   });
 }
-
 
 function fitInvestmentTables() {
   fitInvestmentTableColumns("investmentEditTable", 0);
@@ -3845,40 +3788,6 @@ function addInvestmentRow() {
   openInvestmentDetail(state.investments.length - 1);
 }
 
-async function saveInvestments() {
-  readInvestmentEditor();
-  const payload = { action: "saveInvestments", sheetName: state.config.investmentSheet, investments: state.investments };
-  if (!state.config.scriptUrl) {
-    writeDataCache({ dirtySections: ["investments"] });
-    setNotice(lineMessage("Para modificar inversiones necesitas Apps Script.", "Cambio guardado solo en cache local."), "warn");
-    renderInvestments();
-    return;
-  }
-  const btn = document.getElementById("saveInvestmentsBtn");
-  markButtonSaving(btn);
-  try {
-    writeDataCache({ dirtySections: queuePayloadSections(payload) });
-    queueOp(payload);
-    markButtonSaved(btn);
-    setNotice("Inversiones guardadas en local y enviadas a Sheets.", "ok");
-  } catch (error) {
-    restoreButton(btn);
-    setNotice(lineMessage("No se pudo preparar el guardado.", error.message), "warn");
-  } finally {
-    renderInvestments();
-  }
-}
-
-function readInvestmentEditor() {
-  document.querySelectorAll("#investmentEditTable tbody tr[data-investment-index]").forEach(row => {
-    const idx = Number(row.dataset.investmentIndex);
-    row.querySelectorAll("[data-field]").forEach(input => {
-      const field = input.dataset.field;
-      state.investments[idx][field] = ["cantidad", "valor", "total"].includes(field) ? Number(input.value || 0) : input.value.trim();
-    });
-  });
-}
-
 function openMovementDetail(index) {
   const list = getDisplayedMovements();
   const t = list[index];
@@ -3960,7 +3869,7 @@ async function saveMovementDetail(event) {
       markButtonSaved(btn);
       document.getElementById("movementDetailDialog").close();
       syncOptions();
-      renderDataScope("movements");
+      renderCurrentView();
     } catch (error) {
       restoreButton(btn);
       setNotice(`No se pudo guardar: ${error.message}`, "warn");
@@ -4015,7 +3924,7 @@ async function deleteMovementDetail() {
       markButtonSaved(btn, "Eliminado");
       document.getElementById("movementDetailDialog").close();
       syncOptions();
-      renderDataScope("movements");
+      renderCurrentView();
     } catch (error) {
       restoreButton(btn);
       setNotice(`No se pudo eliminar: ${error.message}`, "warn");
@@ -4130,7 +4039,7 @@ async function saveInvestmentDetail(event) {
 
     document.getElementById("investmentDetailDialog").close();
     syncOptions();
-    renderDataScope("investments");
+    renderCurrentView();
 
     if (state.config.scriptUrl) {
       queueOp({
@@ -4167,7 +4076,7 @@ async function deleteInvestmentDetail(event) {
 
     document.getElementById("investmentDetailDialog").close();
     syncOptions();
-    renderDataScope("investments");
+    renderCurrentView();
 
     if (state.config.scriptUrl && previousItem.rowNumber) {
       queueOp({
@@ -4379,7 +4288,7 @@ async function submitMovement(event) {
       }
     }
     syncOptions();
-    renderDataScope("movements");
+    renderCurrentView();
     event.target.reset();
     setDefaultDate();
     syncRegistrarMode();
@@ -4554,23 +4463,22 @@ function enforceTransferPositiveAmount() {
 function syncRegisterMode() {
   const recurring = isRecurringMode();
   const isTransfer = normalizeType(document.getElementById('formType').value) === 'transferencia';
-  const showRecurring = recurring;
-  document.getElementById('registrar')?.classList.toggle('recurring-register-active', showRecurring);
-  document.getElementById('movementForm')?.classList.toggle('recurring-form-active', showRecurring);
-  document.getElementById('movementForm')?.classList.toggle('single-form-active', !showRecurring);
-  document.getElementById('recurringFields')?.classList.toggle('hidden', !showRecurring);
-  document.querySelector('#movementForm .recurring-account')?.classList.toggle('hidden', !showRecurring || isTransfer);
+  document.getElementById('registrar')?.classList.toggle('recurring-register-active', recurring);
+  document.getElementById('movementForm')?.classList.toggle('recurring-form-active', recurring);
+  document.getElementById('movementForm')?.classList.toggle('single-form-active', !recurring);
+  document.getElementById('recurringFields')?.classList.toggle('hidden', !recurring);
+  document.querySelector('#movementForm .recurring-account')?.classList.toggle('hidden', !recurring || isTransfer);
   document.querySelectorAll('#movementForm .movement-only').forEach(el => {
     const fieldId = el.querySelector('input, select')?.id;
     const hiddenInRecurring = ['formDate', 'formAccount'].includes(fieldId);
-    el.classList.toggle('hidden', isTransfer || (showRecurring && hiddenInRecurring));
+    el.classList.toggle('hidden', isTransfer || (recurring && hiddenInRecurring));
   });
   const formDate = document.getElementById('formDate');
-  if (formDate) formDate.required = !showRecurring && !isTransfer;
+  if (formDate) formDate.required = !recurring && !isTransfer;
   const recurrenceAccount = document.getElementById('recurrenceAccount');
-  if (recurrenceAccount) recurrenceAccount.required = showRecurring && !isTransfer;
-  ['recurrenceStart', 'recurrenceEnd'].forEach(id => { const el = document.getElementById(id); if (el) el.required = showRecurring; });
-  if (showRecurring) setDefaultRecurrenceDates();
+  if (recurrenceAccount) recurrenceAccount.required = recurring && !isTransfer;
+  ['recurrenceStart', 'recurrenceEnd'].forEach(id => { const el = document.getElementById(id); if (el) el.required = recurring; });
+  if (recurring) setDefaultRecurrenceDates();
   renderRecurrencePicker();
 }
 
@@ -4765,7 +4673,7 @@ async function saveInvestmentGoalsFromDialog(event) {
   state.investmentGoals = normalizeInvestmentGoals({ expenseMonthly, investmentMonthly, monthly: investmentMonthly, yearly, total });
   safeSetItem('investmentGoals', JSON.stringify(state.investmentGoals));
   writeDataCache({ dirtySections: ["investmentGoals"] });
-  renderDataScope("investments");
+  renderCurrentView();
   if (state.config.scriptUrl) {
     try {
       queueOp({ action: "saveInvestmentGoals", sheetName: state.config.objectiveSheet || "Objetivos", goals: state.investmentGoals });
@@ -4955,7 +4863,7 @@ async function saveBanks() {
     writeDataCache();
     queueOp({ action: "saveBanks", bankSheet: state.config.bankSheet || "Bancos", banks: state.banks });
     document.getElementById("moneyDialog")?.close();
-    renderDataScope("banks");
+    renderCurrentView();
     markButtonSaved(document.getElementById("saveBanksBtn") || btn);
     setNotice("Cuentas guardadas.", "ok");
   } catch (error) {
@@ -5031,7 +4939,6 @@ async function fireAppsScript(payload) {
   }
   return finalPayload;
 }
-
 
 function createSid(prefix = "id") {
   if (window.crypto?.randomUUID) return `${prefix}_${window.crypto.randomUUID()}`;
@@ -5112,7 +5019,6 @@ function normalizeInvestment(row) {
   };
 }
 
-
 function normalizeInvestmentTotal(row) {
   const tipo = prettyType(String(row.tipo || row.TIPO || row.type || row.TYPE || row[0] || '').trim());
   if (!tipo) return null;
@@ -5129,7 +5035,6 @@ function normalizeInvestmentTotal(row) {
     order: Number(row.order || row.ORDEN || row[8] || 0) || 0
   };
 }
-
 
 function normalizeInvestmentEstimateRule(row) {
   const isArrayRow = Array.isArray(row);
@@ -5462,7 +5367,6 @@ function openInvestmentOverview(type) {
   renderInvestments();
 }
 
-
 function ensureInvestmentCategoryEditButton() {
   const table = document.getElementById("investmentBreakdownTable");
   const panel = table?.closest("article.panel");
@@ -5501,7 +5405,6 @@ function ensureInvestmentCategoryDialog() {
   document.getElementById("addInvestmentCategoryBtn").addEventListener("click", () => addInvestmentCategoryRow(""));
   document.getElementById("investmentCategoriesForm").addEventListener("submit", saveInvestmentCategoriesFromDialog);
 }
-
 
 function investmentCategoryHasData(type) {
   const key = normalizeType(type);
@@ -5869,11 +5772,8 @@ function renderInvestments() {
   document.querySelectorAll("#inversiones > article.panel").forEach(el => {
     el.classList.toggle("hidden", hideLowerSections);
   });
-  document.getElementById("saveInvestmentsBtn")?.classList.add("hidden");
   document.getElementById("addInvestmentRowBtn")?.classList.toggle("hidden", investmentEstimateEnabled());
 }
-
-
 
 function openInvestmentEstimateRulesDialog() {
   renderInvestmentEstimateRulesTable();
@@ -6009,7 +5909,6 @@ async function clearInvestmentEstimates() {
   }
 }
 
-
 function isInvestmentMovement(movement) {
   const normalized = normalizeTransaction(movement);
   if (!normalized) return false;
@@ -6030,7 +5929,7 @@ function enqueueInvestmentAllocationPrompts(movements = [], options = {}) {
   });
   const prompts = (movements || [])
     .map(normalizeTransaction)
-    .filter(shouldPromptForInvestmentAllocation)
+    .filter(isInvestmentMovement)
     .map(movement => ({
     movement,
     source: options.source || "registro",
@@ -6119,11 +6018,6 @@ function scheduleInvestmentAllocationForRegistration(movements = [], options = {
   }, 0);
 }
 
-function shouldPromptForInvestmentAllocation(movement) {
-  const normalized = normalizeTransaction(movement);
-  if (!normalized) return false;
-  return isInvestmentMovement(normalized);
-}
 
 function processPendingInvestmentAllocationPrompts() {
   const allocationDialog = document.getElementById("investmentAllocationDialog");
@@ -6270,7 +6164,7 @@ function initialInvestmentAllocationRows(movement, prompt = {}) {
 
 function matchingInvestmentAllocationRules(movement, respectDay = false) {
   const normalized = normalizeTransaction(movement);
-  if (!shouldPromptForInvestmentAllocation(normalized)) {
+  if (!isInvestmentMovement(normalized)) {
     investmentDebug("matching descartado: no es inversión", { movement });
     return [];
   }
@@ -6675,7 +6569,7 @@ function buildEvolutionRows(start, end) {
 
 function bankAtMonthSnapshot(month, day) {
   const end = monthSnapshotDate(month, day);
-  return getInitialCash()
+  return DEFAULT_CONFIG.initialCash
     + sum(state.transactions.filter(t => t.date <= end).map(t => t.amount));
 }
 
@@ -6830,14 +6724,16 @@ function normalizePercentPoints(value) {
 function formatDate(date) { return date ? `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}` : ""; }
 function money(value, decimals = 2) { return new Intl.NumberFormat("es-ES", { style: "currency", currency: "EUR", maximumFractionDigits: decimals, minimumFractionDigits: 0 }).format(Number(value) || 0); }
 function pct(value, digits = 1) {
+  return `${pctNoSymbol(value, digits)} %`;
+}
+// Base de los dos formatos: pct() solo le añade el símbolo. Antes era al revés
+// (formatear con "%" y quitarlo con un regex después).
+function pctNoSymbol(value, digits = 1) {
   const n = Number(value) || 0;
-  return `${(n * 100).toLocaleString("es-ES", {
+  return (n * 100).toLocaleString("es-ES", {
     minimumFractionDigits: digits,
     maximumFractionDigits: digits
-  })} %`;
-}
-function pctNoSymbol(value) {
-  return pct(value).replace(/\s*%$/, "");
+  });
 }
 function formatDecimalInput(value, decimals = 2) { return safeNumber(parseNumber(value)).toFixed(decimals); }
 function roundMoney(value) { const parsed = parseNumber(value); return Number.isFinite(parsed) ? Math.round(parsed * 100) / 100 : 0; }

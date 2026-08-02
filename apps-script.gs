@@ -547,11 +547,6 @@ function doPost(e) {
       syncInvestmentTotalsSheet_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.sheetName || DEFAULT_INVESTMENT_SHEET, payload.movementSheet || DEFAULT_MOVEMENT_SHEET);
       return finishPost_(pendingId, payload, { ok: true, investmentDeleted: true });
     }
-    if (payload.action === 'saveInvestments') {
-      saveInvestments_(payload.investments || [], payload.sheetName || DEFAULT_INVESTMENT_SHEET);
-      syncInvestmentTotalsSheet_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.sheetName || DEFAULT_INVESTMENT_SHEET, payload.movementSheet || DEFAULT_MOVEMENT_SHEET);
-      return finishPost_(pendingId, payload, { ok: true });
-    }
     if (payload.action === 'saveInvestmentCategories') {
       saveInvestmentCategories_(payload.sheetName || DEFAULT_INVESTMENT_SHEET, payload.investmentTypes || [], payload.renames || {}, payload.movementSheet || DEFAULT_MOVEMENT_SHEET, payload.futureMovementSheet || DEFAULT_FUTURE_MOVEMENT_SHEET, payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET);
       syncInvestmentTotalsSheet_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.sheetName || DEFAULT_INVESTMENT_SHEET, payload.movementSheet || DEFAULT_MOVEMENT_SHEET);
@@ -1705,24 +1700,6 @@ function deleteAccount_(bankSheetName, movementSheetName, futureMovementSheetNam
   return { movementsCount, futureMovementsCount };
 }
 
-function saveInvestments_(investments, sheetName) {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getSheetByName(sheetName);
-  if (!sheet) throw new Error(`Sheet not found: ${sheetName}`);
-
-  investments.forEach(item => {
-    if (!item || !item.data || !item.nombre || !item.tipo || !isInvestmentPositionType_(item.tipo)) return;
-    const rowNumber = Number(item.rowNumber || 0);
-    const targetRow = rowNumber >= 2 && rowNumber <= sheet.getMaxRows() ? rowNumber : 0;
-    if (targetRow) {
-      writeInvestmentEditableFields_(sheet, targetRow, item);
-    } else {
-      const row = new Array(Math.max(sheet.getLastColumn(), 9)).fill('');
-      sheet.appendRow(row);
-      writeInvestmentEditableFields_(sheet, sheet.getLastRow(), item);
-    }
-  });
-}
 
 function updateInvestment_(investment, sheetName, previousInvestment) {
   if (!investment) throw new Error('Missing investment');
