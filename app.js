@@ -2790,9 +2790,7 @@ async function fetchAppsScriptData(options = {}) {
       ? "updateInvestmentPrices"
       : options.scope === "investments"
         ? "downloadInvestments"
-        : options.moveDueFutureMovements
-          ? "moveDueFutureMovements"
-          : "downloadData");
+        : "downloadData");
   const params = new URLSearchParams({
     action,
     token: state.config.appToken,
@@ -2807,20 +2805,9 @@ async function fetchAppsScriptData(options = {}) {
     objectiveSheet: state.config.objectiveSheet || "Objetivos",
     dataSheet: state.config.dataSheet
   });
-  if (options.investment) params.set("investment", JSON.stringify(options.investment));
-  if (options.previousInvestment) params.set("previousInvestment", JSON.stringify(options.previousInvestment));
-  if (options.investmentTypes) params.set("investmentTypes", JSON.stringify(options.investmentTypes));
-  if (options.investmentTotalsSheet) params.set("investmentTotalsSheet", options.investmentTotalsSheet);
-  if (options.renames) params.set("renames", JSON.stringify(options.renames));
-  if (options.sheetName) params.set("sheetName", options.sheetName);
   if (options.skipFutureSids && options.skipFutureSids.length) params.set("skipFutureSids", options.skipFutureSids.join(","));
   if (options.clientOpId) params.set("clientOpId", options.clientOpId);
   if (options.notificationRequestId) params.set("notificationRequestId", options.notificationRequestId);
-  if (options.newInvestment) params.set("newInvestment", "1");
-  if (options.rowNumber) params.set("rowNumber", String(options.rowNumber));
-  if (options.ruleId) params.set("ruleId", String(options.ruleId));
-  if (Number.isFinite(Number(options.simulationAmount))) params.set("simulationAmount", String(Number(options.simulationAmount)));
-  if (options.simulationDate) params.set("simulationDate", options.simulationDate);
   if (options.movementKind) params.set("movementKind", options.movementKind);
   if (Number.isFinite(Number(options.offset))) params.set("offset", String(Number(options.offset)));
   if (Number.isFinite(Number(options.limit))) params.set("limit", String(Number(options.limit)));
