@@ -7,14 +7,12 @@ var DEFAULT_OBJECTIVE_SHEET = 'Objetivos';
 var DEFAULT_INVESTMENT_TOTALS_SHEET = 'Inversión Totales';
 var DEFAULT_INVESTMENT_ESTIMATE_RULES_SHEET = 'Inversiones Estimación Reglas';
 var DEFAULT_INVESTMENT_ESTIMATE_LEDGER_SHEET = 'Inversiones Estimación Movimientos';
-var INVESTMENT_ESTIMATE_BASELINE_PREFIX = 'moneyInvestmentEstimateBaseline:';
 var INVESTMENT_MODE_PREFERENCE_KEY = 'moneyInvestmentModePreference';
 var DEFAULT_PENDING_SHEET = 'Pendientes';
 // Una fila "Pendientes" que sobreviva más de este tiempo se considera huérfana
 // (ejecución interrumpida/cortada antes de limpiarla) y deja de bloquear los
 // reintentos, para que la operación pueda volver a enviarse y llegar a Sheets.
 var PENDING_OP_STALE_MS = 90 * 1000;
-var SECTION_REV_PREFIX = 'moneySectionRev:';
 var PROCESSED_CLIENT_OPS_KEY = 'moneyProcessedClientOps';
 var MOVEMENT_SID_HEADER = 'SID';
 var PROCESSED_NOTIFICATION_REQUESTS_KEY = 'moneyProcessedNotificationRequests';
@@ -69,7 +67,6 @@ function doGet(e) {
       if (movedFutureMovements.length) {
         movedFutureMovements.forEach(function(movement) { adjustInvestmentCostFromMovement_(investmentTotalsSheet, dataSheet, investmentSheet, movementSheet, movement, 1); });
         syncInvestmentTotalsSheet_(investmentTotalsSheet, dataSheet, investmentSheet, movementSheet);
-        bumpSections_('transactions', 'futureTransactions', 'banks', 'investmentTotals');
       }
       payload = {
         ok: true,
@@ -82,7 +79,6 @@ function doGet(e) {
       if (movedFutureMovements.length) {
         movedFutureMovements.forEach(function(movement) { adjustInvestmentCostFromMovement_(investmentTotalsSheet, dataSheet, investmentSheet, movementSheet, movement, 1); });
         syncInvestmentTotalsSheet_(investmentTotalsSheet, dataSheet, investmentSheet, movementSheet);
-        bumpSections_('transactions', 'futureTransactions', 'banks', 'investmentTotals');
       }
       payload = buildAllDataPayload_(movementSheet, futureMovementSheet, investmentSheet, bankSheet, objectiveSheet, dataSheet, movedFutureMovements, investmentTotalsSheet, investmentEstimateRulesSheet, investmentEstimateLedgerSheet);
     } else if (action === 'updateInvestment') {
@@ -95,7 +91,6 @@ function doGet(e) {
           updateInvestmentQuotesFromYahoo(targetSheet);
         }
         syncInvestmentTotalsSheet_(investmentTotalsSheet, dataSheet, targetSheet, movementSheet);
-        bumpSections_('investments', 'investmentTotals');
         const result = buildInvestmentDataPayload_(targetSheet, objectiveSheet, movementSheet, futureMovementSheet, bankSheet, dataSheet, investmentTotalsSheet, investmentEstimateRulesSheet, investmentEstimateLedgerSheet);
         result.investmentUpdated = true;
         return result;
@@ -106,7 +101,6 @@ function doGet(e) {
         const investment = params.investment ? parseJsonParam_(params.investment, 'investment') || {} : {};
         deleteInvestment_(investment, targetSheet, params.rowNumber || 0);
         syncInvestmentTotalsSheet_(investmentTotalsSheet, dataSheet, targetSheet, movementSheet);
-        bumpSections_('investments', 'investmentTotals');
         const result = buildInvestmentDataPayload_(targetSheet, objectiveSheet, movementSheet, futureMovementSheet, bankSheet, dataSheet, investmentTotalsSheet, investmentEstimateRulesSheet, investmentEstimateLedgerSheet);
         result.investmentDeleted = true;
         return result;
@@ -118,7 +112,6 @@ function doGet(e) {
         const renames = params.renames ? parseJsonParam_(params.renames, 'renames') || {} : {};
         saveInvestmentCategories_(dataSheet, targetSheet, investmentTypes, renames, movementSheet, futureMovementSheet, investmentTotalsSheet);
         syncInvestmentTotalsSheet_(investmentTotalsSheet, dataSheet, targetSheet, movementSheet);
-        bumpSections_('categories', 'investments', 'investmentTotals', 'transactions', 'futureTransactions');
         const result = buildInvestmentDataPayload_(targetSheet, objectiveSheet, movementSheet, futureMovementSheet, bankSheet, dataSheet, investmentTotalsSheet, investmentEstimateRulesSheet, investmentEstimateLedgerSheet);
         result.categoriesUpdated = true;
         return result;
@@ -129,7 +122,6 @@ function doGet(e) {
         // Los precios han cambiado: aquí sí hay que recalcular la hoja de totales, porque
         // los payloads de descarga ya no la sincronizan por su cuenta.
         syncInvestmentTotalsSheet_(investmentTotalsSheet, dataSheet, investmentSheet, movementSheet);
-        bumpSections_('investments', 'investmentTotals');
         const result = buildInvestmentDataPayload_(investmentSheet, objectiveSheet, movementSheet, futureMovementSheet, bankSheet, dataSheet, investmentTotalsSheet, investmentEstimateRulesSheet, investmentEstimateLedgerSheet);
         result.pricesUpdated = true;
         result.priceUpdateResult = priceUpdateResult;
@@ -141,20 +133,17 @@ function doGet(e) {
     } else if (action === 'clearInvestmentEstimates') {
       payload = withScriptLock_(function() {
         clearInvestmentEstimates_(investmentEstimateLedgerSheet, movementSheet);
-        bumpSections_('investmentEstimateLedger');
         return { ok: true, estimatesCleared: true, investmentEstimateLedger: [] };
       });
     } else if (action === 'simulateInvestmentEstimateRule') {
       payload = withScriptLock_(function() {
         const created = simulateInvestmentEstimateRule_(investmentEstimateRulesSheet, investmentEstimateLedgerSheet, investmentSheet, params.ruleId || '', parseNumber_(params.simulationAmount), params.simulationDate || '');
-        bumpSections_('investmentEstimateLedger');
         return { ok: true, estimateCreated: true, createdEstimate: created, investmentEstimateLedger: readInvestmentEstimateLedger_(investmentEstimateLedgerSheet) };
       });
     } else if (action === 'saveInvestmentEstimateAllocations') {
       payload = withScriptLock_(function() {
         const entries = params.entries ? parseJsonParam_(params.entries, 'entries') || [] : [];
         const saved = saveInvestmentEstimateAllocations_(investmentEstimateLedgerSheet, entries);
-        bumpSections_('investmentEstimateLedger');
         return { ok: true, estimatesSaved: saved.length, investmentEstimateLedger: readInvestmentEstimateLedger_(investmentEstimateLedgerSheet) };
       });
     } else if (action === 'sendDailyNotifications') {
@@ -357,50 +346,6 @@ function rememberAppliedTransfer_(transferSid) {
 
 function movementSidHeader_() {
   return MOVEMENT_SID_HEADER;
-}
-
-function sectionRevKey_(section) {
-  return SECTION_REV_PREFIX + String(section || '');
-}
-
-function getSectionRevision_(section) {
-  const props = PropertiesService.getDocumentProperties();
-  let rev = props.getProperty(sectionRevKey_(section));
-  if (!rev) {
-    rev = String(Date.now());
-    props.setProperty(sectionRevKey_(section), rev);
-  }
-  return rev;
-}
-
-function bumpSections_() {
-  const sections = Array.from(new Set(Array.prototype.slice.call(arguments).filter(Boolean)));
-  if (!sections.length) return '';
-  const props = PropertiesService.getDocumentProperties();
-  const stamp = `${Date.now()}-${Utilities.getUuid().slice(0, 8)}`;
-  sections.forEach(section => props.setProperty(sectionRevKey_(section), stamp));
-  return stamp;
-}
-
-function sectionsForPayload_(payload) {
-  const action = payload && payload.action || '';
-  if (action === 'addMovement') return ['transactions', 'banks', 'investmentTotals'];
-  if (action === 'addFutureMovement') return ['futureTransactions'];
-  if (action === 'addMovementsBatch') return ['transactions', 'futureTransactions', 'banks', 'investmentTotals'];
-  if (action === 'addTransfersBatch') return ['futureTransactions', 'banks'];
-  if (action === 'updateMovement' || action === 'deleteMovement' || action === 'deleteMovementsBatch') {
-    const sheet = String(payload.sheetName || '');
-    return sheet === DEFAULT_FUTURE_MOVEMENT_SHEET ? ['futureTransactions'] : ['transactions', 'investmentTotals'];
-  }
-  if (action === 'updateInvestment' || action === 'saveInvestments' || action === 'deleteInvestment') return ['investments', 'investmentTotals', 'investmentEstimateLedger'];
-  if (action === 'saveInvestmentCategories') return ['categories', 'investments', 'investmentTotals', 'transactions', 'futureTransactions'];
-  if (action === 'saveInvestmentEstimateRules') return ['investmentEstimateRules', 'investmentEstimateLedger'];
-  if (action === 'clearInvestmentEstimates' || action === 'simulateInvestmentEstimateRule' || action === 'saveInvestmentEstimateAllocations') return ['investmentEstimateLedger'];
-  if (action === 'saveInvestmentGoals') return ['investmentGoals'];
-  if (action === 'saveBanks' || action === 'transferBank') return ['banks'];
-  if (action === 'renameAccount' || action === 'deleteAccount') return ['banks', 'transactions', 'futureTransactions'];
-  if (action === 'reassignFutureMovementsAccount') return ['futureTransactions'];
-  return [];
 }
 
 function buildClientOpStatusPayload_(clientOpId) {
@@ -842,11 +787,7 @@ function finishPost_(pendingId, requestPayload, responsePayload) {
   removePendingPost_(pendingId);
   const response = responsePayload || requestPayload || { ok: true };
   if (response.ok !== false && requestPayload && requestPayload.action) {
-    // Se marca primero como procesada para que una excepción al bumpear las
-    // revisiones de sección no deje la operación "colgada" sin confirmar en el
-    // cliente, ya que la mutación principal ya se aplicó.
     rememberProcessedClientOp_(requestPayload.clientOpId || '');
-    bumpSections_.apply(null, sectionsForPayload_(requestPayload));
   }
   return json_(response);
 }
@@ -1479,10 +1420,6 @@ function ensureSheetHeaders_(sheet, headers) {
   if (changed) sheet.getRange(1, 1, 1, existing.length).setValues([existing]);
 }
 
-function investmentEstimateBaselineKey_(movementSheetName) {
-  return INVESTMENT_ESTIMATE_BASELINE_PREFIX + String(movementSheetName || DEFAULT_MOVEMENT_SHEET);
-}
-
 function investmentModePreference_() {
   const saved = PropertiesService.getDocumentProperties().getProperty(INVESTMENT_MODE_PREFERENCE_KEY);
   return saved === 'estimated' ? 'estimated' : 'real';
@@ -1627,8 +1564,6 @@ function clearInvestmentEstimates_(ledgerSheetName, movementSheetName) {
   const sheet = getOrCreateSheet_(ledgerSheetName || DEFAULT_INVESTMENT_ESTIMATE_LEDGER_SHEET, investmentEstimateLedgerHeaders_());
   ensureSheetHeaders_(sheet, investmentEstimateLedgerHeaders_());
   if (sheet.getLastRow() > 1) sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).clearContent();
-  const movementSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(movementSheetName || DEFAULT_MOVEMENT_SHEET);
-  PropertiesService.getDocumentProperties().setProperty(investmentEstimateBaselineKey_(movementSheetName || DEFAULT_MOVEMENT_SHEET), String(movementSheet ? movementSheet.getLastRow() : 1));
 }
 
 function investmentEstimateLedgerKeys_(sheet) {
@@ -1758,7 +1693,6 @@ function saveInvestmentEstimateAllocations_(ledgerSheetName, entries) {
     saved.push(entry);
     existingIds[key] = true;
   });
-  if (saved.length) bumpSections_('investmentEstimateLedger');
   return saved;
 }
 

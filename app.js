@@ -2807,7 +2807,6 @@ async function fetchAppsScriptData(options = {}) {
     objectiveSheet: state.config.objectiveSheet || "Objetivos",
     dataSheet: state.config.dataSheet
   });
-  if (options.updateInvestments) params.set("updateInvestments", "1");
   if (options.investment) params.set("investment", JSON.stringify(options.investment));
   if (options.previousInvestment) params.set("previousInvestment", JSON.stringify(options.previousInvestment));
   if (options.investmentTypes) params.set("investmentTypes", JSON.stringify(options.investmentTypes));
@@ -2822,7 +2821,6 @@ async function fetchAppsScriptData(options = {}) {
   if (options.ruleId) params.set("ruleId", String(options.ruleId));
   if (Number.isFinite(Number(options.simulationAmount))) params.set("simulationAmount", String(Number(options.simulationAmount)));
   if (options.simulationDate) params.set("simulationDate", options.simulationDate);
-  if (options.sinceRev) params.set("sinceRev", options.sinceRev);
   if (options.movementKind) params.set("movementKind", options.movementKind);
   if (Number.isFinite(Number(options.offset))) params.set("offset", String(Number(options.offset)));
   if (Number.isFinite(Number(options.limit))) params.set("limit", String(Number(options.limit)));
