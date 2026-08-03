@@ -111,6 +111,71 @@ test("downloadMovementPages respeta el tope de páginas", async () => {
   }
 });
 
+test("downloadMovementPages reanuda desde el offset guardado sin pedir páginas anteriores", async () => {
+  const previousFetch = app.fetchDownloadData;
+  const offsets = [];
+  const progress = [];
+  try {
+    app.fetchDownloadData = async options => {
+      offsets.push(options.offset);
+      if (options.offset === 250) {
+        return { ok: true, transactions: [{ sid: "nueva-1" }], total: 501, nextOffset: 500, hasMore: true };
+      }
+      return { ok: true, transactions: [{ sid: "nueva-2" }], total: 501, nextOffset: 501, hasMore: false };
+    };
+
+    const rows = await app.downloadMovementPages("realized", "movimientos", {
+      startOffset: 250,
+      initialRows: [{ sid: "ya-guardada" }],
+      onPage: page => progress.push({ nextOffset: page.nextOffset, count: page.rows.length })
+    });
+
+    assert.deepEqual(offsets, [250, 500]);
+    assert.deepEqual(Array.from(rows, row => row.sid), ["ya-guardada", "nueva-1", "nueva-2"]);
+    assert.deepEqual(progress, [{ nextOffset: 500, count: 2 }, { nextOffset: 501, count: 3 }]);
+  } finally {
+    app.fetchDownloadData = previousFetch;
+  }
+});
+
+test("una descarga inicial recupera solo el bloque que falló, sin timeout ni reinicio global", async () => {
+  const previousFetch = app.fetchAppsScriptData;
+  let calls = 0;
+  try {
+    app.fetchAppsScriptData = async () => {
+      calls += 1;
+      if (calls === 1) throw new Error("Apps Script no pudo entregar movimientos reales (página 6).");
+      return { ok: true, transactions: [{ sid: "recuperada" }] };
+    };
+    const payload = await app.fetchDownloadData(
+      { action: "downloadMovementsPage", offset: 1250 },
+      { label: "movimientos (página 6)", timeoutMs: null, recoverUntilSuccess: true }
+    );
+    assert.equal(calls, 2, "solo vuelve a intentar la página en curso");
+    assert.equal(payload.transactions[0].sid, "recuperada");
+  } finally {
+    app.fetchAppsScriptData = previousFetch;
+  }
+});
+
+test("un error de configuración no queda reintentándose durante la descarga inicial", async () => {
+  const previousFetch = app.fetchAppsScriptData;
+  let calls = 0;
+  try {
+    app.fetchAppsScriptData = async () => {
+      calls += 1;
+      throw new Error("AUTH: Invalid app token");
+    };
+    await assert.rejects(
+      () => app.fetchDownloadData({}, { timeoutMs: null, recoverUntilSuccess: true }),
+      /Invalid app token/
+    );
+    assert.equal(calls, 1);
+  } finally {
+    app.fetchAppsScriptData = previousFetch;
+  }
+});
+
 test("safeSetItem informa del fallo en vez de lanzar", () => {
   const previousSetItem = app.localStorage.setItem;
   try {

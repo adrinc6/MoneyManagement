@@ -758,7 +758,56 @@ function normalizeCacheMeta(cached = {}) {
   // Conserva la marca de caché podada por falta de espacio: refreshData la usa para
   // forzar la re-descarga de las secciones truncadas.
   if (meta.partial) base.partial = true;
+  if (meta.downloadProgress && typeof meta.downloadProgress === "object") {
+    const progress = {};
+    Object.entries(meta.downloadProgress).forEach(([section, value]) => {
+      if (!CACHE_SECTION_KEYS.includes(section)) return;
+      const nextOffset = Number(value?.nextOffset);
+      const total = Number(value?.total);
+      if (!Number.isFinite(nextOffset) || nextOffset < 0 || !Number.isFinite(total) || total < nextOffset) return;
+      progress[section] = { nextOffset, total };
+    });
+    if (Object.keys(progress).length) base.downloadProgress = progress;
+  }
   return base;
+}
+
+function movementDownloadResume(section, cached) {
+  const progress = state.cacheMeta?.downloadProgress?.[section] || cached?.meta?.downloadProgress?.[section];
+  if (!progress || !Number.isFinite(Number(progress.nextOffset)) || Number(progress.nextOffset) <= 0) return {};
+  const previousRows = Array.isArray(cached?.data?.[section]) ? cached.data[section] : state[section];
+  return {
+    startOffset: Number(progress.nextOffset),
+    initialRows: Array.isArray(previousRows) ? previousRows : []
+  };
+}
+
+function setMovementDownloadProgress(section, progress) {
+  const meta = normalizeCacheMeta({ meta: state.cacheMeta, savedAt: Date.now() });
+  meta.downloadProgress = { ...(meta.downloadProgress || {}), [section]: progress };
+  meta.savedAt = Date.now();
+  state.cacheMeta = meta;
+}
+
+function clearMovementDownloadProgress(section) {
+  if (!state.cacheMeta?.downloadProgress?.[section]) return;
+  const meta = normalizeCacheMeta({ meta: state.cacheMeta, savedAt: Date.now() });
+  delete meta.downloadProgress?.[section];
+  if (!Object.keys(meta.downloadProgress || {}).length) delete meta.downloadProgress;
+  state.cacheMeta = meta;
+}
+
+// Guarda cada página correcta inmediatamente. Si Google corta una petición posterior,
+// el siguiente toque en «Reanudar» empieza en el offset persistido, no desde la página 1.
+function commitDownloadedMovementPage(section, progress, freshData) {
+  const rows = Array.isArray(progress?.rows) ? progress.rows : [];
+  freshData[section] = rows;
+  applyDataSnapshot({ [section]: rows }, { onlyPresentSections: true });
+  setMovementDownloadProgress(section, {
+    nextOffset: Number(progress.nextOffset || 0),
+    total: Number(progress.total || 0)
+  });
+  writeDataCache({ syncedSections: [section] });
 }
 
 function touchCacheSections(sections = [], dirty = false) {
@@ -907,11 +956,17 @@ async function refreshDataImpl(options = {}) {
 
   const cached = readDataCache();
   // La primera descarga construye la caché desde cero: no debe abortarse porque
-  // haya tardado mucho. Los siguientes refrescos sí mantienen un límite de red.
+  // haya tardado mucho. Una reanudación conserva la misma garantía: ya tiene
+  // páginas correctas guardadas y solo le faltan las restantes.
   const initialDownload = !cached && scope === "all" && !updateInvestments;
+  const resumingInitialDownload = Boolean(resumeSections.length || cached?.meta?.downloadProgress);
+  const unlimitedDownload = initialDownload || resumingInitialDownload;
   const downloadRequestOptions = {
     showProgress,
-    timeoutMs: initialDownload ? null : undefined
+    timeoutMs: unlimitedDownload ? null : undefined,
+    // La primera carga se recupera siempre sobre el bloque que haya fallado, sin
+    // reiniciar páginas ya almacenadas ni imponer un timeout global.
+    recoverUntilSuccess: unlimitedDownload
   };
   if (cached) {
     state.cacheMeta = normalizeCacheMeta(cached);
@@ -1103,14 +1158,24 @@ async function refreshDataImpl(options = {}) {
         if (needsMovements || movementReconciliationNeeded) {
           syncStatusStep(showProgress, movementReconciliationNeeded ? "Reconciliando movimientos" : "Descargando movimientos", "");
           if (neededSections.includes("transactions") || movementReconciliationNeeded) {
-            const transactions = await downloadMovementPages("realized", "movimientos", downloadRequestOptions);
+            const transactions = await downloadMovementPages("realized", "movimientos", {
+              ...downloadRequestOptions,
+              ...movementDownloadResume("transactions", cached),
+              onPage: progress => commitDownloadedMovementPage("transactions", progress, freshData)
+            });
             freshData.transactions = transactions;
             commitDownloadedBlock({ transactions });
+            clearMovementDownloadProgress("transactions");
           }
           if (neededSections.includes("futureTransactions") || movementReconciliationNeeded) {
-            const futureTransactions = await downloadMovementPages("future", "movimientos futuros", downloadRequestOptions);
+            const futureTransactions = await downloadMovementPages("future", "movimientos futuros", {
+              ...downloadRequestOptions,
+              ...movementDownloadResume("futureTransactions", cached),
+              onPage: progress => commitDownloadedMovementPage("futureTransactions", progress, freshData)
+            });
             freshData.futureTransactions = futureTransactions;
             commitDownloadedBlock({ futureTransactions });
+            clearMovementDownloadProgress("futureTransactions");
           }
         }
       }
@@ -1187,7 +1252,10 @@ async function refreshDataImpl(options = {}) {
     return true;
   } catch (error) {
     console.error(error);
-    const remainingSections = requestedSections.filter(section => !downloadedSectionsThisRun.includes(section));
+    const incompleteSections = Object.keys(state.cacheMeta?.downloadProgress || {});
+    const remainingSections = requestedSections.filter(section =>
+      !downloadedSectionsThisRun.includes(section) || incompleteSections.includes(section)
+    );
     if (downloadedSectionsThisRun.length && remainingSections.length) {
       state.downloadResume = { scope, sections: remainingSections };
       syncRefreshButtonLabel();
@@ -1252,16 +1320,15 @@ function assertPayloadOk(payload) {
   }
 }
 
-// Tope duro de páginas: con MOVEMENT_PAGE_SIZE filas por página cubre cualquier
-// histórico real, y evita que un backend que repite offset deje la app descargando
-// en bucle infinito con la interfaz bloqueada en "Descargando".
-const MOVEMENT_MAX_PAGES = 200;
+// Guardia solo ante un backend defectuoso que avance para siempre. No es un timeout
+// de descarga: con 250 filas por página cubre hasta 250.000 movimientos.
+const MOVEMENT_MAX_PAGES = 1000;
 
 async function downloadMovementPages(kind, label, options = {}) {
-  let offset = 0;
+  let offset = Math.max(0, Number(options.startOffset || 0));
   let total = null;
   let pagesFetched = 0;
-  const rows = [];
+  const rows = Array.isArray(options.initialRows) ? [...options.initialRows] : [];
   syncStatusStep(options.showProgress, `Descargando ${label}\nCalculando páginas`, "");
   while (true) {
     const pageNumber = Math.floor(offset / MOVEMENT_PAGE_SIZE) + 1;
@@ -1274,7 +1341,12 @@ async function downloadMovementPages(kind, label, options = {}) {
       movementKind: kind,
       offset,
       limit: MOVEMENT_PAGE_SIZE
-    }, { label: `${label} (página ${pageNumber})`, showProgress: options.showProgress, timeoutMs: options.timeoutMs });
+    }, {
+      label: `${label} (página ${pageNumber})`,
+      showProgress: options.showProgress,
+      timeoutMs: options.timeoutMs,
+      recoverUntilSuccess: options.recoverUntilSuccess
+    });
     assertPayloadOk(payload);
     const pageRows = kind === "future" ? (payload.futureTransactions || []) : (payload.transactions || []);
     rows.push(...pageRows);
@@ -1283,7 +1355,9 @@ async function downloadMovementPages(kind, label, options = {}) {
     const previousOffset = offset;
     offset = Number.isFinite(Number(payload.nextOffset)) ? Number(payload.nextOffset) : offset + pageRows.length;
     syncStatusStep(options.showProgress, `Descargando ${label}\nPágina ${pageNumber}/${totalPages} · ${Math.min(rows.length, total)}/${total}`, "");
-    if (!payload.hasMore || !pageRows.length) break;
+    const completed = !payload.hasMore || !pageRows.length;
+    options.onPage?.({ rows: [...rows], nextOffset: offset, total, completed });
+    if (completed) break;
     pagesFetched += 1;
     if (offset <= previousOffset) throw new Error(`La paginación de ${label} no avanza (offset repetido).`);
     if (pagesFetched >= MOVEMENT_MAX_PAGES) throw new Error(`Descarga de ${label} interrumpida: demasiadas páginas (${MOVEMENT_MAX_PAGES}).`);
@@ -2691,14 +2765,39 @@ function appsScriptJsonpUrl(url, callback) {
 // sin lanzar un segundo intento que reinicie la descarga.
 const DOWNLOAD_TIMEOUT_MS = 330000;
 
-// Una descarga representa un bloque concreto. No hay reintentos automáticos: si la
-// red falla, se conserva lo descargado y el usuario puede reanudar solo ese bloque.
-async function fetchDownloadData(options = {}, { label = "datos", showProgress = false, timeoutMs = DOWNLOAD_TIMEOUT_MS } = {}) {
-  try {
-    return await fetchAppsScriptData({ ...options, timeoutMs });
-  } catch (error) {
-    logSyncEvent(`Falló la descarga de ${label}; no se reiniciará automáticamente.`, "warn", error.message || String(error));
-    throw error;
+function isPermanentDownloadError(error) {
+  const message = String(error?.message || error || "");
+  return /invalid app token|^auth:|sheet not found|unknown action|falta la url|url de apps script|no es válida/i.test(message);
+}
+
+function waitForDownloadRecovery(attempt) {
+  // Solo hay una pequeña espera tras un error de transporte, para no golpear la
+  // misma ejecución de Google en ráfaga. No es un límite temporal: se sigue hasta
+  // que la misma página responda o aparezca un error de configuración real.
+  const delay = Math.min(5000, 500 * Math.max(1, Number(attempt) || 1));
+  return new Promise(resolve => window.setTimeout(resolve, delay));
+}
+
+// Una descarga inicial no se abandona por un error transitorio. Solo se repite el
+// bloque que estaba en curso; las páginas anteriores siguen en caché y nunca se
+// reinicia la descarga completa.
+async function fetchDownloadData(options = {}, { label = "datos", showProgress = false, timeoutMs = DOWNLOAD_TIMEOUT_MS, recoverUntilSuccess = false } = {}) {
+  let recoveryAttempt = 0;
+  while (true) {
+    try {
+      return await fetchAppsScriptData({ ...options, timeoutMs });
+    } catch (error) {
+      if (!recoverUntilSuccess || isPermanentDownloadError(error)) {
+        logSyncEvent(`Falló la descarga de ${label}; no se reiniciará automáticamente.`, "warn", error.message || String(error));
+        throw error;
+      }
+      recoveryAttempt += 1;
+      if (recoveryAttempt === 1 || recoveryAttempt % 6 === 0) {
+        logSyncEvent(`Conexión irregular al descargar ${label}; continúo desde esta misma página.`, "warn", error.message || String(error));
+      }
+      syncStatusStep(showProgress, `Descargando ${label}\nReconectando sin reiniciar`, "warn");
+      await waitForDownloadRecovery(recoveryAttempt);
+    }
   }
 }
 
