@@ -43,7 +43,8 @@ const DEFAULT_CONFIG = {
   bankSheet: "Bancos",
   objectiveSheet: "Objetivos",
   dataSheet: "Datos",
-  initialCash: 6122.08
+  // El saldo vive únicamente en la hoja Bancos. Ya no se reconstruye desde una
+  // constante histórica paralela que podía divergir del saldo real.
 };
 
 const STATIC_TYPES = ["Gasto", "Ingreso", "Inversión", "Transferencia"];
@@ -155,6 +156,14 @@ const state = {
   pendingInvestmentSummaryPopup: null,
   futureMovementAccountPromptDismissed: false
 };
+
+let dataRevision = 0;
+const summaryMemo = new Map();
+
+function invalidateDerivedState() {
+  dataRevision += 1;
+  summaryMemo.clear();
+}
 
 // Los iconos vienen de un CDN (lucide). Si el CDN falla o no hay red en la primera
 // carga, la llamada directa lanzaba un ReferenceError en pleno arranque y ningún
@@ -811,7 +820,7 @@ function commitDownloadedMovementPage(section, progress, freshData) {
     nextOffset: Number(progress.nextOffset || 0),
     total: Number(progress.total || 0)
   });
-  writeDataCache({ syncedSections: [section] });
+  writeDataCache({ syncedSections: [section], quiet: true });
 }
 
 function touchCacheSections(sections = [], dirty = false) {
@@ -1069,9 +1078,9 @@ async function refreshDataImpl(options = {}) {
       downloadedSectionsThisRun = unique([...downloadedSectionsThisRun, ...sections]);
       syncedSections = unique([...syncedSections, ...sections]);
       markCacheSectionsSynced(sections);
-      syncOptions();
-      renderCurrentView();
-      writeDataCache({ syncedSections: sections });
+      // La descarga es una transacción de UI: se persiste cada bloque para poder
+      // reanudar, pero opciones, cálculos y DOM se actualizan una sola vez al final.
+      writeDataCache({ syncedSections: sections, quiet: true });
     };
 
     // Una sección "dirty" (con cambios locales sin confirmar) no se descarga para no
@@ -1164,7 +1173,7 @@ async function refreshDataImpl(options = {}) {
           moveSkipSids = resolution.skipSids;
         }
         if (needsCore || moveDueNow) {
-          const coreAction = moveDueNow ? "moveDueFutureMovements" : "downloadCoreData";
+          const coreAction = moveDueNow ? "moveDueFutureMovements" : "snapshot";
           syncStatusStep(showProgress, moveDueNow ? "Moviendo futuros vencidos\nDescargando datos base" : "Descargando datos base", "");
           core = await fetchDownloadData({ action: coreAction, skipFutureSids: moveSkipSids }, { label: "datos base", ...downloadRequestOptions });
           assertPayloadOk(core);
@@ -1185,25 +1194,40 @@ async function refreshDataImpl(options = {}) {
             categories: freshData.categories
           });
         }
+        const prefetchedPages = core?.movementPages || {};
         const movementReconciliationNeeded = moveDueNow && !movedFutureMovements.length;
         if (needsMovements || movementReconciliationNeeded) {
           syncStatusStep(showProgress, movementReconciliationNeeded ? "Reconciliando movimientos" : "Descargando movimientos", "");
           if (neededSections.includes("transactions") || movementReconciliationNeeded) {
-            const transactions = await downloadMovementPages("realized", "movimientos", {
-              ...downloadRequestOptions,
-              ...movementDownloadResume("transactions", cached),
-              onPage: progress => commitDownloadedMovementPage("transactions", progress, freshData)
-            });
+            const prefetched = prefetchedPages.realized;
+            const resume = movementDownloadResume("transactions", cached);
+            const seed = !resume.startOffset && prefetched
+              ? { startOffset: prefetched.nextOffset, initialRows: core.transactions || [] }
+              : resume;
+            const transactions = prefetched && !prefetched.hasMore && !resume.startOffset
+              ? (core.transactions || [])
+              : await downloadMovementPages("realized", "movimientos", {
+                ...downloadRequestOptions,
+                ...seed,
+                onPage: progress => commitDownloadedMovementPage("transactions", progress, freshData)
+              });
             freshData.transactions = transactions;
             commitDownloadedBlock({ transactions });
             clearMovementDownloadProgress("transactions");
           }
           if (neededSections.includes("futureTransactions") || movementReconciliationNeeded) {
-            const futureTransactions = await downloadMovementPages("future", "movimientos futuros", {
-              ...downloadRequestOptions,
-              ...movementDownloadResume("futureTransactions", cached),
-              onPage: progress => commitDownloadedMovementPage("futureTransactions", progress, freshData)
-            });
+            const prefetched = prefetchedPages.future;
+            const resume = movementDownloadResume("futureTransactions", cached);
+            const seed = !resume.startOffset && prefetched
+              ? { startOffset: prefetched.nextOffset, initialRows: core.futureTransactions || [] }
+              : resume;
+            const futureTransactions = prefetched && !prefetched.hasMore && !resume.startOffset
+              ? (core.futureTransactions || [])
+              : await downloadMovementPages("future", "movimientos futuros", {
+                ...downloadRequestOptions,
+                ...seed,
+                onPage: progress => commitDownloadedMovementPage("futureTransactions", progress, freshData)
+              });
             freshData.futureTransactions = futureTransactions;
             commitDownloadedBlock({ futureTransactions });
             clearMovementDownloadProgress("futureTransactions");
@@ -1278,7 +1302,7 @@ async function refreshDataImpl(options = {}) {
     logSyncEvent(`Actualización completada: ${syncedSections.length ? syncedSections.join(", ") : "sin cambios"}.`, "ok");
     state.downloadResume = null;
     syncRefreshButtonLabel();
-    renderSyncSettingsPanel();
+    if (!options.quiet) renderSyncSettingsPanel();
     if (showProgress) window.setTimeout(() => setSyncStatus("", ""), 2500);
     return true;
   } catch (error) {
@@ -1369,7 +1393,7 @@ async function downloadMovementPages(kind, label, options = {}) {
       syncStatusStep(options.showProgress, `Descargando ${label}\nPágina ${pageNumber}/${knownTotalPages}`, "");
     }
     const request = {
-      action: "downloadMovementsPage",
+      action: "snapshot",
       movementKind: kind,
       offset,
       limit: pageLimit
@@ -1399,7 +1423,7 @@ async function downloadMovementPages(kind, label, options = {}) {
     // Puede haber una página formada solo por filas antiguas/incompletas. No es el
     // final: el backend indica explícitamente si quedan filas después de ella.
     const completed = !payload.hasMore;
-    options.onPage?.({ rows: [...rows], nextOffset: offset, total, completed });
+    options.onPage?.({ rows: [...rows], pageRows, nextOffset: offset, total, completed });
     if (completed) break;
     pagesFetched += 1;
     if (offset <= previousOffset) throw new Error(`La paginación de ${label} no avanza (offset repetido).`);
@@ -1573,6 +1597,7 @@ function applyDataSnapshot(data = {}, { onlyPresentSections = false } = {}) {
   });
   reportDroppedRows(dropped);
   persistMintedSids(data);
+  invalidateDerivedState();
 }
 
 function dataCacheConfigKey() {
@@ -1593,6 +1618,7 @@ function readDataCache() {
 
 function writeDataCache(options = {}) {
   try {
+    if (!options.quiet) invalidateDerivedState();
     const syncedSections = Array.isArray(options.syncedSections) ? options.syncedSections : [];
     const dirtySections = Array.isArray(options.dirtySections) ? options.dirtySections : [];
     const touchedSections = new Set([...syncedSections, ...dirtySections]);
@@ -2757,7 +2783,7 @@ async function fetchAppsScriptData(options = {}) {
   if (options.movementKind) params.set("movementKind", options.movementKind);
   if (Number.isFinite(Number(options.offset))) params.set("offset", String(Number(options.offset)));
   if (Number.isFinite(Number(options.limit))) params.set("limit", String(Number(options.limit)));
-  const requestLabel = action === "downloadMovementsPage"
+  const requestLabel = (action === "downloadMovementsPage" || (action === "snapshot" && options.movementKind))
     ? `movimientos ${options.movementKind === "future" ? "futuros" : "reales"} (página ${Math.floor(Number(options.offset || 0) / MOVEMENT_PAGE_SIZE) + 1})`
     : action === "downloadCoreData"
       ? "datos base"
@@ -3444,38 +3470,52 @@ async function withButtonState(button, action) {
 }
 
 function calculateSummary(month) {
+  const memoKey = `${dataRevision}|${state.investmentMode}|${month}`;
+  if (summaryMemo.has(memoKey)) return summaryMemo.get(memoKey);
   const [year, monthNum] = month.split("-").map(Number);
-  const txMonth = state.transactions.filter(t => t.date.getFullYear() === year && t.date.getMonth() + 1 === monthNum);
-  const untilToday = state.transactions.filter(t => t.date <= endOfToday());
-  const income = sum(txMonth.filter(isIncome).map(t => t.amount));
-  const expenses = Math.abs(sum(txMonth.filter(isMonthlyExpense).map(t => t.amount)));
-  const investedMonth = Math.abs(sum(txMonth.filter(isInvestment).map(t => t.amount)));
-  const balance = sum(txMonth.map(t => t.amount));
-  const computedBank = DEFAULT_CONFIG.initialCash
-    + sumTransactionsByType(untilToday, "Ingreso")
-    + sumTransactionsByType(untilToday, "Gasto")
-    - sumTransactionsByType(untilToday, "Retiro")
-    + sumTransactionsByType(untilToday, "Inversion");
+  let income = 0;
+  let expensesSigned = 0;
+  let investedMonthSigned = 0;
+  let balance = 0;
+  const investmentCostByType = new Map();
+  // Una sola pasada sustituye los filtros completos repetidos por mes, tipo y
+  // categoría. Los costes de inversión son un dato derivado de los movimientos.
+  for (const transaction of state.transactions) {
+    const amount = safeNumber(transaction.amount);
+    const inMonth = transaction.date.getFullYear() === year && transaction.date.getMonth() + 1 === monthNum;
+    if (inMonth) {
+      balance += amount;
+      if (isIncome(transaction)) income += amount;
+      if (isMonthlyExpense(transaction)) expensesSigned += amount;
+      if (isInvestment(transaction)) investedMonthSigned += amount;
+    }
+    if (isInvestment(transaction)) {
+      const category = localInvestmentCategoryForMovement(transaction);
+      if (category) {
+        const key = normalizeType(category);
+        investmentCostByType.set(key, (investmentCostByType.get(key) || 0) + Math.abs(amount));
+      }
+    }
+  }
+  const expenses = Math.abs(expensesSigned);
+  const investedMonth = Math.abs(investedMonthSigned);
   const bankAccountsTotal = sum(state.banks.map(b => b.dinero));
-  const bank = computedBank;
+  const bank = bankAccountsTotal;
+  const computedBank = bank;
   const investedByType = {};
   const valueByType = {};
   const dailyByType = {};
   const dailyPreviousByType = {};
-  const totalsByType = investmentTotalsByType();
+  const positionsByType = new Map();
+  for (const position of effectiveInvestmentPositions()) {
+    const key = normalizeType(position.tipo);
+    if (!positionsByType.has(key)) positionsByType.set(key, []);
+    positionsByType.get(key).push(position);
+  }
   investmentTypes().forEach(type => {
-    const totalRow = totalsByType.get(normalizeType(type));
-    if (totalRow) {
-      investedByType[type] = safeNumber(totalRow.cost);
-      valueByType[type] = safeNumber(totalRow.value);
-      dailyPreviousByType[type] = safeNumber(totalRow.lastValue);
-      dailyByType[type] = Number.isFinite(totalRow.daily) ? safeNumber(totalRow.daily) : valueByType[type] - dailyPreviousByType[type];
-      return;
-    }
-    const positions = effectiveInvestmentPositions().filter(i => normalizeType(i.tipo) === normalizeType(type));
-    investedByType[type] = Math.abs(sum(untilToday
-      .filter(t => isInvestment(t) && normalizeType(t.descripcion) === normalizeType(type))
-      .map(t => t.amount)));
+    const key = normalizeType(type);
+    const positions = positionsByType.get(key) || [];
+    investedByType[type] = investmentCostByType.get(key) || 0;
     valueByType[type] = sum(positions.map(i => currentInvestmentTotal(i)));
     dailyPreviousByType[type] = sum(positions.map(i => previousInvestmentTotal(i)));
     dailyByType[type] = valueByType[type] - dailyPreviousByType[type];
@@ -3484,7 +3524,7 @@ function calculateSummary(month) {
   const valueTotal = sum(Object.values(valueByType));
   const dailyPreviousTotal = sum(Object.values(dailyPreviousByType));
   const dailyVariationTotal = valueTotal - dailyPreviousTotal;
-  return {
+  const result = {
     month, income, expenses, investedMonth, balance, bank,
     computedBank, bankAccountsTotal,
     investedByType, valueByType, investedTotal, valueTotal,
@@ -3495,11 +3535,8 @@ function calculateSummary(month) {
     profitLoss: valueTotal - investedTotal,
     profitLossPct: investedTotal ? (valueTotal - investedTotal) / investedTotal : 0
   };
-}
-
-function sumTransactionsByType(transactions, type) {
-  const normalized = normalizeType(type);
-  return sum(transactions.filter(t => normalizeType(t.tipo) === normalized).map(t => t.amount));
+  summaryMemo.set(memoKey, result);
+  return result;
 }
 
 function getSituationBreakdown(month, mode) {
@@ -5339,49 +5376,6 @@ function currentPriceForEstimate(entry, match) {
   return Number.isFinite(used) && used > 0 ? used : NaN;
 }
 
-function investmentTotalsByType() {
-  const map = new Map();
-  (state.investmentTotals || []).forEach(item => {
-    if (!item || !item.tipo) return;
-    map.set(normalizeType(item.tipo), { ...item });
-  });
-  if (!investmentEstimateEnabled()) return map;
-  activeInvestmentEstimateLedger().forEach(entry => {
-    const type = prettyType(entry.tipo || defaultInvestmentType());
-    const key = normalizeType(type);
-    const existing = map.get(key) || {
-      tipo: type,
-      cost: realizedInvestmentCostForType(type),
-      value: 0,
-      lastValue: 0,
-      daily: 0,
-      order: 0
-    };
-    const match = findMatchingInvestmentPosition(state.investments, entry);
-    const price = currentPriceForEstimate(entry, match);
-    const lastPrice = safeNumber(match?.valorAnterior);
-    const shares = safeNumber(entry.sharesEstimadas);
-    const value = shares * (Number.isFinite(price) && price > 0 ? price : safeNumber(entry.precioUsado));
-    const lastValue = shares * (Number.isFinite(lastPrice) && lastPrice > 0 ? lastPrice : (Number.isFinite(price) ? price : safeNumber(entry.precioUsado)));
-    // Cost already comes from the realized investment movement.
-    // Estimated allocations only change position value and shares.
-    existing.value = safeNumber(existing.value) + value;
-    existing.lastValue = safeNumber(existing.lastValue) + lastValue;
-    existing.daily = safeNumber(existing.value) - safeNumber(existing.lastValue);
-    existing.gain = safeNumber(existing.value) - safeNumber(existing.cost);
-    existing.gainPct = existing.cost ? existing.gain / existing.cost * 100 : 0;
-    map.set(key, existing);
-  });
-  return map;
-}
-
-function realizedInvestmentCostForType(type) {
-  return Math.abs(sum((state.transactions || [])
-    .filter(movement => isInvestment(movement)
-      && normalizeType(localInvestmentCategoryForMovement(movement)) === normalizeType(type))
-    .map(movement => movement.amount)));
-}
-
 function localInvestmentCategoryForMovement(movement) {
   if (!movement || !isInvestment(movement)) return '';
   const candidates = [movement.concepto, movement.descripcion].map(v => String(v || '').trim()).filter(Boolean);
@@ -6683,8 +6677,10 @@ function buildEvolutionRows(start, end) {
 
 function bankAtMonthSnapshot(month, day) {
   const end = monthSnapshotDate(month, day);
-  return DEFAULT_CONFIG.initialCash
-    + sum(state.transactions.filter(t => t.date <= end).map(t => t.amount));
+  const currentBank = sum(state.banks.map(bank => bank.dinero));
+  // Bancos es la fuente actual: para un corte histórico se deshacen únicamente los
+  // movimientos posteriores. Evita mantener un saldo inicial duplicado.
+  return currentBank - sum(state.transactions.filter(t => t.date > end).map(t => t.amount));
 }
 
 function investedAtMonthSnapshot(month, day) {

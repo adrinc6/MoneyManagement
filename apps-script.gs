@@ -43,6 +43,8 @@ function doGet(e) {
     requireToken_(params.token || '');
     if (action === 'checkClientOp') {
       payload = buildClientOpStatusPayload_(params.clientOpId || '');
+    } else if (action === 'snapshot') {
+      payload = buildSnapshotPayload_(sheets, params);
     } else if (action === 'quickStatus') {
       payload = buildQuickStatusPayload_(movementSheet, futureMovementSheet, investmentSheet, bankSheet, dataSheet, investmentTotalsSheet);
     } else if (action === 'downloadData') {
@@ -226,23 +228,32 @@ function receivedClientOpsKey_() {
   return 'moneyReceivedClientOps';
 }
 
-function initialDownloadPreparationKey_() {
-  return 'moneyInitialDownloadPreparation';
-}
-
-function setInitialDownloadPreparationPhase_(clientOpId, phase) {
-  if (!clientOpId) return;
-  const now = Date.now();
-  const items = readBoundedList_(initialDownloadPreparationKey_())
-    .filter(function(item) { return item && item.id !== clientOpId && now - Number(item.at || 0) < 15 * 60 * 1000; });
-  items.push({ id: clientOpId, phase: phase || 'recibida', at: now });
-  storeBoundedList_(initialDownloadPreparationKey_(), items);
-}
-
-function initialDownloadPreparationPhase_(clientOpId) {
-  if (!clientOpId) return '';
-  const item = readBoundedList_(initialDownloadPreparationKey_()).find(function(entry) { return entry && entry.id === clientOpId; });
-  return item ? String(item.phase || '') : '';
+// Una apertura normal obtiene datos base y las primeras páginas de ambos históricos
+// en una sola ejecución. Las continuaciones usan la misma acción con movementKind,
+// evitando mantener varias rutas de descarga con contratos solapados.
+function buildSnapshotPayload_(sheets, params) {
+  const startedAt = Date.now();
+  const kind = String(params && params.movementKind || '');
+  if (kind) {
+    const key = kind === 'future' ? 'futureTransactions' : 'transactions';
+    const sheetName = kind === 'future' ? sheets.future : sheets.movement;
+    const pagePayload = buildMovementPagePayload_(sheetName, key, params.offset, params.limit || 1000);
+    pagePayload.serverMs = Date.now() - startedAt;
+    pagePayload.rangesRead = 2;
+    return pagePayload;
+  }
+  const payload = buildDataPayload_(sheets, { banks: true, estimates: false, movedFutureMovements: [] });
+  const realized = readMovementsPage_(sheets.movement, 0, 1000, false);
+  const future = readMovementsPage_(sheets.future, 0, 1000, true);
+  payload.transactions = realized.rows;
+  payload.futureTransactions = future.rows;
+  payload.movementPages = {
+    realized: { nextOffset: realized.nextOffset, total: realized.total, hasMore: realized.hasMore },
+    future: { nextOffset: future.nextOffset, total: future.total, hasMore: future.hasMore }
+  };
+  payload.serverMs = Date.now() - startedAt;
+  payload.rangesRead = 2;
+  return payload;
 }
 
 // Marca "recibida, esperando turno". La fila de "Pendientes" solo se escribe DESPUÉS
@@ -317,21 +328,20 @@ function movementSidHeader_() {
 
 function buildClientOpStatusPayload_(clientOpId) {
   if (!clientOpId) return { ok: true, completed: false, pending: false };
-  const phase = initialDownloadPreparationPhase_(clientOpId);
-  if (wasClientOpProcessed_(clientOpId)) return { ok: true, completed: true, pending: false, phase: phase || 'lista' };
+  if (wasClientOpProcessed_(clientOpId)) return { ok: true, completed: true, pending: false };
   // "pending" gana al último error: si hay un reintento en curso, el error anterior
   // ya no describe el estado actual de la operación.
-  if (isClientOpPending_(clientOpId)) return { ok: true, completed: false, pending: true, phase: phase || 'recibida' };
+  if (isClientOpPending_(clientOpId)) return { ok: true, completed: false, pending: true };
   // Recibida pero todavía esperando el script lock: sigue viva, no es un fallo.
-  if (isClientOpReceived_(clientOpId)) return { ok: true, completed: false, pending: true, phase: phase || 'recibida' };
+  if (isClientOpReceived_(clientOpId)) return { ok: true, completed: false, pending: true };
   const failure = clientOpFailure_(clientOpId);
   if (failure) {
     // retryable: fallos transitorios (lock ocupado) que el cliente debe reintentar
     // con su backoff normal en vez de detener la operación con error terminal.
     const retryable = String(failure).indexOf('LOCK_TIMEOUT') === 0;
-    return { ok: true, completed: false, pending: false, failed: true, retryable, phase, error: failure };
+    return { ok: true, completed: false, pending: false, failed: true, retryable, error: failure };
   }
-  return { ok: true, completed: false, pending: false, phase };
+  return { ok: true, completed: false, pending: false };
 }
 
 // Guarda una lista acotada en DocumentProperties (límite de 9 KB por valor),
@@ -489,7 +499,6 @@ function doPost(e) {
     // "pendiente" mientras esta petición espera su turno, en vez de "no sé nada"
     // (que el cliente contabilizaba como intento fallido).
     rememberReceivedClientOp_(payload.clientOpId || '');
-    if (payload.action === 'prepareInitialDownload') setInitialDownloadPreparationPhase_(payload.clientOpId || '', 'recibida');
     // withScriptLock_ es el único sitio que sabe esperar el lock, con su timeout y su
     // error LOCK_TIMEOUT reintentable. doPost lo reimplementaba a mano, duplicando el
     // literal de 30 s, el mensaje y el manejo de scriptLockHeld_.
@@ -518,7 +527,6 @@ function doPost(e) {
     // Excepción: un timeout de lock NO es un fallo de la operación — si se registrara,
     // el cliente la marcaría como error terminal por una colisión transitoria.
     const message = String(err && err.message || err || '');
-    if (payload && payload.action === 'prepareInitialDownload') setInitialDownloadPreparationPhase_(payload.clientOpId || '', 'error');
     if (message.indexOf('LOCK_TIMEOUT') !== 0) {
       rememberClientOpFailure_(payload && payload.clientOpId || '', message);
     }
@@ -533,16 +541,6 @@ function doPost(e) {
 // Ajustes de la app.
 // Despacho de acciones de doPost. Se ejecuta siempre con el script lock tomado.
 function dispatchPostAction_(payload, pendingId) {
-    if (payload.action === 'prepareInitialDownload') {
-      const sheets = resolveSheets_(payload);
-      setInitialDownloadPreparationPhase_(payload.clientOpId || '', 'preparando movimientos');
-      ensureMovementSidColumnCached_(requireSheet_(sheets.movement));
-      ensureMovementSidColumnCached_(requireSheet_(sheets.future));
-      setInitialDownloadPreparationPhase_(payload.clientOpId || '', 'sincronizando totales');
-      syncInvestmentTotalsSheet_(sheets.investmentTotals, sheets.investment, sheets.movement);
-      setInitialDownloadPreparationPhase_(payload.clientOpId || '', 'lista');
-      return finishPost_(pendingId, payload, { ok: true, prepared: true });
-    }
     if (payload.action === 'addMovement') {
       addMovement_(Object.assign({}, payload.movement || {}, { cuenta: payload.account || payload.movement && payload.movement.cuenta || '' }), payload.sheetName || DEFAULT_MOVEMENT_SHEET);
       // Solo los movimientos de inversión cambian el coste y, con él, la hoja de totales.
@@ -1134,7 +1132,21 @@ function moveDueFutureMovementsLocked_(futureSheetName, movementSheetName, bankS
   const skipSet = {};
   (skipSids || []).forEach(function(sid) { const trimmed = String(sid || '').trim(); if (trimmed) skipSet[trimmed] = true; });
   const sidCol = ensureMovementSidColumnCached_(futureSheet);
-  const values = futureSheet.getDataRange().getValues();
+  const lastRow = futureSheet.getLastRow();
+  const width = Math.max(9, futureSheet.getLastColumn(), sidCol);
+  const values = lastRow ? futureSheet.getRange(1, 1, lastRow, width).getValues() : [];
+  const bankRows = bankSheet && bankSheet.getLastRow() >= 2
+    ? bankSheet.getRange(2, 1, bankSheet.getLastRow() - 1, 2).getValues()
+    : [];
+  const bankNames = {};
+  bankRows.forEach(function(row) { bankNames[normalizeType_(row[0])] = true; });
+  const bankDeltas = {};
+  const addBankDelta = function(account, delta) {
+    const key = normalizeType_(account);
+    if (!key || !Number.isFinite(Number(delta)) || Number(delta) === 0) return;
+    if (!bankDeltas[key]) bankDeltas[key] = { account: account, delta: 0 };
+    bankDeltas[key].delta += Number(delta);
+  };
   const today = new Date();
   today.setHours(23, 59, 59, 999);
   const moved = [];
@@ -1155,13 +1167,14 @@ function moveDueFutureMovementsLocked_(futureSheetName, movementSheetName, bankS
       const amount = Math.abs(Number(movement.importe || 0));
       if (!accounts.from || !accounts.to || accounts.from === accounts.to || !Number.isFinite(amount) || amount <= 0) continue;
       // Account renamed or deleted since the transfer was scheduled: leave it as a future movement instead of crashing.
-      if (bankSheet && (!findBankRow_(bankSheet, accounts.from) || !findBankRow_(bankSheet, accounts.to))) continue;
-      transferBank_(bankSheetName, accounts.from, accounts.to, amount);
+      if (bankSheet && (!bankNames[normalizeType_(accounts.from)] || !bankNames[normalizeType_(accounts.to)])) continue;
+      addBankDelta(accounts.from, -amount);
+      addBankDelta(accounts.to, amount);
       moved.push({ ...movement, cuenta: `${accounts.from} → ${accounts.to}`, transferFrom: accounts.from, transferTo: accounts.to });
     } else {
-      if (row[8] && bankSheet && !findBankRow_(bankSheet, row[8])) continue;
+      if (row[8] && bankSheet && !bankNames[normalizeType_(row[8])]) continue;
       pendingAppends.push({ movement, sid: sid || movementSidFrom_(movement), account: row[8] || '' });
-      if (row[8]) adjustBank_(bankSheetName, row[8], movement.importe);
+      if (row[8]) addBankDelta(row[8], movement.importe);
       moved.push({ ...movement, cuenta: row[8] || '' });
     }
     rowsToDelete.push(r + 1);
@@ -1170,7 +1183,18 @@ function moveDueFutureMovementsLocked_(futureSheetName, movementSheetName, bankS
     const movementSheet = requireSheet_(movementSheetName);
     appendMovementRows_(movementSheet, pendingAppends);
   }
-  rowsToDelete.sort((a, b) => b - a).forEach(rowNumber => futureSheet.deleteRow(rowNumber));
+  const balanceChanges = Object.keys(bankDeltas).map(function(key) { return bankDeltas[key]; });
+  if (balanceChanges.length) adjustBankBalances_(bankSheetName, balanceChanges);
+  // Borrar grupos contiguos evita una llamada remota y un desplazamiento de filas por
+  // cada vencimiento. Se procesa de abajo arriba para conservar los índices.
+  const orderedRows = rowsToDelete.sort(function(a, b) { return a - b; });
+  const groups = [];
+  orderedRows.forEach(function(rowNumber) {
+    const last = groups[groups.length - 1];
+    if (last && rowNumber === last.start + last.count) last.count += 1;
+    else groups.push({ start: rowNumber, count: 1 });
+  });
+  groups.reverse().forEach(function(group) { futureSheet.deleteRows(group.start, group.count); });
   return moved.reverse();
 }
 
