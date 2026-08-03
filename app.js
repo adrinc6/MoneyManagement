@@ -2933,6 +2933,10 @@ async function fetchAppsScriptData(options = {}) {
   if (options.movementKind) params.set("movementKind", options.movementKind);
   if (Number.isFinite(Number(options.offset))) params.set("offset", String(Number(options.offset)));
   if (Number.isFinite(Number(options.limit))) params.set("limit", String(Number(options.limit)));
+  // Un 404 transitorio de la infraestructura de Apps Script puede quedar reutilizado
+  // por una caché intermedia. En los reintentos cambiamos la URL para obligar a Google
+  // a resolver de nuevo el despliegue, sin alterar la acción que procesa doGet.
+  if (Number(options.requestAttempt) > 0) params.set("_retry", String(Number(options.requestAttempt)));
   const requestLabel = action === "downloadMovementsPage"
     ? `movimientos ${options.movementKind === "future" ? "futuros" : "reales"} (página ${Math.floor(Number(options.offset || 0) / MOVEMENT_PAGE_SIZE) + 1})`
     : action === "downloadCoreData"
@@ -3063,6 +3067,9 @@ async function sendAppsScriptRequest(url, { timeoutMs = REQUEST_TIMEOUT_MS, requ
       method,
       signal: controller.signal,
       redirect: "follow",
+      // Las respuestas del despliegue son datos vivos. En particular, no debe
+      // reutilizarse un 404 temporal de script.google.com o del redirect de ContentService.
+      cache: "no-store",
       ...(body === null ? {} : { headers: { "Content-Type": POST_CONTENT_TYPE }, body })
     });
   } catch (error) {
@@ -3105,7 +3112,7 @@ async function fetchDownloadData(options = {}, { label = "datos", showProgress =
   let recoveryAttempt = 0;
   while (true) {
     try {
-      const payload = await fetchAppsScriptData({ ...options, timeoutMs });
+      const payload = await fetchAppsScriptData({ ...options, timeoutMs, requestAttempt: recoveryAttempt });
       // Dentro del bucle: un {ok:false} transitorio del servidor merece el mismo
       // reintento que un corte de red.
       assertPayloadOk(payload);

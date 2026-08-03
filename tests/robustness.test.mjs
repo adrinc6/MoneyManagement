@@ -169,9 +169,11 @@ test("un fallo repetido reduce solo la página problemática", async () => {
 test("una descarga inicial recupera solo el bloque que falló, sin timeout ni reinicio global", async () => {
   const previousFetch = app.fetchAppsScriptData;
   let calls = 0;
+  const requestAttempts = [];
   try {
-    app.fetchAppsScriptData = async () => {
+    app.fetchAppsScriptData = async options => {
       calls += 1;
+      requestAttempts.push(options.requestAttempt);
       if (calls === 1) throw new Error("Apps Script no pudo entregar movimientos reales (página 6).");
       return { ok: true, transactions: [{ sid: "recuperada" }] };
     };
@@ -180,6 +182,7 @@ test("una descarga inicial recupera solo el bloque que falló, sin timeout ni re
       { label: "movimientos (página 6)", timeoutMs: null, recoverUntilSuccess: true }
     );
     assert.equal(calls, 2, "solo vuelve a intentar la página en curso");
+    assert.deepEqual(requestAttempts, [0, 1], "el reintento puede evitar una respuesta HTTP cacheada");
     assert.equal(payload.transactions[0].sid, "recuperada");
   } finally {
     app.fetchAppsScriptData = previousFetch;
@@ -471,7 +474,9 @@ test("no se lanzan más peticiones simultáneas de las permitidas", async () => 
   try {
     let inFlight = 0;
     let maxInFlight = 0;
-    app.fetch = async () => {
+    const fetchOptions = [];
+    app.fetch = async (_url, options) => {
+      fetchOptions.push(options);
       inFlight++;
       maxInFlight = Math.max(maxInFlight, inFlight);
       await new Promise(resolve => globalThis.setTimeout(resolve, 0));
@@ -482,6 +487,7 @@ test("no se lanzan más peticiones simultáneas de las permitidas", async () => 
     await Promise.all(Array.from({ length: 8 }, () => app.appsScriptRequest("https://example.test/exec", {})));
 
     assert.ok(maxInFlight <= 2, `nunca más de 2 a la vez (llegó a ${maxInFlight})`);
+    assert.ok(fetchOptions.every(options => options.cache === "no-store"), "las respuestas vivas no se cachean");
   } finally {
     app.fetch = previousFetch;
   }
