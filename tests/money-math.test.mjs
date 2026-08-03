@@ -120,24 +120,6 @@ test("calculateSummary agrega ingresos, gastos e inversión del mes", () => {
   }
 });
 
-test("calculateSummary se memoiza hasta que cambia el snapshot", () => {
-  const app = loadApp();
-  app.applyDataSnapshot({
-    transactions: [], futureTransactions: [], investments: [], investmentTotals: [],
-    investmentEstimateRules: [], investmentEstimateLedger: [], banks: [{ cuenta: "Banco", dinero: 123 }],
-    investmentGoals: {}, categories: { types: [], concepts: [], investmentTypes: [] }
-  });
-  const first = app.calculateSummary("2026-01");
-  const second = app.calculateSummary("2026-01");
-  assert.equal(first, second, "la misma revisión y mes reutilizan el cálculo");
-  assert.equal(first.bank, 123, "Bancos es la única fuente de saldo");
-
-  app.applyDataSnapshot({ banks: [{ cuenta: "Banco", dinero: 150 }] }, { onlyPresentSections: true });
-  const changed = app.calculateSummary("2026-01");
-  assert.notEqual(changed, first);
-  assert.equal(changed.bank, 150);
-});
-
 test("expandRecurrenceDates respeta el tope y avisa cuando trunca", () => {
   const start = new Date(2026, 0, 1);
   const end = new Date(2026, 0, 31);

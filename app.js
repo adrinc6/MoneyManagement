@@ -43,8 +43,7 @@ const DEFAULT_CONFIG = {
   bankSheet: "Bancos",
   objectiveSheet: "Objetivos",
   dataSheet: "Datos",
-  // El saldo vive únicamente en la hoja Bancos. Ya no se reconstruye desde una
-  // constante histórica paralela que podía divergir del saldo real.
+  initialCash: 6122.08
 };
 
 const STATIC_TYPES = ["Gasto", "Ingreso", "Inversión", "Transferencia"];
@@ -115,7 +114,7 @@ function safeSetItem(key, value) {
   }
 }
 const DATA_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-const DATA_CACHE_VERSION = 4;
+const DATA_CACHE_VERSION = 3;
 const CACHE_SECTION_KEYS = ["transactions", "futureTransactions", "investments", "investmentTotals", "investmentEstimateRules", "investmentEstimateLedger", "banks", "investmentGoals", "categories"];
 // En móvil una respuesta JSONP muy grande puede terminar como un error genérico del
 // elemento <script>, aunque Apps Script y el token estén bien. 250 filas mantiene cada
@@ -157,14 +156,6 @@ const state = {
   futureMovementAccountPromptDismissed: false
 };
 
-let dataRevision = 0;
-const summaryMemo = new Map();
-
-function invalidateDerivedState() {
-  dataRevision += 1;
-  summaryMemo.clear();
-}
-
 // Los iconos vienen de un CDN (lucide). Si el CDN falla o no hay red en la primera
 // carga, la llamada directa lanzaba un ReferenceError en pleno arranque y ningún
 // listener llegaba a cablearse: app muerta. Sin iconos la app sigue siendo usable.
@@ -185,10 +176,7 @@ document.addEventListener("DOMContentLoaded", () => {
   renderSyncSettingsPanel();
   renderSettingsPanelTabs();
   syncRefreshButtonLabel("registrar");
-  // La caché se pinta primero dentro de refreshDataImpl, pero el arranque continúa
-  // con una sincronización completa. Usar cacheOnly aquí dejaba sin ver cualquier
-  // movimiento o inversión añadido en Sheets desde la última apertura.
-  refreshData({ scope: "all", initialSync: true })
+  refreshData({ scope: "all", cacheOnly: true })
     .catch(err => logSyncEvent("La carga inicial de datos falló.", "warn", String(err?.message || err)));
   ensureOpQueuePoller();
   window.setTimeout(() => {
@@ -823,7 +811,7 @@ function commitDownloadedMovementPage(section, progress, freshData) {
     nextOffset: Number(progress.nextOffset || 0),
     total: Number(progress.total || 0)
   });
-  writeDataCache({ syncedSections: [section], quiet: true });
+  writeDataCache({ syncedSections: [section] });
 }
 
 function touchCacheSections(sections = [], dirty = false) {
@@ -946,7 +934,6 @@ function refreshRequestKey(options = {}) {
     updateInvestments: Boolean(options.updateInvestments),
     scope: options.scope || (options.updateInvestments ? "investments" : "all"),
     cacheOnly: Boolean(options.cacheOnly),
-    initialSync: Boolean(options.initialSync),
     resumeSections: [...(options.resumeSections || [])].sort()
   });
 }
@@ -985,7 +972,6 @@ function refreshData(options = {}) {
 
 async function refreshDataImpl(options = {}) {
   const force = Boolean(options.force);
-  const initialSync = Boolean(options.initialSync);
   const updateInvestments = Boolean(options.updateInvestments);
   const scope = options.scope || (updateInvestments ? "investments" : "all");
   const showProgress = Boolean(options.showProgress || force || updateInvestments);
@@ -1000,7 +986,7 @@ async function refreshDataImpl(options = {}) {
   // La primera descarga construye la caché desde cero: no debe abortarse porque
   // haya tardado mucho. Una reanudación conserva la misma garantía: ya tiene
   // páginas correctas guardadas y solo le faltan las restantes.
-  const initialDownload = (!cached || initialSync) && scope === "all" && !updateInvestments;
+  const initialDownload = !cached && scope === "all" && !updateInvestments;
   const resumingInitialDownload = Boolean(resumeSections.length || cached?.meta?.downloadProgress);
   const unlimitedDownload = initialDownload || resumingInitialDownload;
   const downloadRequestOptions = {
@@ -1027,8 +1013,7 @@ async function refreshDataImpl(options = {}) {
   const dueFutureMovementsFromCache = findDueFutureMovements(cached?.data?.futureTransactions || state.futureTransactions || []);
   const shouldMoveDueFutureMovements = Boolean(scope !== "investments" && scope !== "banks" && dueFutureMovementsFromCache.length);
 
-  const cacheHasPendingDownload = Boolean(cached?.meta?.partial || Object.keys(cached?.meta?.downloadProgress || {}).length);
-  if (cached && options.cacheOnly && !cacheHasPendingDownload && !force && !updateInvestments && !shouldMoveDueFutureMovements) {
+  if (cached && options.cacheOnly && !force && !updateInvestments && !shouldMoveDueFutureMovements) {
     setNotice(
       cacheIsStale(cached)
         ? staleCacheMessage(cached)
@@ -1084,9 +1069,9 @@ async function refreshDataImpl(options = {}) {
       downloadedSectionsThisRun = unique([...downloadedSectionsThisRun, ...sections]);
       syncedSections = unique([...syncedSections, ...sections]);
       markCacheSectionsSynced(sections);
-      // La descarga es una transacción de UI: se persiste cada bloque para poder
-      // reanudar, pero opciones, cálculos y DOM se actualizan una sola vez al final.
-      writeDataCache({ syncedSections: sections, quiet: true });
+      syncOptions();
+      renderCurrentView();
+      writeDataCache({ syncedSections: sections });
     };
 
     // Una sección "dirty" (con cambios locales sin confirmar) no se descarga para no
@@ -1103,7 +1088,7 @@ async function refreshDataImpl(options = {}) {
       ? resumeSections
       : updateInvestments
       ? ["investments", "investmentTotals", "investmentEstimateRules", "investmentEstimateLedger", "investmentGoals"]
-      : !cached || force || initialSync
+      : !cached || force
         ? requestedSections.filter(section => !skipDirty(section))
         : [];
     if (force && opQueueBusy && requestedSections.some(section => cachedSectionIsDirty(cached, section))) {
@@ -1119,10 +1104,7 @@ async function refreshDataImpl(options = {}) {
 
     // Las estimaciones se descargan por separado y solo en ese modo. No forman parte
     // del arranque normal ni reinician el tiempo de la descarga de datos base.
-    // Una sincronización completa debe dejar todas las secciones en caché, aunque
-    // ahora esté seleccionado el modo de inversión real. De lo contrario las reglas
-    // y movimientos estimados quedaban como «Sin datos» hasta visitar ese modo.
-    const needsInvestmentEstimates = (scope === "all" || state.investmentMode === "estimated")
+    const needsInvestmentEstimates = state.investmentMode === "estimated"
       && neededSections.some(section => ["investmentEstimateRules", "investmentEstimateLedger"].includes(section));
 
     if (shouldMoveDueFutureMovements) {
@@ -1132,7 +1114,7 @@ async function refreshDataImpl(options = {}) {
       setNotice(`Hay ${dueFutureMovementsFromCache.length} movimiento(s) futuro(s) vencido(s). Los muevo y actualizo lo necesario...`, "warn");
     }
 
-    if (cached && neededSections.length && !force && !initialSync && !updateInvestments && !shouldMoveDueFutureMovements) {
+    if (cached && neededSections.length && !force && !updateInvestments && !shouldMoveDueFutureMovements) {
       const changedLabels = neededSections.map(formatCacheSectionName).join(", ");
       syncOptions();
       renderCurrentView();
@@ -1182,7 +1164,7 @@ async function refreshDataImpl(options = {}) {
           moveSkipSids = resolution.skipSids;
         }
         if (needsCore || moveDueNow) {
-          const coreAction = moveDueNow ? "moveDueFutureMovements" : "snapshot";
+          const coreAction = moveDueNow ? "moveDueFutureMovements" : "downloadCoreData";
           syncStatusStep(showProgress, moveDueNow ? "Moviendo futuros vencidos\nDescargando datos base" : "Descargando datos base", "");
           core = await fetchDownloadData({ action: coreAction, skipFutureSids: moveSkipSids }, { label: "datos base", ...downloadRequestOptions });
           assertPayloadOk(core);
@@ -1203,40 +1185,25 @@ async function refreshDataImpl(options = {}) {
             categories: freshData.categories
           });
         }
-        const prefetchedPages = core?.movementPages || {};
         const movementReconciliationNeeded = moveDueNow && !movedFutureMovements.length;
         if (needsMovements || movementReconciliationNeeded) {
           syncStatusStep(showProgress, movementReconciliationNeeded ? "Reconciliando movimientos" : "Descargando movimientos", "");
           if (neededSections.includes("transactions") || movementReconciliationNeeded) {
-            const prefetched = prefetchedPages.realized;
-            const resume = movementDownloadResume("transactions", cached);
-            const seed = !resume.startOffset && prefetched
-              ? { startOffset: prefetched.nextOffset, initialRows: core.transactions || [] }
-              : resume;
-            const transactions = prefetched && !prefetched.hasMore && !resume.startOffset
-              ? (core.transactions || [])
-              : await downloadMovementPages("realized", "movimientos", {
-                ...downloadRequestOptions,
-                ...seed,
-                onPage: progress => commitDownloadedMovementPage("transactions", progress, freshData)
-              });
+            const transactions = await downloadMovementPages("realized", "movimientos", {
+              ...downloadRequestOptions,
+              ...movementDownloadResume("transactions", cached),
+              onPage: progress => commitDownloadedMovementPage("transactions", progress, freshData)
+            });
             freshData.transactions = transactions;
             commitDownloadedBlock({ transactions });
             clearMovementDownloadProgress("transactions");
           }
           if (neededSections.includes("futureTransactions") || movementReconciliationNeeded) {
-            const prefetched = prefetchedPages.future;
-            const resume = movementDownloadResume("futureTransactions", cached);
-            const seed = !resume.startOffset && prefetched
-              ? { startOffset: prefetched.nextOffset, initialRows: core.futureTransactions || [] }
-              : resume;
-            const futureTransactions = prefetched && !prefetched.hasMore && !resume.startOffset
-              ? (core.futureTransactions || [])
-              : await downloadMovementPages("future", "movimientos futuros", {
-                ...downloadRequestOptions,
-                ...seed,
-                onPage: progress => commitDownloadedMovementPage("futureTransactions", progress, freshData)
-              });
+            const futureTransactions = await downloadMovementPages("future", "movimientos futuros", {
+              ...downloadRequestOptions,
+              ...movementDownloadResume("futureTransactions", cached),
+              onPage: progress => commitDownloadedMovementPage("futureTransactions", progress, freshData)
+            });
             freshData.futureTransactions = futureTransactions;
             commitDownloadedBlock({ futureTransactions });
             clearMovementDownloadProgress("futureTransactions");
@@ -1311,7 +1278,7 @@ async function refreshDataImpl(options = {}) {
     logSyncEvent(`Actualización completada: ${syncedSections.length ? syncedSections.join(", ") : "sin cambios"}.`, "ok");
     state.downloadResume = null;
     syncRefreshButtonLabel();
-    if (!options.quiet) renderSyncSettingsPanel();
+    renderSyncSettingsPanel();
     if (showProgress) window.setTimeout(() => setSyncStatus("", ""), 2500);
     return true;
   } catch (error) {
@@ -1402,7 +1369,7 @@ async function downloadMovementPages(kind, label, options = {}) {
       syncStatusStep(options.showProgress, `Descargando ${label}\nPágina ${pageNumber}/${knownTotalPages}`, "");
     }
     const request = {
-      action: "snapshot",
+      action: "downloadMovementsPage",
       movementKind: kind,
       offset,
       limit: pageLimit
@@ -1432,7 +1399,7 @@ async function downloadMovementPages(kind, label, options = {}) {
     // Puede haber una página formada solo por filas antiguas/incompletas. No es el
     // final: el backend indica explícitamente si quedan filas después de ella.
     const completed = !payload.hasMore;
-    options.onPage?.({ rows: [...rows], pageRows, nextOffset: offset, total, completed });
+    options.onPage?.({ rows: [...rows], nextOffset: offset, total, completed });
     if (completed) break;
     pagesFetched += 1;
     if (offset <= previousOffset) throw new Error(`La paginación de ${label} no avanza (offset repetido).`);
@@ -1606,7 +1573,6 @@ function applyDataSnapshot(data = {}, { onlyPresentSections = false } = {}) {
   });
   reportDroppedRows(dropped);
   persistMintedSids(data);
-  invalidateDerivedState();
 }
 
 function dataCacheConfigKey() {
@@ -1616,9 +1582,8 @@ function dataCacheConfigKey() {
 
 function readDataCache() {
   try {
-    const cached = expandCacheRecord(JSON.parse(localStorage.getItem(DATA_CACHE_KEY) || "null"));
-    if (!cached || Number(cached.meta?.version || 0) !== DATA_CACHE_VERSION
-      || cached.configKey !== dataCacheConfigKey() || !cached.data) return null;
+    const cached = JSON.parse(localStorage.getItem(DATA_CACHE_KEY) || "null");
+    if (!cached || cached.configKey !== dataCacheConfigKey() || !cached.data) return null;
     const meta = normalizeCacheMeta(cached);
     return { ...cached, meta, savedAt: meta.savedAt || cached.savedAt || 0 };
   } catch {
@@ -1626,36 +1591,8 @@ function readDataCache() {
   }
 }
 
-function compactMovementRows(rows) {
-  return (rows || []).map(row => [row.sid || "", Number(row.rowNumber || 0) || 0,
-    row.fecha || row.date || "", row.tipo || "", row.concepto || "", row.descripcion || "",
-    row.importe ?? row.amount ?? 0, row.cuenta || ""]);
-}
-
-function expandMovementRows(rows) {
-  return (rows || []).map(row => Array.isArray(row) ? {
-    sid: row[0], rowNumber: row[1], fecha: row[2], tipo: row[3], concepto: row[4],
-    descripcion: row[5], importe: row[6], cuenta: row[7]
-  } : row);
-}
-
-function compactCacheRecord(record) {
-  if (!record?.data) return record;
-  return { ...record, compactVersion: 1, data: { ...record.data,
-    transactions: compactMovementRows(record.data.transactions),
-    futureTransactions: compactMovementRows(record.data.futureTransactions) } };
-}
-
-function expandCacheRecord(record) {
-  if (!record?.data || record.compactVersion !== 1) return record;
-  return { ...record, data: { ...record.data,
-    transactions: expandMovementRows(record.data.transactions),
-    futureTransactions: expandMovementRows(record.data.futureTransactions) } };
-}
-
 function writeDataCache(options = {}) {
   try {
-    if (!options.quiet) invalidateDerivedState();
     const syncedSections = Array.isArray(options.syncedSections) ? options.syncedSections : [];
     const dirtySections = Array.isArray(options.dirtySections) ? options.dirtySections : [];
     const touchedSections = new Set([...syncedSections, ...dirtySections]);
@@ -1707,26 +1644,62 @@ function isQuotaError(error) {
 
 let quotaWarningAt = 0;
 
-// La caché es íntegra o no se reemplaza. Guardar solo 400 filas hacía desaparecer
-// meses sin que el usuario pudiera distinguir una copia parcial de una completa.
+// El caché guarda TODAS las transacciones; en históricos largos puede superar la
+// cuota de localStorage (~5 MB). En vez de tragarnos el error en silencio (lo que
+// dejaría el caché inservible sin avisar), podamos progresivamente las secciones
+// más pesadas y reintentamos, avisando en el panel Sync.
 function persistDataCache(record) {
-  try {
-    localStorage.setItem(DATA_CACHE_KEY, JSON.stringify(record));
-    return true;
-  } catch (error) {
-    if (!isQuotaError(error)) throw error;
-    warnCacheQuota(false);
-    return false;
+  const payload = { ...record, data: { ...record.data } };
+  const pruneOrder = [
+    "investmentEstimateLedger",
+    "futureTransactions",
+    "transactions"
+  ];
+  let pruned = false;
+  for (let attempt = 0; attempt < pruneOrder.length + 1; attempt++) {
+    try {
+      localStorage.setItem(DATA_CACHE_KEY, JSON.stringify(payload));
+      if (pruned) warnCacheQuota(true);
+      return;
+    } catch (error) {
+      if (!isQuotaError(error)) throw error;
+      const section = pruneOrder[attempt];
+      if (section && Array.isArray(payload.data[section])) {
+        // Conservamos solo lo más reciente de la sección más pesada.
+        payload.data[section] = trimRecentRows(payload.data[section]);
+        payload.meta = { ...(payload.meta || {}), partial: true };
+        pruned = true;
+        continue;
+      }
+      // Ni podando cabe: soltamos el caché para no dejar datos corruptos a medias.
+      try { localStorage.removeItem(DATA_CACHE_KEY); } catch (_) { }
+      warnCacheQuota(false);
+      return;
+    }
   }
+}
+
+function trimRecentRows(rows, keep = 400) {
+  if (!Array.isArray(rows) || rows.length <= keep) return rows;
+  const withDate = rows.every(row => row && (row.fecha || row.date));
+  if (withDate) {
+    return [...rows]
+      .sort((a, b) => String(b.fecha || b.date || "").localeCompare(String(a.fecha || a.date || "")))
+      .slice(0, keep);
+  }
+  return rows.slice(-keep);
 }
 
 function warnCacheQuota(recovered) {
   const now = Date.now();
   if (now - quotaWarningAt < 60000) return;
   quotaWarningAt = now;
-  if (!recovered) {
+  if (recovered) {
+    logSyncEvent("Caché local llena: se guardó una versión reducida (histórico antiguo se recargará al sincronizar).", "warn");
+    setNotice("Caché local casi llena: se guardó una versión reducida. Los datos siguen a salvo en Sheets.", "warn", 3600);
+  } else {
     logSyncEvent("Caché local llena: no se pudo guardar copia local; se descargará desde Sheets al abrir.", "warn");
-    setNotice("No caben todos los datos en localStorage. No se guardó una copia incompleta; libera espacio del sitio y actualiza de nuevo.", "warn", 6000);
+    setNotice("No se pudo guardar la caché local (almacenamiento lleno). La app funcionará descargando desde Sheets.", "warn", 3600);
   }
 }
 
@@ -2784,7 +2757,7 @@ async function fetchAppsScriptData(options = {}) {
   if (options.movementKind) params.set("movementKind", options.movementKind);
   if (Number.isFinite(Number(options.offset))) params.set("offset", String(Number(options.offset)));
   if (Number.isFinite(Number(options.limit))) params.set("limit", String(Number(options.limit)));
-  const requestLabel = (action === "downloadMovementsPage" || (action === "snapshot" && options.movementKind))
+  const requestLabel = action === "downloadMovementsPage"
     ? `movimientos ${options.movementKind === "future" ? "futuros" : "reales"} (página ${Math.floor(Number(options.offset || 0) / MOVEMENT_PAGE_SIZE) + 1})`
     : action === "downloadCoreData"
       ? "datos base"
@@ -3471,52 +3444,38 @@ async function withButtonState(button, action) {
 }
 
 function calculateSummary(month) {
-  const memoKey = `${dataRevision}|${state.investmentMode}|${month}`;
-  if (summaryMemo.has(memoKey)) return summaryMemo.get(memoKey);
   const [year, monthNum] = month.split("-").map(Number);
-  let income = 0;
-  let expensesSigned = 0;
-  let investedMonthSigned = 0;
-  let balance = 0;
-  const investmentCostByType = new Map();
-  // Una sola pasada sustituye los filtros completos repetidos por mes, tipo y
-  // categoría. Los costes de inversión son un dato derivado de los movimientos.
-  for (const transaction of state.transactions) {
-    const amount = safeNumber(transaction.amount);
-    const inMonth = transaction.date.getFullYear() === year && transaction.date.getMonth() + 1 === monthNum;
-    if (inMonth) {
-      balance += amount;
-      if (isIncome(transaction)) income += amount;
-      if (isMonthlyExpense(transaction)) expensesSigned += amount;
-      if (isInvestment(transaction)) investedMonthSigned += amount;
-    }
-    if (isInvestment(transaction)) {
-      const category = localInvestmentCategoryForMovement(transaction);
-      if (category) {
-        const key = normalizeType(category);
-        investmentCostByType.set(key, (investmentCostByType.get(key) || 0) + Math.abs(amount));
-      }
-    }
-  }
-  const expenses = Math.abs(expensesSigned);
-  const investedMonth = Math.abs(investedMonthSigned);
+  const txMonth = state.transactions.filter(t => t.date.getFullYear() === year && t.date.getMonth() + 1 === monthNum);
+  const untilToday = state.transactions.filter(t => t.date <= endOfToday());
+  const income = sum(txMonth.filter(isIncome).map(t => t.amount));
+  const expenses = Math.abs(sum(txMonth.filter(isMonthlyExpense).map(t => t.amount)));
+  const investedMonth = Math.abs(sum(txMonth.filter(isInvestment).map(t => t.amount)));
+  const balance = sum(txMonth.map(t => t.amount));
+  const computedBank = DEFAULT_CONFIG.initialCash
+    + sumTransactionsByType(untilToday, "Ingreso")
+    + sumTransactionsByType(untilToday, "Gasto")
+    - sumTransactionsByType(untilToday, "Retiro")
+    + sumTransactionsByType(untilToday, "Inversion");
   const bankAccountsTotal = sum(state.banks.map(b => b.dinero));
-  const bank = bankAccountsTotal;
-  const computedBank = bank;
+  const bank = computedBank;
   const investedByType = {};
   const valueByType = {};
   const dailyByType = {};
   const dailyPreviousByType = {};
-  const positionsByType = new Map();
-  for (const position of effectiveInvestmentPositions()) {
-    const key = normalizeType(position.tipo);
-    if (!positionsByType.has(key)) positionsByType.set(key, []);
-    positionsByType.get(key).push(position);
-  }
+  const totalsByType = investmentTotalsByType();
   investmentTypes().forEach(type => {
-    const key = normalizeType(type);
-    const positions = positionsByType.get(key) || [];
-    investedByType[type] = investmentCostByType.get(key) || 0;
+    const totalRow = totalsByType.get(normalizeType(type));
+    if (totalRow) {
+      investedByType[type] = safeNumber(totalRow.cost);
+      valueByType[type] = safeNumber(totalRow.value);
+      dailyPreviousByType[type] = safeNumber(totalRow.lastValue);
+      dailyByType[type] = Number.isFinite(totalRow.daily) ? safeNumber(totalRow.daily) : valueByType[type] - dailyPreviousByType[type];
+      return;
+    }
+    const positions = effectiveInvestmentPositions().filter(i => normalizeType(i.tipo) === normalizeType(type));
+    investedByType[type] = Math.abs(sum(untilToday
+      .filter(t => isInvestment(t) && normalizeType(t.descripcion) === normalizeType(type))
+      .map(t => t.amount)));
     valueByType[type] = sum(positions.map(i => currentInvestmentTotal(i)));
     dailyPreviousByType[type] = sum(positions.map(i => previousInvestmentTotal(i)));
     dailyByType[type] = valueByType[type] - dailyPreviousByType[type];
@@ -3525,7 +3484,7 @@ function calculateSummary(month) {
   const valueTotal = sum(Object.values(valueByType));
   const dailyPreviousTotal = sum(Object.values(dailyPreviousByType));
   const dailyVariationTotal = valueTotal - dailyPreviousTotal;
-  const result = {
+  return {
     month, income, expenses, investedMonth, balance, bank,
     computedBank, bankAccountsTotal,
     investedByType, valueByType, investedTotal, valueTotal,
@@ -3536,8 +3495,11 @@ function calculateSummary(month) {
     profitLoss: valueTotal - investedTotal,
     profitLossPct: investedTotal ? (valueTotal - investedTotal) / investedTotal : 0
   };
-  summaryMemo.set(memoKey, result);
-  return result;
+}
+
+function sumTransactionsByType(transactions, type) {
+  const normalized = normalizeType(type);
+  return sum(transactions.filter(t => normalizeType(t.tipo) === normalized).map(t => t.amount));
 }
 
 function getSituationBreakdown(month, mode) {
@@ -5377,6 +5339,49 @@ function currentPriceForEstimate(entry, match) {
   return Number.isFinite(used) && used > 0 ? used : NaN;
 }
 
+function investmentTotalsByType() {
+  const map = new Map();
+  (state.investmentTotals || []).forEach(item => {
+    if (!item || !item.tipo) return;
+    map.set(normalizeType(item.tipo), { ...item });
+  });
+  if (!investmentEstimateEnabled()) return map;
+  activeInvestmentEstimateLedger().forEach(entry => {
+    const type = prettyType(entry.tipo || defaultInvestmentType());
+    const key = normalizeType(type);
+    const existing = map.get(key) || {
+      tipo: type,
+      cost: realizedInvestmentCostForType(type),
+      value: 0,
+      lastValue: 0,
+      daily: 0,
+      order: 0
+    };
+    const match = findMatchingInvestmentPosition(state.investments, entry);
+    const price = currentPriceForEstimate(entry, match);
+    const lastPrice = safeNumber(match?.valorAnterior);
+    const shares = safeNumber(entry.sharesEstimadas);
+    const value = shares * (Number.isFinite(price) && price > 0 ? price : safeNumber(entry.precioUsado));
+    const lastValue = shares * (Number.isFinite(lastPrice) && lastPrice > 0 ? lastPrice : (Number.isFinite(price) ? price : safeNumber(entry.precioUsado)));
+    // Cost already comes from the realized investment movement.
+    // Estimated allocations only change position value and shares.
+    existing.value = safeNumber(existing.value) + value;
+    existing.lastValue = safeNumber(existing.lastValue) + lastValue;
+    existing.daily = safeNumber(existing.value) - safeNumber(existing.lastValue);
+    existing.gain = safeNumber(existing.value) - safeNumber(existing.cost);
+    existing.gainPct = existing.cost ? existing.gain / existing.cost * 100 : 0;
+    map.set(key, existing);
+  });
+  return map;
+}
+
+function realizedInvestmentCostForType(type) {
+  return Math.abs(sum((state.transactions || [])
+    .filter(movement => isInvestment(movement)
+      && normalizeType(localInvestmentCategoryForMovement(movement)) === normalizeType(type))
+    .map(movement => movement.amount)));
+}
+
 function localInvestmentCategoryForMovement(movement) {
   if (!movement || !isInvestment(movement)) return '';
   const candidates = [movement.concepto, movement.descripcion].map(v => String(v || '').trim()).filter(Boolean);
@@ -6678,10 +6683,8 @@ function buildEvolutionRows(start, end) {
 
 function bankAtMonthSnapshot(month, day) {
   const end = monthSnapshotDate(month, day);
-  const currentBank = sum(state.banks.map(bank => bank.dinero));
-  // Bancos es la fuente actual: para un corte histórico se deshacen únicamente los
-  // movimientos posteriores. Evita mantener un saldo inicial duplicado.
-  return currentBank - sum(state.transactions.filter(t => t.date > end).map(t => t.amount));
+  return DEFAULT_CONFIG.initialCash
+    + sum(state.transactions.filter(t => t.date <= end).map(t => t.amount));
 }
 
 function investedAtMonthSnapshot(month, day) {

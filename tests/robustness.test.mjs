@@ -280,20 +280,6 @@ test("refreshData no solapa descargas pero no descarta acciones del usuario", as
   }
 });
 
-test("la caché compacta conserva todos los movimientos sin podar meses", () => {
-  const rows = Array.from({ length: 2500 }, (_, index) => ({
-    sid: `m-${index}`, rowNumber: index + 2,
-    fecha: `2026-${String(index % 12 + 1).padStart(2, "0")}-01`, tipo: "Gasto",
-    concepto: "Comida", descripcion: `Fila ${index}`, importe: -10, cuenta: "Banco"
-  }));
-  const record = { data: { transactions: rows, futureTransactions: [] } };
-  const compact = app.compactCacheRecord(record);
-  const expanded = app.expandCacheRecord(JSON.parse(JSON.stringify(compact)));
-  assert.equal(expanded.data.transactions.length, 2500);
-  assert.equal(expanded.data.transactions[2499].sid, "m-2499");
-  assert.ok(JSON.stringify(compact).length < JSON.stringify(record).length * 0.65);
-});
-
 test("refreshData deduplica dos actualizaciones manuales idénticas", async () => {
   const previousImpl = app.refreshDataImpl;
   try {

@@ -100,15 +100,22 @@ test("renombrar una categoría actualiza movimientos y estimaciones", () => {
   assert.equal(gs.__spreadsheet.getSheetByName(ledgerName).getRange(2, 5).getValue(), "ETFs");
 });
 
-test("snapshot entrega datos base y primeras páginas en una sola respuesta", () => {
+test("la preparación inicial informa fases y queda confirmada una sola vez", () => {
   const gs = setup();
-  const payload = gs.buildSnapshotPayload_(gs.resolveSheets_({}), {});
-  assert.equal(payload.ok, true);
-  assert.deepEqual([...payload.transactions], []);
-  assert.deepEqual([...payload.futureTransactions], []);
-  assert.equal(payload.movementPages.realized.hasMore, false);
-  assert.equal(payload.movementPages.future.hasMore, false);
-  assert.ok(Number.isFinite(payload.serverMs));
+  const clientOpId = "prepare-test";
+  gs.doPost({ postData: { contents: JSON.stringify({
+    token: gs.__token,
+    action: "prepareInitialDownload",
+    clientOpId,
+    movementSheet: MOVEMENT_SHEET,
+    futureMovementSheet: FUTURE_SHEET,
+    investmentSheet: INVESTMENT_SHEET,
+    investmentTotalsSheet: TOTALS_SHEET
+  }) } });
+
+  const status = gs.buildClientOpStatusPayload_(clientOpId);
+  assert.equal(status.completed, true);
+  assert.equal(status.phase, "lista");
 });
 
 test("resolveSheets_ aplica los valores por defecto y respeta los nombres de la petición", () => {
