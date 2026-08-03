@@ -116,9 +116,10 @@ function safeSetItem(key, value) {
 const DATA_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const DATA_CACHE_VERSION = 3;
 const CACHE_SECTION_KEYS = ["transactions", "futureTransactions", "investments", "investmentTotals", "investmentEstimateRules", "investmentEstimateLedger", "banks", "investmentGoals", "categories"];
-// El servidor lo limita a 1000. Cuantas menos páginas, menos veces se re-escanea la
-// columna SID de la hoja entera (readMovementsPage_ la asegura en cada petición).
-const MOVEMENT_PAGE_SIZE = 1000;
+// En móvil una respuesta JSONP muy grande puede terminar como un error genérico del
+// elemento <script>, aunque Apps Script y el token estén bien. 250 filas mantiene cada
+// bloque ligero y, como se guarda al terminar, no se pierde avance entre páginas.
+const MOVEMENT_PAGE_SIZE = 250;
 
 const state = {
   config: loadConfig(),
@@ -2632,7 +2633,20 @@ async function fetchAppsScriptData(options = {}) {
   if (options.movementKind) params.set("movementKind", options.movementKind);
   if (Number.isFinite(Number(options.offset))) params.set("offset", String(Number(options.offset)));
   if (Number.isFinite(Number(options.limit))) params.set("limit", String(Number(options.limit)));
-  return jsonp(appsScriptGetUrl(params), { timeoutMs: options.timeoutMs, confirmationCheck: action === "checkClientOp" });
+  const requestLabel = action === "downloadMovementsPage"
+    ? `movimientos ${options.movementKind === "future" ? "futuros" : "reales"} (página ${Math.floor(Number(options.offset || 0) / MOVEMENT_PAGE_SIZE) + 1})`
+    : action === "downloadCoreData"
+      ? "datos base"
+      : action === "downloadInvestmentEstimates"
+        ? "estimaciones"
+        : action === "checkClientOp"
+          ? "la confirmación"
+          : "los datos solicitados";
+  return jsonp(appsScriptGetUrl(params), {
+    timeoutMs: options.timeoutMs,
+    confirmationCheck: action === "checkClientOp",
+    requestLabel
+  });
 }
 
 function assertAppsScriptDeploymentUrl() {
@@ -2690,7 +2704,7 @@ async function fetchDownloadData(options = {}, { label = "datos", showProgress =
 
 const JSONP_TIMEOUT_MS = 20000;
 
-function jsonp(url, { timeoutMs = JSONP_TIMEOUT_MS, confirmationCheck = false } = {}) {
+function jsonp(url, { timeoutMs = JSONP_TIMEOUT_MS, confirmationCheck = false, requestLabel = "datos" } = {}) {
   return new Promise((resolve, reject) => {
     const cb = `moneyJsonp_${Date.now()}_${Math.random().toString(36).slice(2)}`;
     const script = document.createElement("script");
@@ -2705,7 +2719,7 @@ function jsonp(url, { timeoutMs = JSONP_TIMEOUT_MS, confirmationCheck = false } 
       cleanup();
       reject(new Error(confirmationCheck
         ? "No se pudo comprobar todavía la confirmación."
-        : "No se pudo conectar con Apps Script desde este móvil. Abre la URL /exec en el navegador del móvil: si pide iniciar sesión o no abre, revisa el acceso del despliegue."));
+        : `Apps Script no pudo entregar ${requestLabel}. Se conserva lo ya descargado; vuelve a pulsar Actualizar para reanudar ese bloque.`));
     };
     // Una descarga inicial puede pedir explícitamente no tener límite temporal: la
     // caché todavía no existe y se prefiere esperar a Apps Script antes que reiniciar

@@ -764,9 +764,7 @@ function movementSidColumn_(sheet) {
   return headers.indexOf('sid') + 1;
 }
 
-// Memo por ejecución: ensureMovementSidColumn_ lee (y a veces reescribe) la columna
-// SID entera. Los bucles que la llamaban por fila hacían O(n²) llamadas a la API de
-// Sheets y con unos miles de movimientos chocaban con el límite de 6 minutos.
+// Memo por ejecución: localizar o crear la cabecera SID se hace una vez por hoja.
 // Cada ejecución de Apps Script es aislada, así que la caché vive solo esta petición.
 var movementSidColumnCache_ = {};
 function ensureMovementSidColumnCached_(sheet) {
@@ -792,19 +790,10 @@ function ensureMovementSidColumn_(sheet) {
     // operación entera antes de llegar a las escrituras que sí estaban protegidas.
     setCellValueSafe_(sheet.getRange(1, sidCol), movementSidHeader_());
   }
-  const lastRow = sheet.getLastRow();
-  if (lastRow >= 2) {
-    const range = sheet.getRange(2, sidCol, lastRow - 1, 1);
-    const values = range.getValues();
-    let changed = false;
-    for (let i = 0; i < values.length; i++) {
-      if (!String(values[i][0] || '').trim()) {
-        values[i][0] = createMovementSid_();
-        changed = true;
-      }
-    }
-    if (changed) setRangeValuesSafe_(range, values);
-  }
+  // No se rellenan de golpe los SID históricos durante una lectura. Esa migración
+  // convertía la primera página de movimientos en una escritura de toda la hoja y
+  // podía agotar la ejecución de Apps Script. Las filas nuevas o editadas reciben SID
+  // al escribirse; para las antiguas se conserva la búsqueda segura por contenido.
   return sidCol;
 }
 
@@ -944,32 +933,41 @@ function readMovementsPage_(sheetName, offset, limit, optional) {
     if (optional) return { rows: [], total: 0, offset: 0, limit: Math.max(1, Math.min(Number(limit || 500), 1000)), nextOffset: 0, hasMore: false };
     throw new Error(`Sheet not found: ${sheetName}`);
   }
-  // ensureMovementSidColumn_ lee (y a veces reescribe) la columna SID entera. Hacerlo en
-  // cada página convertía la descarga en O(páginas × filas): con la primera página basta,
-  // porque el resto de páginas de la misma descarga ya encuentran la columna rellena.
+  // La cabecera SID se asegura una vez en la primera página; no se migra la columna
+  // histórica completa durante una lectura.
   const sidCol = Number(offset || 0) > 0 ? movementSidColumn_(sheet) : ensureMovementSidColumnCached_(sheet);
   const total = Math.max(0, sheet.getLastRow() - 1);
   const safeOffset = Math.max(0, Math.min(Number(offset || 0), total));
-  const requestedLimit = Number(limit || 500);
-  const safeLimit = requestedLimit >= Number.MAX_SAFE_INTEGER ? Math.max(1, total) : Math.max(1, Math.min(requestedLimit, 1000));
+  const requestedLimit = Number(limit || 250);
+  const safeLimit = requestedLimit >= Number.MAX_SAFE_INTEGER ? Math.max(1, total) : Math.max(1, Math.min(requestedLimit, 250));
   if (!total || safeOffset >= total) {
     return { rows: [], total, offset: safeOffset, limit: safeLimit, nextOffset: safeOffset, hasMore: false };
   }
   const count = Math.min(safeLimit, total - safeOffset);
   const startRow = 2 + safeOffset;
-  const width = Math.max(sheet.getLastColumn(), sidCol, 9);
-  const values = sheet.getRange(startRow, 1, count, width).getValues();
+  // No uses getLastColumn(): una columna auxiliar o formato lejano haría que cada
+  // página leyese cientos de columnas irrelevantes. Los movimientos solo usan A:I y,
+  // si existe, la columna SID se lee aparte.
+  const values = sheet.getRange(startRow, 1, count, 9).getValues();
+  const sidValues = sidCol > 9
+    ? sheet.getRange(startRow, sidCol, count, 1).getDisplayValues()
+    : null;
   const rows = values
-    .map((row, index) => movementObjectFromRow_(row, startRow + index, sidCol))
+    .map((row, index) => movementObjectFromRow_(
+      row,
+      startRow + index,
+      sidCol,
+      sidCol ? (sidCol <= 9 ? row[sidCol - 1] : sidValues[index][0]) : ''
+    ))
     .filter(Boolean);
   const nextOffset = safeOffset + count;
   return { rows, total, offset: safeOffset, limit: safeLimit, nextOffset, hasMore: nextOffset < total };
 }
 
-function movementObjectFromRow_(row, rowNumber, sidCol) {
+function movementObjectFromRow_(row, rowNumber, sidCol, sidValue) {
   if (!row[0] || !row[4] || row[7] === '') return null;
   return {
-    sid: sidCol ? String(row[sidCol - 1] || '').trim() : '',
+    sid: sidCol ? String(sidValue || '').trim() : '',
     rowNumber,
     fecha: normalizeDate_(row[0]),
     tipo: row[4],
