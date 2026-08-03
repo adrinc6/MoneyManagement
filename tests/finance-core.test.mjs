@@ -62,6 +62,30 @@ test("parseDate ida y vuelta", () => {
   assert.equal(app.parseDate(""), null);
 });
 
+test("las posiciones se aceptan antes de cargar sus categorías", () => {
+  const previousCategories = app.state.categories;
+  const previousTotals = app.state.investmentTotals;
+  const previousInvestments = app.state.investments;
+  try {
+    app.state.categories = { types: [], concepts: [], investmentTypes: [] };
+    app.state.investmentTotals = [];
+    app.state.investments = [];
+    const position = app.normalizeInvestment({
+      divisa: "EUR", data: "TNOW.MI", nombre: "MSCI World Info Tech",
+      shortName: "MSCI Wld Tech", tipo: "ETFs", cantidad: 0.2097,
+      valor: 1119.38, total: 234.73, valorAnterior: 1128.34, variacion: -0.79
+    });
+    assert.ok(position, "ETFs no depende de que categories se haya aplicado antes");
+    assert.equal(position.cantidad, 0.2097);
+    assert.equal(app.normalizeInvestment({ data: "EUR-USD", nombre: "EUR to USD", tipo: "---", total: 1.1551 }), null,
+      "la fila auxiliar de divisa sigue excluida");
+  } finally {
+    app.state.categories = previousCategories;
+    app.state.investmentTotals = previousTotals;
+    app.state.investments = previousInvestments;
+  }
+});
+
 test("escapeHtml y escapeAttr evitan inyección", () => {
   assert.equal(app.escapeHtml("<b>&\"'"), "&lt;b&gt;&amp;&quot;&#039;");
   assert.equal(app.escapeAttr("a`b"), "a&#096;b");

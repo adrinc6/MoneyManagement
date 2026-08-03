@@ -5432,6 +5432,16 @@ function isInvestmentPositionType(value) {
   return investmentTypes().some(type => normalizeType(type) === normalized);
 }
 
+// La descarga de posiciones se normaliza antes que la sección de categorías. Validar
+// aquí contra investmentTypes() hacía depender cada sección de la siguiente: con una
+// caché vacía, ETFs/Fondos/Cartera aún no existían y se descartaban todas las posiciones.
+// En la hoja, cualquier TYPE real salvo separadores/totales es una categoría válida; el
+// backend aplica exactamente la misma regla y luego la incorpora a categories.
+function isDownloadableInvestmentPositionType(value) {
+  const normalized = normalizeType(value);
+  return Boolean(normalized) && normalized !== "---" && !normalized.includes("total");
+}
+
 function isCashInvestmentPosition(item) {
   const name = removeAccents(String(item?.nombre || item?.name || item?.NAME || '')).toLowerCase();
   const ticker = String(item?.data || item?.DATA || '').trim();
@@ -5457,7 +5467,7 @@ function normalizeInvestment(row) {
   const variacion = normalizePercentPoints(parseNumber(row.variacion ?? row.variation ?? row.VARIATION ?? row['% VARIACIÓN'] ?? row['% VARIACION'] ?? (isArrayRow ? row[9] : row[8])));
   const candidate = { data, nombre };
   const isCash = isCashInvestmentPosition(candidate);
-  if (!nombre || !isInvestmentPositionType(tipo) || (!isCash && !data)) return null;
+  if (!nombre || !isDownloadableInvestmentPositionType(tipo) || (!isCash && !data)) return null;
   if (!Number.isFinite(total) && !Number.isFinite(cantidad)) return null;
   return {
     rowNumber: Number(row.rowNumber || row.row || 0) || null,
