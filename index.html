@@ -18,7 +18,7 @@
        app.js degrada (sin iconos ni gráficas) en vez de romperse. -->
   <script defer crossorigin="anonymous" src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
   <script defer crossorigin="anonymous" src="https://unpkg.com/lucide@1.24.0/dist/umd/lucide.min.js"></script>
-  <link rel="stylesheet" href="styles.css?v=20260803-v38" />
+  <link rel="stylesheet" href="styles.css?v=20260803-v39" />
 </head>
 <body>
   <main class="app">
@@ -594,24 +594,8 @@
     </form>
   </dialog>
 
-  <script defer src="app.js?v=20260803-v38"></script>
-  <script>
-    if ("serviceWorker" in navigator) {
-      window.addEventListener("load", () => {
-        navigator.serviceWorker.register("sw.js").catch(err => console.warn("SW no registrado", err));
-      });
-      // El service worker hace skipWaiting + clients.claim, así que al desplegar una
-      // versión nueva toma el control a mitad de sesión mientras sigue corriendo el
-      // app.js anterior. Recargamos una sola vez para que HTML y JS sean de la misma
-      // versión, salvo que haya un diálogo abierto (se perderían datos del formulario).
-      let swReloaded = false;
-      navigator.serviceWorker.addEventListener("controllerchange", () => {
-        if (swReloaded) return;
-        if (document.querySelector("dialog[open]")) return;
-        swReloaded = true;
-        location.reload();
-      });
-    }
-  </script>
+  <!-- El registro del service worker y la recarga por actualización viven en app.js,
+       junto al resto del arranque, para no tener el ciclo de vida repartido en dos sitios. -->
+  <script defer src="app.js?v=20260803-v39"></script>
 </body>
 </html>

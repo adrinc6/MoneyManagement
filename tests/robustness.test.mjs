@@ -10,70 +10,63 @@ function resetQueue(queue = []) {
   app.localStorage.setItem(app.OP_QUEUE_KEY, JSON.stringify(queue));
 }
 
-test("una operación sin clientOpId acaba en error en vez de reelegirse en bucle", async () => {
-  // Antes checkQueuedOp salía sin tocar el estado, así que runOpQueue volvía a
-  // elegir la misma operación indefinidamente y congelaba la pestaña.
-  resetQueue([{ id: "op-sin-id", status: "checking", attempts: 0, nextAttemptAt: 0, payload: { action: "addMovement" } }]);
-  await app.checkQueuedOp("op-sin-id");
-
-  const [op] = JSON.parse(app.localStorage.getItem(app.OP_QUEUE_KEY));
-  assert.equal(op.status, "error");
-  assert.equal(app.isOpActionable(op), false);
-  resetQueue();
-});
 
 test("runOpQueue termina aunque una operación no progrese", async () => {
   const previousUrl = app.state.config.scriptUrl;
-  const previousCheck = app.checkQueuedOp;
+  const previousSend = app.sendQueuedOp;
   try {
     app.state.config.scriptUrl = "https://example.test/exec";
-    resetQueue([{ id: "op-atascada", status: "checking", attempts: 0, nextAttemptAt: 0, payload: { action: "addMovement", clientOpId: "c1" } }]);
-    // Simula el peor caso: comprobar la operación no cambia nada de su estado.
-    app.checkQueuedOp = async () => {};
+    resetQueue([{ id: "op-atascada", status: "queued", attempts: 0, nextAttemptAt: 0, payload: { action: "addMovement", clientOpId: "c1" } }]);
+    // Peor caso: enviar la operación no cambia nada de su estado.
+    app.sendQueuedOp = async () => {};
 
     // Sin cortacircuitos esto no terminaría nunca.
     await app.runOpQueue();
 
     const [op] = JSON.parse(app.localStorage.getItem(app.OP_QUEUE_KEY));
-    assert.ok(op.attempts > 0, "el cortacircuitos debe contar el intento fallido");
-    assert.ok(op.nextAttemptAt > 0 || op.status === "error");
+    assert.equal(op.status, "error", "el cortacircuitos la detiene en vez de girar en vacío");
   } finally {
-    app.checkQueuedOp = previousCheck;
+    app.sendQueuedOp = previousSend;
     app.state.config.scriptUrl = previousUrl;
     resetQueue();
   }
 });
 
-test("un fallo reintentable del servidor queda para reintento manual", async () => {
-  const previousFetch = app.fetchAppsScriptData;
+test("un servidor ocupado se reintenta solo, con espera creciente", async () => {
+  const previousFire = app.fireAppsScript;
   try {
-    resetQueue([{ id: "op-lock", status: "checking", attempts: 0, nextAttemptAt: 0, payload: { action: "addMovement", clientOpId: "c-lock" } }]);
-    app.fetchAppsScriptData = async () => ({ ok: true, failed: true, retryable: true, error: "LOCK_TIMEOUT: ocupado" });
+    resetQueue([{ id: "op-lock", status: "queued", attempts: 0, nextAttemptAt: 0, payload: { action: "addMovement", clientOpId: "c-lock" } }]);
+    app.state.config.scriptUrl = "https://example.test/exec";
+    app.fireAppsScript = async payload => ({ payload, result: { ok: false, error: "LOCK_TIMEOUT: ocupado", errorCode: "BUSY" } });
 
-    await app.checkQueuedOp("op-lock");
+    await app.sendQueuedOp("op-lock");
 
     const [op] = JSON.parse(app.localStorage.getItem(app.OP_QUEUE_KEY));
-    assert.equal(op.status, "error", "un choque de bloqueo no debe disparar un nuevo POST automático");
-    assert.equal(op.attempts, 0, "la respuesta del servidor se conserva sin reenviar la operación");
+    assert.equal(op.status, "retry", "un choque de bloqueo es transitorio: se reintenta solo");
+    assert.equal(op.attempts, 1);
+    assert.ok(op.nextAttemptAt > Date.now(), "y espera antes de volver a intentarlo");
   } finally {
-    app.fetchAppsScriptData = previousFetch;
+    app.fireAppsScript = previousFire;
+    app.state.config.scriptUrl = "";
     resetQueue();
   }
 });
 
-test("un fallo NO reintentable sí detiene la operación", async () => {
-  const previousFetch = app.fetchAppsScriptData;
+test("un fallo de datos detiene la operación con su motivo", async () => {
+  const previousFire = app.fireAppsScript;
   try {
-    resetQueue([{ id: "op-mala", status: "checking", attempts: 0, nextAttemptAt: 0, payload: { action: "addMovement", clientOpId: "c-mala" } }]);
-    app.fetchAppsScriptData = async () => ({ ok: true, failed: true, error: "VALIDATION: importe no válido" });
+    resetQueue([{ id: "op-mala", status: "queued", attempts: 0, nextAttemptAt: 0, payload: { action: "addMovement", clientOpId: "c-mala" } }]);
+    app.state.config.scriptUrl = "https://example.test/exec";
+    app.fireAppsScript = async payload => ({ payload, result: { ok: false, error: "VALIDATION: importe no válido", errorCode: "VALIDATION" } });
 
-    await app.checkQueuedOp("op-mala");
+    await app.sendQueuedOp("op-mala");
 
     const [op] = JSON.parse(app.localStorage.getItem(app.OP_QUEUE_KEY));
-    assert.equal(op.status, "error");
-    assert.match(op.error, /VALIDATION/);
+    assert.equal(op.status, "error", "repetir no lo va a arreglar");
+    assert.match(op.error, /no son válidos/, "se enseña el mensaje de la app, no el crudo del servidor");
   } finally {
-    app.fetchAppsScriptData = previousFetch;
+    app.fireAppsScript = previousFire;
+    app.state.config.scriptUrl = "";
     resetQueue();
   }
 });
@@ -198,8 +191,10 @@ test("un error de configuración no queda reintentándose durante la descarga in
   let calls = 0;
   try {
     app.fetchAppsScriptData = async () => {
+      const error = new Error("AUTH: Invalid app token");
+      error.errorCode = "AUTH";
       calls += 1;
-      throw new Error("AUTH: Invalid app token");
+      throw error;
     };
     await assert.rejects(
       () => app.fetchDownloadData({}, { timeoutMs: null, recoverUntilSuccess: true }),
@@ -304,47 +299,47 @@ test("refreshData deduplica dos actualizaciones manuales idénticas", async () =
   }
 });
 
-test("estar esperando el servidor no consume intentos dentro de la ventana de gracia", async () => {
-  // El backend puede tardar hasta 30 s esperando su turno del script lock. Contar
-  // eso como intento fallido agotaba los 8 permitidos y mataba recurrencias enteras.
+test("un envío interrumpido que ya se aplicó no se reenvía", async () => {
+  // Se cerró la app con el POST en vuelo: no sabemos si llegó. Reenviarlo a ciegas
+  // duplicaría el movimiento, así que se pregunta antes.
   const previousFetch = app.fetchAppsScriptData;
   try {
+    app.state.config.scriptUrl = "https://example.test/exec";
     resetQueue([{
-      id: "op-espera", status: "checking", attempts: 0, nextAttemptAt: 0,
-      lastSentAt: Date.now(), payload: { action: "addFutureMovement", clientOpId: "c-espera" }
+      id: "op-corte", status: "sending", attempts: 0, nextAttemptAt: 0,
+      lastSentAt: Date.now(), payload: { action: "addFutureMovement", clientOpId: "c-corte" }
     }]);
-    app.fetchAppsScriptData = async () => ({ ok: true, completed: false, pending: false });
+    app.fetchAppsScriptData = async () => ({ ok: true, completed: true });
 
-    await app.checkQueuedOp("op-espera");
+    await app.reconcileInterruptedOps();
 
-    const [op] = JSON.parse(app.localStorage.getItem(app.OP_QUEUE_KEY));
-    assert.equal(op.attempts, 0, "no se gasta un intento mientras la petición sigue viva");
-    assert.equal(op.status, "checking");
-    assert.ok(op.nextAttemptAt > Date.now(), "se reprograma la siguiente comprobación");
+    assert.equal(JSON.parse(app.localStorage.getItem(app.OP_QUEUE_KEY)).length, 0,
+      "ya estaba aplicada: sale de la cola sin reenviarla");
   } finally {
     app.fetchAppsScriptData = previousFetch;
+    app.state.config.scriptUrl = "";
     resetQueue();
   }
 });
 
-test("pasado un minuto sin noticias, la operación sigue confirmándose sin reenviar", async () => {
+test("un envío interrumpido que no llegó a aplicarse vuelve a la cola", async () => {
   const previousFetch = app.fetchAppsScriptData;
   try {
+    app.state.config.scriptUrl = "https://example.test/exec";
     resetQueue([{
-      id: "op-vieja", status: "checking", attempts: 0, nextAttemptAt: 0,
-      lastSentAt: Date.now() - 10 * 60 * 1000, payload: { action: "addFutureMovement", clientOpId: "c-vieja" }
+      id: "op-perdida", status: "sending", attempts: 0, nextAttemptAt: 0,
+      lastSentAt: Date.now(), payload: { action: "addFutureMovement", clientOpId: "c-perdida" }
     }]);
     app.fetchAppsScriptData = async () => ({ ok: true, completed: false, pending: false });
 
-    await app.checkQueuedOp("op-vieja");
+    await app.reconcileInterruptedOps();
 
     const [op] = JSON.parse(app.localStorage.getItem(app.OP_QUEUE_KEY));
-    assert.equal(op.attempts, 0, "no convierte una comprobación tardía en un nuevo envío");
-    assert.equal(op.status, "checking");
-    assert.equal(op.confirmationDelayed, true);
-    assert.equal(op.error, null, "el fallo de comprobación no se muestra como fallo del movimiento");
+    assert.equal(op.status, "retry", "vuelve a enviarse; el clientOpId evita duplicar si llegara a aplicarse");
+    assert.equal(op.error, null);
   } finally {
     app.fetchAppsScriptData = previousFetch;
+    app.state.config.scriptUrl = "";
     resetQueue();
   }
 });
@@ -384,4 +379,130 @@ test("cambiar de semanal a mensual empieza sin selección", () => {
 
   assert.equal(picker.innerHTML.includes("checked"), false,
     "los días de la semana no se arrastran a los días del mes");
+});
+
+test("la primera instalación del service worker no recarga la página", () => {
+  // El bug: sw.js hace skipWaiting + clients.claim, así que en la PRIMERA visita la
+  // página pasa de no-controlada a controlada y controllerchange disparaba una recarga
+  // que además cortaba la descarga inicial. Solo debe recargar cuando releva a otro.
+  assert.equal(app.shouldReloadForServiceWorker({
+    hadController: false, alreadyReloaded: false, dialogOpen: false, downloadInFlight: false
+  }), false, "instalación inicial: no se recarga");
+
+  assert.equal(app.shouldReloadForServiceWorker({
+    hadController: true, alreadyReloaded: false, dialogOpen: false, downloadInFlight: false
+  }), true, "actualización sobre un worker anterior: sí se recarga");
+});
+
+test("la recarga por actualización espera a que no haya trabajo que perder", () => {
+  const base = { hadController: true, alreadyReloaded: false, dialogOpen: false, downloadInFlight: false };
+
+  assert.equal(app.shouldReloadForServiceWorker({ ...base, downloadInFlight: true }), false,
+    "no se recarga a mitad de una descarga: se perdería el bloque en vuelo");
+  assert.equal(app.shouldReloadForServiceWorker({ ...base, dialogOpen: true }), false,
+    "no se recarga con un diálogo abierto: se perdería lo que el usuario escribe");
+  assert.equal(app.shouldReloadForServiceWorker({ ...base, alreadyReloaded: true }), false,
+    "nunca se recarga dos veces");
+});
+
+test("la reanudación de una descarga sobrevive a una recarga de la página", () => {
+  // Antes esto vivía en state.downloadResume, solo en memoria: al recargar a mitad de la
+  // descarga inicial se perdía la única pista de qué faltaba y la app se quedaba mostrando
+  // datos parciales como si estuvieran completos.
+  const app = loadApp();
+  app.setDownloadResume("all", ["transactions", "banks"]);
+  app.setMovementDownloadProgress("transactions", { nextOffset: 2000, total: 5000 });
+
+  // Una recarga = releer la caché persistida y normalizarla de cero.
+  const persisted = JSON.parse(JSON.stringify({ meta: app.state.cacheMeta }));
+  const app2 = loadApp();
+  app2.state.cacheMeta = app2.normalizeCacheMeta(persisted);
+
+  assert.deepEqual(Array.from(app2.pendingResumeSections()).sort(), ["banks", "transactions"]);
+  const resumed = app2.movementDownloadResume("transactions", null);
+  assert.equal(resumed.startOffset, 2000, "se retoma en el offset guardado, no desde la página 1");
+  assert.equal(resumed.initialRows.length, 0);
+});
+
+test("terminar una descarga deja la caché sin nada pendiente", () => {
+  const app = loadApp();
+  app.setDownloadResume("all", ["transactions"]);
+  app.setMovementDownloadProgress("transactions", { nextOffset: 1000, total: 1000 });
+  assert.equal(app.pendingResumeSections().length, 1);
+
+  app.clearMovementDownloadProgress("transactions");
+  app.clearDownloadResume();
+
+  assert.equal(app.pendingResumeSections().length, 0);
+  assert.equal(app.normalizeCacheMeta({ meta: app.state.cacheMeta }).resume, undefined,
+    "sin nada pendiente no queda rastro de reanudación en la caché");
+});
+
+test("las filas compactas se reconstruyen usando las columnas que declara la respuesta", async () => {
+  // El cliente no conoce posiciones fijas: se guía por payload.columns, así que añadir
+  // una columna en el backend no descoloca los importes.
+  const previousFetch = app.fetchDownloadData;
+  try {
+    app.fetchDownloadData = async () => ({
+      ok: true,
+      columns: ["sid", "rowNumber", "fecha", "tipo", "concepto", "descripcion", "importe", "cuenta"],
+      transactions: [["mov-1", 2, "2026-03-04", "Gasto", "Comida", "Menú", -12.5, "Santander"]],
+      total: 1,
+      nextOffset: 1,
+      hasMore: false
+    });
+
+    const rows = await app.downloadMovementPages("realized", "movimientos", {});
+
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].sid, "mov-1");
+    assert.equal(rows[0].importe, -12.5);
+    assert.equal(rows[0].cuenta, "Santander");
+    assert.equal(app.normalizeTransaction(rows[0]).amount, -12.5, "y el normalizador los entiende");
+  } finally {
+    app.fetchDownloadData = previousFetch;
+  }
+});
+
+test("no se lanzan más peticiones simultáneas de las permitidas", async () => {
+  // Ejecuciones simultáneas del mismo script es de donde salen los errores transitorios
+  // de Apps Script.
+  const previousFetch = app.fetch;
+  try {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    app.fetch = async () => {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise(resolve => globalThis.setTimeout(resolve, 0));
+      inFlight--;
+      return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true }) };
+    };
+
+    await Promise.all(Array.from({ length: 8 }, () => app.appsScriptRequest("https://example.test/exec", {})));
+
+    assert.ok(maxInFlight <= 2, `nunca más de 2 a la vez (llegó a ${maxInFlight})`);
+  } finally {
+    app.fetch = previousFetch;
+  }
+});
+
+test("un backend desactualizado se detecta y no se reintenta", async () => {
+  // Sin capa de compatibilidad, una acción desconocida solo puede ser que el Apps Script
+  // desplegado sea más antiguo que la app: repetir 40 veces no lo arregla.
+  const previousFetch = app.fetchAppsScriptData;
+  let calls = 0;
+  try {
+    app.fetchAppsScriptData = async () => {
+      calls += 1;
+      return { ok: false, error: "Acción no reconocida: batchOps", errorCode: "UNKNOWN_ACTION" };
+    };
+    await assert.rejects(
+      () => app.fetchDownloadData({ action: "downloadCoreData" }, { recoverUntilSuccess: true }),
+      /más antiguo que la app/
+    );
+    assert.equal(calls, 1);
+  } finally {
+    app.fetchAppsScriptData = previousFetch;
+  }
 });

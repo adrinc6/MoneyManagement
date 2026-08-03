@@ -147,6 +147,10 @@ La app guarda en `localStorage`:
 
 Cuando entras, usa la caché si está disponible. Si la caché sigue vigente, la pantalla carga rápido y luego se actualiza solo si hace falta. Al guardar movimientos, bancos o inversiones, la copia local se actualiza también para que la interfaz no dependa de recargar toda la hoja.
 
+Una descarga que se corta (un corte de red, cerrar la app) deja anotado en la caché qué secciones faltaban y por qué página iba; el siguiente arranque la retoma por ahí en vez de empezar de cero o quedarse con datos parciales.
+
+Al guardar, solo se vuelven a serializar las secciones que han cambiado, y durante una descarga paginada la escritura en `localStorage` se espacia: guardar en cada página reescribía el histórico entero, de forma síncrona, tantas veces como páginas hubiera.
+
 ## Apps Script
 
 El archivo `apps-script.gs` actúa como puente con Google Sheets:
@@ -227,12 +231,14 @@ En `Ajustes > Conexión`, sobre la lista de envíos correctos del día, hay un b
 - Las transferencias periódicas no escriben en `CUENTA`: el par de cuentas viaja en `DESCRIPCION`, de donde ya lo leen tanto la app como el backend. Así un desplegable de validación en esa columna no puede rechazarlas (era la causa de que no llegaran a guardarse nunca).
 - El resto de escrituras toleran las reglas de validación de la hoja: si una regla rechaza el valor de una fila nueva, se limpia la validación de esa fila y se reintenta.
 - Las transferencias llevan identificador propio: un reenvío no mueve el dinero dos veces, aunque el registro de operaciones confirmadas se haya podado.
-- Esperar turno en el servidor no cuenta como intento fallido, así que una recurrencia larga ya no se detiene sola por contención; y no se lanzan más de tres envíos sin confirmar a la vez.
+- Las altas periódicas viajan en un solo envío por lote (hasta 100 operaciones), aplicadas bajo un único bloqueo del servidor: una recurrencia de 52 fechas es una petición, no 52.
 - Los importes ilegibles se rechazan con aviso en vez de convertirse en `0 €` en silencio; los miles en formato español (`1.234`) se interpretan correctamente.
 - Las recurrencias están acotadas (máximo 366 fechas) y piden confirmación por encima de 50 movimientos.
 - La edición y el borrado de movimientos localizan la fila por identificador estable: actualizar los datos mientras tienes un movimiento abierto ya no edita el equivocado.
 - Si un CDN no carga, la app arranca igual (sin iconos ni gráficas) en vez de quedarse en blanco.
-- Las lecturas (JSONP) y escrituras (POST) tienen timeout: una petición colgada ya no bloquea la cola ni la interfaz, se reintenta sola.
+- Lecturas y escrituras van por `fetch` con CORS y se cancelan con `AbortController` al agotar su tiempo: una petición colgada ya no bloquea la cola ni la interfaz.
+- La confirmación de un guardado llega en la respuesta del propio POST, no sondeando después: un cambio se confirma en un par de segundos.
+- Los fallos se clasifican por su código real (HTTP o `errorCode`): lo transitorio se reintenta solo con espera creciente, y lo que no va a mejorar (token, hoja inexistente, datos inválidos) se detiene enseguida enseñando el motivo.
 - Si `localStorage` se llena, la caché se poda de forma automática y se avisa, en vez de fallar en silencio.
 - Cada vista se renderiza de forma aislada: un dato inesperado no rompe la pantalla completa.
 - Service worker con app-shell: la app abre sin conexión y es instalable como PWA. Los datos en vivo (Apps Script) nunca se cachean.

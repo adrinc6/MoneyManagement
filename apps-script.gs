@@ -22,8 +22,7 @@ var DAILY_NOTIFICATION_HOUR = 22;
 
 function doGet(e) {
   const params = e && e.parameter ? e.parameter : {};
-  const callback = params.callback || '';
-  const action = params.action || 'all';
+  const action = params.action || '';
   // Los nombres de hoja viajan juntos en todas las lecturas: se resuelven una vez y se
   // pasan como un objeto, en vez de como nueve argumentos posicionales que había que
   // mantener en el mismo orden en cada llamada.
@@ -45,8 +44,6 @@ function doGet(e) {
       payload = buildClientOpStatusPayload_(params.clientOpId || '');
     } else if (action === 'quickStatus') {
       payload = buildQuickStatusPayload_(movementSheet, futureMovementSheet, investmentSheet, bankSheet, dataSheet, investmentTotalsSheet);
-    } else if (action === 'downloadData') {
-      payload = buildDataPayload_(sheets, { movements: true, banks: true, estimates: false, movedFutureMovements: [] });
     } else if (action === 'downloadCoreData') {
       // La carga inicial no debe quedarse esperando a las hojas de estimaciones,
       // que pueden crecer mucho. Se descargan después, solo si el usuario usa ese modo.
@@ -75,14 +72,6 @@ function doGet(e) {
         banks: readBanks_(bankSheet),
         investmentTotals: readInvestmentTotals_(investmentTotalsSheet)
       };
-    } else if (action === 'all') {
-      const movedFutureMovements = moveDueFutureMovements_(futureMovementSheet, movementSheet, bankSheet, skipFutureSids);
-      if (movedFutureMovements.length) {
-        applyInvestmentCostChanges_(sheets, movedFutureMovements.map(function(movement) {
-          return { movement: movement, sign: 1 };
-        }), movementSheet);
-      }
-      payload = buildDataPayload_(sheets, { movements: true, banks: true, movedFutureMovements });
     } else if (action === 'updateInvestmentPrices') {
       payload = withScriptLock_(function() {
         const priceUpdateResult = updateInvestmentQuotesFromYahoo(investmentSheet);
@@ -104,13 +93,13 @@ function doGet(e) {
       });
       payload = { ok: true, notificationsSent: notificationResult.sent, duplicate: notificationResult.duplicate, pricesUpdated: false, investmentMode: investmentMode };
     } else {
-      payload = { ok: false, error: 'Unknown action' };
+      payload = unknownActionPayload_(action);
     }
   } catch (err) {
     payload = errorPayload_(err);
   }
 
-  return json_(payload, callback);
+  return json_(payload);
 }
 
 function resolveSheets_(source) {
@@ -133,7 +122,7 @@ function resolveSheets_(source) {
 // mismo preámbulo y la misma lista de campos recortada de distinta forma. Los flags
 // deciden qué bloques se añaden, y con ellos qué secciones ve el cliente como
 // sincronizadas.
-function buildDataPayload_(sheets, { movements = false, banks = false, estimates = false, movedFutureMovements } = {}) {
+function buildDataPayload_(sheets, { banks = false, estimates = false, movedFutureMovements } = {}) {
   const investments = readInvestments_(sheets.investment);
   const investmentTotals = investmentTotalsForRead_(sheets.investmentTotals, sheets.investment, sheets.movement);
   const payload = {
@@ -146,10 +135,6 @@ function buildDataPayload_(sheets, { movements = false, banks = false, estimates
   if (estimates) {
     payload.investmentEstimateRules = readInvestmentEstimateRules_(sheets.investmentEstimateRules);
     payload.investmentEstimateLedger = readInvestmentEstimateLedger_(sheets.investmentEstimateLedger);
-  }
-  if (movements) {
-    payload.transactions = readMovements_(sheets.movement);
-    payload.futureTransactions = readFutureMovements_(sheets.future);
   }
   if (banks) payload.banks = readBanks_(sheets.bank);
   if (movedFutureMovements) payload.movedFutureMovements = movedFutureMovements;
@@ -200,7 +185,8 @@ function buildMovementPagePayload_(sheetName, payloadKey, offset, limit) {
     offset: page.offset,
     limit: page.limit,
     nextOffset: page.nextOffset,
-    hasMore: page.hasMore
+    hasMore: page.hasMore,
+    columns: MOVEMENT_PAYLOAD_COLUMNS
   };
   payload[payloadKey] = page.rows;
   return payload;
@@ -210,9 +196,6 @@ function processedClientOpsKey_() {
   return PROCESSED_CLIENT_OPS_KEY;
 }
 
-function failedClientOpsKey_() {
-  return 'moneyFailedClientOps';
-}
 
 function appliedBatchSidsKey_() {
   return 'moneyAppliedBatchSids';
@@ -226,24 +209,6 @@ function receivedClientOpsKey_() {
   return 'moneyReceivedClientOps';
 }
 
-function initialDownloadPreparationKey_() {
-  return 'moneyInitialDownloadPreparation';
-}
-
-function setInitialDownloadPreparationPhase_(clientOpId, phase) {
-  if (!clientOpId) return;
-  const now = Date.now();
-  const items = readBoundedList_(initialDownloadPreparationKey_())
-    .filter(function(item) { return item && item.id !== clientOpId && now - Number(item.at || 0) < 15 * 60 * 1000; });
-  items.push({ id: clientOpId, phase: phase || 'recibida', at: now });
-  storeBoundedList_(initialDownloadPreparationKey_(), items);
-}
-
-function initialDownloadPreparationPhase_(clientOpId) {
-  if (!clientOpId) return '';
-  const item = readBoundedList_(initialDownloadPreparationKey_()).find(function(entry) { return entry && entry.id === clientOpId; });
-  return item ? String(item.phase || '') : '';
-}
 
 // Marca "recibida, esperando turno". La fila de "Pendientes" solo se escribe DESPUÉS
 // de obtener el script lock, así que durante esa espera (hasta 30 s) checkClientOp
@@ -315,23 +280,15 @@ function movementSidHeader_() {
   return MOVEMENT_SID_HEADER;
 }
 
+// Único consumidor: la reconciliación del arranque, para operaciones que se quedaron a
+// medias porque se cerró la app con el POST en vuelo. Solo necesita saber si el cambio
+// llegó a aplicarse o si sigue en curso; el motivo de un fallo ya viaja en la respuesta
+// del propio POST, así que no hay que guardarlo aquí para que alguien lo recoja después.
 function buildClientOpStatusPayload_(clientOpId) {
   if (!clientOpId) return { ok: true, completed: false, pending: false };
-  const phase = initialDownloadPreparationPhase_(clientOpId);
-  if (wasClientOpProcessed_(clientOpId)) return { ok: true, completed: true, pending: false, phase: phase || 'lista' };
-  // "pending" gana al último error: si hay un reintento en curso, el error anterior
-  // ya no describe el estado actual de la operación.
-  if (isClientOpPending_(clientOpId)) return { ok: true, completed: false, pending: true, phase: phase || 'recibida' };
-  // Recibida pero todavía esperando el script lock: sigue viva, no es un fallo.
-  if (isClientOpReceived_(clientOpId)) return { ok: true, completed: false, pending: true, phase: phase || 'recibida' };
-  const failure = clientOpFailure_(clientOpId);
-  if (failure) {
-    // retryable: fallos transitorios (lock ocupado) que el cliente debe reintentar
-    // con su backoff normal en vez de detener la operación con error terminal.
-    const retryable = String(failure).indexOf('LOCK_TIMEOUT') === 0;
-    return { ok: true, completed: false, pending: false, failed: true, retryable, phase, error: failure };
-  }
-  return { ok: true, completed: false, pending: false, phase };
+  if (wasClientOpProcessed_(clientOpId)) return { ok: true, completed: true, pending: false };
+  const pending = isClientOpPending_(clientOpId) || isClientOpReceived_(clientOpId);
+  return { ok: true, completed: false, pending: pending };
 }
 
 // Guarda una lista acotada en DocumentProperties (límite de 9 KB por valor),
@@ -363,44 +320,16 @@ function rememberProcessedClientOp_(clientOpId) {
       .filter(item => item && item.id !== clientOpId);
     items.push({ id: clientOpId, at: new Date().toISOString() });
     storeBoundedList_(processedClientOpsKey_(), items);
-    // La operación ya está confirmada: ni el último error ni el registro de saldos
-    // aplicados a medias tienen sentido y solo ocuparían sitio.
-    forgetClientOpFailure_(clientOpId);
+    // La operación ya está confirmada: el registro de saldos aplicados a medias no
+    // tiene sentido y solo ocuparía sitio.
     forgetAppliedBatchSids_(clientOpId);
   } catch (err) {
     // No dejar que un fallo aquí oculte que la operación sí se completó.
   }
 }
 
-// El POST del cliente va con mode:"no-cors", así que no puede leer la respuesta ni el
-// error. Sin esto un fallo del servidor era invisible y la operación se quedaba
-// reintentándose en bucle mostrando "Enviando/Confirmando" para siempre.
-function rememberClientOpFailure_(clientOpId, message) {
-  if (!clientOpId) return;
-  try {
-    // Un reintento que choca con el lock (o que llega mientras la ejecución original
-    // sigue viva) no es un fallo de la operación: no debe marcarla como errónea.
-    if (wasClientOpProcessed_(clientOpId) || isClientOpPending_(clientOpId)) return;
-    const items = readBoundedList_(failedClientOpsKey_())
-      .filter(item => item && item.id !== clientOpId);
-    items.push({ id: clientOpId, at: new Date().toISOString(), error: String(message || 'Error desconocido').slice(0, 300) });
-    storeBoundedList_(failedClientOpsKey_(), items);
-  } catch (err) {
-    // Un fallo registrando el fallo no debe romper la respuesta de error.
-  }
-}
 
-function forgetClientOpFailure_(clientOpId) {
-  if (!clientOpId) return;
-  const items = readBoundedList_(failedClientOpsKey_());
-  const next = items.filter(item => item && item.id !== clientOpId);
-  if (next.length !== items.length) storeBoundedList_(failedClientOpsKey_(), next);
-}
 
-function clientOpFailure_(clientOpId) {
-  const found = readBoundedList_(failedClientOpsKey_()).find(item => item && item.id === clientOpId);
-  return found ? String(found.error || 'Error desconocido') : '';
-}
 
 // Los saldos de "Bancos" se ajustan con sumas, no son idempotentes: si un lote falla
 // a medias y el cliente lo reintenta, el dinero se movería dos veces. Registramos qué
@@ -489,7 +418,6 @@ function doPost(e) {
     // "pendiente" mientras esta petición espera su turno, en vez de "no sé nada"
     // (que el cliente contabilizaba como intento fallido).
     rememberReceivedClientOp_(payload.clientOpId || '');
-    if (payload.action === 'prepareInitialDownload') setInitialDownloadPreparationPhase_(payload.clientOpId || '', 'recibida');
     // withScriptLock_ es el único sitio que sabe esperar el lock, con su timeout y su
     // error LOCK_TIMEOUT reintentable. doPost lo reimplementaba a mano, duplicando el
     // literal de 30 s, el mensaje y el manejo de scriptLockHeld_.
@@ -502,9 +430,7 @@ function doPost(e) {
         return json_({ ok: true, pending: true });
       }
       pendingId = appendPendingPost_(payload);
-      // Nuevo intento en marcha: el error registrado en el anterior ya no aplica.
-      forgetClientOpFailure_(payload.clientOpId || '');
-      return dispatchPostAction_(payload, pendingId);
+      return finishPost_(pendingId, payload, applyPostAction_(payload));
     });
   } catch (err) {
     // Si la acción falla a medias, no dejamos la fila en "Pendientes": si no se
@@ -513,15 +439,9 @@ function doPost(e) {
     if (pendingId) {
       try { removePendingPost_(pendingId); } catch (cleanupErr) {}
     }
-    // El cliente no puede leer esta respuesta (no-cors): dejamos el error registrado
-    // para que lo recoja checkClientOp y lo muestre en vez de reintentar sin fin.
-    // Excepción: un timeout de lock NO es un fallo de la operación — si se registrara,
-    // el cliente la marcaría como error terminal por una colisión transitoria.
-    const message = String(err && err.message || err || '');
-    if (payload && payload.action === 'prepareInitialDownload') setInitialDownloadPreparationPhase_(payload.clientOpId || '', 'error');
-    if (message.indexOf('LOCK_TIMEOUT') !== 0) {
-      rememberClientOpFailure_(payload && payload.clientOpId || '', message);
-    }
+    // El cliente lee esta respuesta: el motivo y su errorCode le llegan directamente y
+    // decide con ellos si reintentar o parar. Ya no hace falta dejarlo apuntado para que
+    // lo recoja una consulta posterior.
     return json_(errorPayload_(err));
   } finally {
     forgetReceivedClientOp_(payload && payload.clientOpId || '');
@@ -531,23 +451,34 @@ function doPost(e) {
 // El token es OBLIGATORIO: sin él, cualquiera con la URL /exec podía leer y
 // modificar todas las finanzas. Configura APP_TOKEN arriba y el mismo valor en
 // Ajustes de la app.
-// Despacho de acciones de doPost. Se ejecuta siempre con el script lock tomado.
-function dispatchPostAction_(payload, pendingId) {
-    if (payload.action === 'prepareInitialDownload') {
-      const sheets = resolveSheets_(payload);
-      setInitialDownloadPreparationPhase_(payload.clientOpId || '', 'preparando movimientos');
-      ensureMovementSidColumnCached_(requireSheet_(sheets.movement));
-      ensureMovementSidColumnCached_(requireSheet_(sheets.future));
-      setInitialDownloadPreparationPhase_(payload.clientOpId || '', 'sincronizando totales');
-      syncInvestmentTotalsSheet_(sheets.investmentTotals, sheets.investment, sheets.movement);
-      setInitialDownloadPreparationPhase_(payload.clientOpId || '', 'lista');
-      return finishPost_(pendingId, payload, { ok: true, prepared: true });
+// Aplica UNA acción y devuelve su respuesta, sin cerrar la petición. Se ejecuta siempre
+// con el script lock tomado. Que "aplicar" esté separado de "cerrar la petición" es lo
+// que permite a batchOps aplicar N acciones seguidas bajo el mismo lock, en vez de pagar
+// un POST, una espera de lock y una ejecución de Apps Script por cada una.
+function applyPostAction_(payload) {
+    if (payload.action === 'batchOps') {
+      // Un alta periódica de 52 fechas era 52 peticiones; aquí es una. Cada acción
+      // interna conserva su propio clientOpId, así que los guardias de idempotencia
+      // (saldos ya aplicados, sids ya escritos) siguen valiendo uno a uno y un reintento
+      // del lote no duplica lo que ya entró.
+      const ops = Array.isArray(payload.ops) ? payload.ops : [];
+      if (!ops.length) throw new Error('VALIDATION: el lote no lleva operaciones.');
+      if (ops.length > 500) throw new Error('VALIDATION: demasiadas operaciones en el lote (máximo 500).');
+      const results = ops.map(function(op) {
+        const merged = Object.assign({}, payload, op);
+        delete merged.ops;
+        const result = applyPostAction_(merged);
+        if (result && result.ok === false) throw new Error(result.error || 'Una operación del lote falló.');
+        if (merged.clientOpId) rememberProcessedClientOp_(merged.clientOpId);
+        return result;
+      });
+      return { ok: true, applied: results.length };
     }
     if (payload.action === 'addMovement') {
       addMovement_(Object.assign({}, payload.movement || {}, { cuenta: payload.account || payload.movement && payload.movement.cuenta || '' }), payload.sheetName || DEFAULT_MOVEMENT_SHEET);
       // Solo los movimientos de inversión cambian el coste y, con él, la hoja de totales.
-      // Para el resto, resincronizarla era trabajo caro tirado — y ahora que las altas
-      // periódicas llegan de una en una, sería ese coste multiplicado por cada fecha.
+      // Para el resto, resincronizarla es trabajo caro tirado — y dentro de un lote sería
+      // ese coste multiplicado por cada fecha.
       if (isInvestmentMovement_(payload.movement)) {
         adjustInvestmentCostFromMovement_(resolveSheets_(payload), payload.sheetName || DEFAULT_MOVEMENT_SHEET, payload.movement, 1);
       }
@@ -562,11 +493,11 @@ function dispatchPostAction_(payload, pendingId) {
           if (movementSid && payload.clientOpId) rememberAppliedBatchSids_(payload.clientOpId, [movementSid]);
         }
       }
-      return finishPost_(pendingId, payload, { ok: true });
+      return { ok: true };
     }
     if (payload.action === 'addFutureMovement') {
       addFutureMovement_(payload.movement, payload.sheetName || DEFAULT_FUTURE_MOVEMENT_SHEET, payload.account || '');
-      return finishPost_(pendingId, payload, { ok: true });
+      return { ok: true };
     }
     if (payload.action === 'updateMovement') {
       updateMovement_(payload.movement, payload.sheetName || DEFAULT_MOVEMENT_SHEET, payload.previousMovement || null);
@@ -574,12 +505,12 @@ function dispatchPostAction_(payload, pendingId) {
         { movement: payload.previousMovement, sign: -1 },
         { movement: payload.movement, sign: 1 }
       ], payload.sheetName || DEFAULT_MOVEMENT_SHEET);
-      return finishPost_(pendingId, payload, { ok: true });
+      return { ok: true };
     }
     if (payload.action === 'deleteMovement') {
       deleteMovement_(payload.rowNumber, payload.sheetName || DEFAULT_MOVEMENT_SHEET, payload.movement || null);
       adjustInvestmentCostFromMovement_(resolveSheets_(payload), payload.sheetName || DEFAULT_MOVEMENT_SHEET, payload.movement, -1);
-      return finishPost_(pendingId, payload, { ok: true });
+      return { ok: true };
     }
     if (payload.action === 'deleteMovementsBatch') {
       deleteMovementsBatch_(payload.movements || [], payload.sheetName || DEFAULT_MOVEMENT_SHEET);
@@ -588,7 +519,7 @@ function dispatchPostAction_(payload, pendingId) {
         (payload.movements || []).map(function(item) { return { movement: item && (item.movement || item), sign: -1 }; }),
         payload.sheetName || DEFAULT_MOVEMENT_SHEET
       );
-      return finishPost_(pendingId, payload, { ok: true });
+      return { ok: true };
     }
     if (payload.action === 'updateInvestment') {
       updateInvestment_(payload.investment || {}, payload.sheetName || DEFAULT_INVESTMENT_SHEET, payload.previousInvestment || null);
@@ -596,65 +527,65 @@ function dispatchPostAction_(payload, pendingId) {
         updateInvestmentQuotesFromYahoo(payload.sheetName || DEFAULT_INVESTMENT_SHEET);
       }
       syncInvestmentTotalsSheet_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.sheetName || DEFAULT_INVESTMENT_SHEET, payload.movementSheet || DEFAULT_MOVEMENT_SHEET);
-      return finishPost_(pendingId, payload, { ok: true, pricesUpdated: Boolean(payload.newInvestment) });
+      return { ok: true, pricesUpdated: Boolean(payload.newInvestment) };
     }
     if (payload.action === 'deleteInvestment') {
       deleteInvestment_(payload.investment || {}, payload.sheetName || DEFAULT_INVESTMENT_SHEET, payload.rowNumber || 0);
       syncInvestmentTotalsSheet_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.sheetName || DEFAULT_INVESTMENT_SHEET, payload.movementSheet || DEFAULT_MOVEMENT_SHEET);
-      return finishPost_(pendingId, payload, { ok: true, investmentDeleted: true });
+      return { ok: true, investmentDeleted: true };
     }
     if (payload.action === 'saveInvestmentCategories') {
       saveInvestmentCategories_(payload.sheetName || DEFAULT_INVESTMENT_SHEET, payload.investmentTypes || [], payload.renames || {}, payload.movementSheet || DEFAULT_MOVEMENT_SHEET, payload.futureMovementSheet || DEFAULT_FUTURE_MOVEMENT_SHEET, payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.investmentEstimateRulesSheet || DEFAULT_INVESTMENT_ESTIMATE_RULES_SHEET, payload.investmentEstimateLedgerSheet || DEFAULT_INVESTMENT_ESTIMATE_LEDGER_SHEET);
       syncInvestmentTotalsSheet_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.sheetName || DEFAULT_INVESTMENT_SHEET, payload.movementSheet || DEFAULT_MOVEMENT_SHEET);
-      return finishPost_(pendingId, payload, { ok: true });
+      return { ok: true };
     }
     if (payload.action === 'saveInvestmentEstimateRules') {
       saveInvestmentEstimateRules_(payload.rules || [], payload.investmentEstimateRulesSheet || DEFAULT_INVESTMENT_ESTIMATE_RULES_SHEET);
-      return finishPost_(pendingId, payload, { ok: true });
+      return { ok: true };
     }
     if (payload.action === 'clearInvestmentEstimates') {
       clearInvestmentEstimates_(payload.investmentEstimateLedgerSheet || DEFAULT_INVESTMENT_ESTIMATE_LEDGER_SHEET, payload.movementSheet || DEFAULT_MOVEMENT_SHEET);
-      return finishPost_(pendingId, payload, { ok: true });
+      return { ok: true };
     }
     if (payload.action === 'saveInvestmentEstimateAllocations') {
       const saved = saveInvestmentEstimateAllocations_(payload.investmentEstimateLedgerSheet || DEFAULT_INVESTMENT_ESTIMATE_LEDGER_SHEET, payload.entries || []);
-      return finishPost_(pendingId, payload, { ok: true, estimatesSaved: saved.length });
+      return { ok: true, estimatesSaved: saved.length };
     }
     if (payload.action === 'saveInvestmentGoals') {
       saveInvestmentGoals_(payload.goals || {}, payload.sheetName || DEFAULT_OBJECTIVE_SHEET);
-      return finishPost_(pendingId, payload, { ok: true });
+      return { ok: true };
     }
     if (payload.action === 'saveInvestmentModePreference') {
       saveInvestmentModePreference_(payload.investmentMode || payload.mode || 'real');
-      return finishPost_(pendingId, payload, { ok: true, investmentModeSaved: true, investmentMode: investmentModePreference_() });
+      return { ok: true, investmentModeSaved: true, investmentMode: investmentModePreference_() };
     }
     if (payload.action === 'saveBanks') {
       saveBanks_(payload.banks || [], payload.bankSheet || DEFAULT_BANK_SHEET);
-      return finishPost_(pendingId, payload, { ok: true });
+      return { ok: true };
     }
     if (payload.action === 'transferBank') {
       // Mover saldo es una suma: sin este guardia, un reenvío duplicaría el dinero.
       const transferSid = String(payload.transferSid || '').trim();
       if (transferSid && wasTransferApplied_(transferSid)) {
-        return finishPost_(pendingId, payload, { ok: true, duplicate: true });
+        return { ok: true, duplicate: true };
       }
       transferBank_(payload.bankSheet || DEFAULT_BANK_SHEET, payload.from, payload.to, Number(payload.amount || 0));
       rememberAppliedTransfer_(transferSid);
-      return finishPost_(pendingId, payload, { ok: true });
+      return { ok: true };
     }
     if (payload.action === 'renameAccount') {
       const renamed = renameAccount_(payload.bankSheet || DEFAULT_BANK_SHEET, payload.movementSheet || DEFAULT_MOVEMENT_SHEET, payload.futureMovementSheet || DEFAULT_FUTURE_MOVEMENT_SHEET, payload.oldName || '', payload.newName || '');
-      return finishPost_(pendingId, payload, Object.assign({ ok: true }, renamed));
+      return Object.assign({ ok: true }, renamed);
     }
     if (payload.action === 'deleteAccount') {
       const deleted = deleteAccount_(payload.bankSheet || DEFAULT_BANK_SHEET, payload.movementSheet || DEFAULT_MOVEMENT_SHEET, payload.futureMovementSheet || DEFAULT_FUTURE_MOVEMENT_SHEET, payload.account || '', Boolean(payload.force));
-      return finishPost_(pendingId, payload, Object.assign({ ok: true }, deleted));
+      return Object.assign({ ok: true }, deleted);
     }
     if (payload.action === 'reassignFutureMovementsAccount') {
       const changed = reassignFutureMovementsAccount_(payload.futureMovementSheet || DEFAULT_FUTURE_MOVEMENT_SHEET, payload.oldName || '', payload.newName || '');
-      return finishPost_(pendingId, payload, { ok: true, changed });
+      return { ok: true, changed };
     }
-    return finishPost_(pendingId, payload, { ok: false, error: 'Unknown action' });
+    return unknownActionPayload_(payload.action);
 }
 
 function requireToken_(token) {
@@ -720,11 +651,17 @@ function purgeStalePendingRows_(sheet) {
 }
 
 function finishPost_(pendingId, requestPayload, responsePayload) {
+  // Las escrituras de Sheets quedan en búfer hasta el final de la ejecución. Sin este
+  // flush, otra ejecución (la reconciliación con checkClientOp) podía leer la hoja
+  // "Pendientes" todavía con la fila puesta y responder "sigue en curso" sobre algo ya
+  // terminado, dejando la operación dando vueltas.
+  SpreadsheetApp.flush();
   removePendingPost_(pendingId);
   const response = responsePayload || requestPayload || { ok: true };
   if (response.ok !== false && requestPayload && requestPayload.action) {
     rememberProcessedClientOp_(requestPayload.clientOpId || '');
   }
+  SpreadsheetApp.flush();
   return json_(response);
 }
 
@@ -846,15 +783,32 @@ function appendRowSafe_(sheet, values) {
   }
 }
 
+// Sobrescribe una fila que YA existe. Las altas no pasan por aquí: van por
+// appendMovementRows_, que además deduplica.
+//
+// Eran tres escrituras por fila (A:H, luego la cuenta, luego el sid). Ahora es una sola
+// de A hasta la columna SID, dejando intactas las celdas intermedias que no se tocan.
 function writeMovementRow_(sheet, rowNumber, movement, sid, account) {
   const date = new Date(movement.date || movement.fecha);
   if (Number.isNaN(date.getTime())) throw new Error('Invalid date');
   const amount = Number(movement.amount || movement.importe);
   if (!Number.isFinite(amount)) throw new Error('Invalid amount');
   const sidCol = ensureMovementSidColumnCached_(sheet);
-  setRangeValuesSafe_(sheet.getRange(rowNumber, 1, 1, 8), [[date, `=YEAR(A${rowNumber})`, `=MONTH(A${rowNumber})`, `=DAY(A${rowNumber})`, sanitizeCell_(movement.tipo || ''), sanitizeCell_(movement.concepto || ''), sanitizeCell_(movement.descripcion || ''), amount]]);
-  if (sheet.getLastColumn() >= 9) setCellValueSafe_(sheet.getRange(rowNumber, 9), sanitizeCell_(account ?? movement.cuenta ?? movement.account ?? ''));
-  if (sidCol) setCellValueSafe_(sheet.getRange(rowNumber, sidCol), sid || movementSidFrom_(movement));
+  // Mismo ancho que appendMovementRows_: si la hoja no llega a la columna 9 no se le
+  // añade una "Cuenta" que no tenía.
+  const width = Math.max(sheet.getLastColumn(), sidCol, 8);
+  const row = sheet.getRange(rowNumber, 1, 1, width).getValues()[0];
+  row[0] = date;
+  row[1] = `=YEAR(A${rowNumber})`;
+  row[2] = `=MONTH(A${rowNumber})`;
+  row[3] = `=DAY(A${rowNumber})`;
+  row[4] = sanitizeCell_(movement.tipo || '');
+  row[5] = sanitizeCell_(movement.concepto || '');
+  row[6] = sanitizeCell_(movement.descripcion || '');
+  row[7] = amount;
+  if (width >= 9) row[8] = sanitizeCell_(account != null ? account : (movement.cuenta != null ? movement.cuenta : (movement.account || '')));
+  if (sidCol) row[sidCol - 1] = sid || movementSidFrom_(movement);
+  setRangeValuesSafe_(sheet.getRange(rowNumber, 1, 1, width), [row]);
 }
 
 // Añade varios movimientos con UNA sola lectura de la columna SID y UNA sola
@@ -915,17 +869,21 @@ function findMovementRowBySid_(sheet, sid, sidCol) {
   return 0;
 }
 
+// Un alta es un append: appendMovementRows_ hace 1 lectura + 1 escritura, mientras que
+// writeMovementRow_ hacía tres llamadas a la API por fila. Además deduplica por sid, así
+// que un reintento no escribe el movimiento dos veces.
 function addMovement_(movement, sheetName) {
   if (!movement) throw new Error('Missing movement');
-  const sheet = requireSheet_(sheetName);
-  ensureMovementSidColumnCached_(sheet);
-  const row = sheet.getLastRow() + 1;
-  writeMovementRow_(sheet, row, movement, movementSidFrom_(movement), movement.cuenta || movement.account || '');
+  appendMovementRows_(requireSheet_(sheetName), [{
+    movement: movement,
+    sid: movementSidFrom_(movement),
+    account: movement.cuenta || movement.account || ''
+  }]);
 }
 
 function readMovements_(sheetName) {
   const page = readMovementsPage_(sheetName, 0, Number.MAX_SAFE_INTEGER);
-  return page.rows;
+  return page.rows.map(movementObjectFromCompactRow_);
 }
 
 function readMovementsPage_(sheetName, offset, limit, optional) {
@@ -954,7 +912,7 @@ function readMovementsPage_(sheetName, offset, limit, optional) {
     ? sheet.getRange(startRow, sidCol, count, 1).getDisplayValues()
     : null;
   const rows = values
-    .map((row, index) => movementObjectFromRow_(
+    .map((row, index) => movementRowFromSheetRow_(
       row,
       startRow + index,
       sidCol,
@@ -965,18 +923,31 @@ function readMovementsPage_(sheetName, offset, limit, optional) {
   return { rows, total, offset: safeOffset, limit: safeLimit, nextOffset, hasMore: nextOffset < total };
 }
 
-function movementObjectFromRow_(row, rowNumber, sidCol, sidValue) {
+// Los movimientos viajan como filas (arrays) en vez de objetos con ocho claves cada una:
+// para un histórico grande eso es del orden de tres veces menos payload que descargar y
+// parsear en el móvil. El orden se declara aquí una sola vez y viaja en la respuesta, así
+// que el cliente no conoce posiciones fijas.
+var MOVEMENT_PAYLOAD_COLUMNS = ['sid', 'rowNumber', 'fecha', 'tipo', 'concepto', 'descripcion', 'importe', 'cuenta'];
+
+function movementRowFromSheetRow_(row, rowNumber, sidCol, sidValue) {
   if (!row[0] || !row[4] || row[7] === '') return null;
-  return {
-    sid: sidCol ? String(sidValue || '').trim() : '',
+  return [
+    sidCol ? String(sidValue || '').trim() : '',
     rowNumber,
-    fecha: normalizeDate_(row[0]),
-    tipo: row[4],
-    concepto: row[5],
-    descripcion: row[6],
-    importe: parseNumber_(row[7]),
-    cuenta: row[8] || ''
-  };
+    normalizeDate_(row[0]),
+    row[4],
+    row[5],
+    row[6],
+    parseNumber_(row[7]),
+    row[8] || ''
+  ];
+}
+
+// Para los consumidores internos del propio script, que sí trabajan con objetos.
+function movementObjectFromCompactRow_(row) {
+  const movement = {};
+  MOVEMENT_PAYLOAD_COLUMNS.forEach(function(key, index) { movement[key] = row[index]; });
+  return movement;
 }
 
 function updateMovement_(movement, sheetName, previousMovement) {
@@ -1007,28 +978,57 @@ function deleteMovement_(rowNumber, sheetName, movement) {
   sheet.deleteRow(row);
 }
 
+// Era O(ítems × filas): una lectura completa de la columna SID por cada elemento, más una
+// lectura por fila en el recorrido de respaldo. Ahora se lee la hoja UNA vez y todo se
+// resuelve contra ese snapshot en memoria.
 function deleteMovementsBatch_(items, sheetName) {
   if (!items.length) return;
   const sheet = requireSheet_(sheetName);
-  const rows = [];
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) throw new Error('Movements not found');
   const sidCol = ensureMovementSidColumnCached_(sheet);
+  const values = sheet.getRange(2, 1, lastRow - 1, movementRowWidth_(sidCol)).getValues();
+
+  const rowBySid = {};
+  if (sidCol) {
+    values.forEach((row, index) => {
+      const sid = String(row[sidCol - 1] || '').trim();
+      if (sid) rowBySid[sid] = index + 2;
+    });
+  }
+
+  const rows = [];
   items.forEach(item => {
     const movement = item && (item.movement || item);
     const sid = String(movement && movement.sid || '').trim();
-    let row = sid ? findMovementRowBySid_(sheet, sid, sidCol) : Number(item && item.rowNumber || 0);
-    if (movement && row >= 2 && row <= sheet.getLastRow() && !movementMatchesSheetRow_(sheet, row, movement)) {
+    let row = sid && rowBySid[sid] ? rowBySid[sid] : Number(item && item.rowNumber || 0);
+    if (movement && row >= 2 && row <= lastRow && !movementRowMatches_(values[row - 2], movement, sidCol)) {
       row = 0;
     }
-    if ((!row || row < 2 || row > sheet.getLastRow()) && movement) {
-      row = findMovementRow_(sheet, movement, rows);
+    if ((!row || row < 2 || row > lastRow) && movement) {
+      // Respaldo por contenido, también sobre el snapshot: de la última fila hacia atrás,
+      // saltando las que ya se han asignado a otro elemento del lote.
+      row = 0;
+      for (let i = values.length - 1; i >= 0 && !row; i--) {
+        const candidate = i + 2;
+        if (rows.indexOf(candidate) !== -1) continue;
+        if (movementRowMatches_(values[i], movement, sidCol)) row = candidate;
+      }
     }
-    if (row >= 2 && row <= sheet.getLastRow()) rows.push(row);
+    if (row >= 2 && row <= lastRow) rows.push(row);
   });
   const uniqueRows = Array.from(new Set(rows)).sort((a, b) => b - a);
   if (!uniqueRows.length) throw new Error('Movements not found');
   uniqueRows.forEach(row => sheet.deleteRow(row));
 }
 
+// Localiza una fila por su sid y, si ese sid no está en la hoja (filas creadas antes de
+// que existiera la columna SID, o editadas desde fuera), por su contenido.
+//
+// El recorrido por contenido hacía un getRange POR FILA, más un getLastColumn por fila,
+// a través de movementMatchesSheetRow_: con 5.000 movimientos eran 5.000 idas y vueltas
+// a Sheets y la ejecución se agotaba a los seis minutos. Ahora se lee el rango una vez y
+// se compara en memoria.
 function findMovementRow_(sheet, movement, excludedRows) {
   const excluded = excludedRows || [];
   const lastRow = sheet.getLastRow();
@@ -1037,28 +1037,40 @@ function findMovementRow_(sheet, movement, excludedRows) {
   const sid = String(movement && movement.sid || '').trim();
   const sidRow = sid ? findMovementRowBySid_(sheet, sid, sidCol) : 0;
   if (sidRow && excluded.indexOf(sidRow) === -1) return sidRow;
-  for (let row = lastRow; row >= 2; row--) {
+  const values = sheet.getRange(2, 1, lastRow - 1, movementRowWidth_(sidCol)).getValues();
+  for (let i = values.length - 1; i >= 0; i--) {
+    const row = i + 2;
     if (excluded.indexOf(row) !== -1) continue;
-    if (movementMatchesSheetRow_(sheet, row, movement)) return row;
+    if (movementRowMatches_(values[i], movement, sidCol)) return row;
   }
   return 0;
 }
 
-function movementMatchesSheetRow_(sheet, row, movement) {
-  const sidCol = ensureMovementSidColumnCached_(sheet);
-  const values = sheet.getRange(row, 1, 1, Math.max(sheet.getLastColumn(), sidCol, 8)).getValues()[0];
-  const movementSid = String(movement && movement.sid || '').trim();
+// Los movimientos ocupan A:I; la columna SID puede estar más allá. No se usa
+// getLastColumn(): una columna auxiliar o un formato lejano haría leer cientos de
+// columnas irrelevantes en cada comprobación.
+function movementRowWidth_(sidCol) {
+  return Math.max(9, Number(sidCol) || 0);
+}
+
+// Comparación pura sobre una fila ya leída, sin tocar la hoja.
+function movementRowMatches_(values, movement, sidCol) {
+  if (!values || !movement) return false;
+  const movementSid = String(movement.sid || '').trim();
   const rowSid = sidCol ? String(values[sidCol - 1] || '').trim() : '';
-  if (movementSid && rowSid && movementSid === rowSid) return true;
-  const movementDate = normalizeDate_(movement.date || movement.fecha);
-  const rowDate = normalizeDate_(values[0]);
+  if (movementSid && rowSid) return movementSid === rowSid;
   const movementAmount = parseNumber_(movement.amount || movement.importe);
   const rowAmount = parseNumber_(values[7]);
-  return rowDate === movementDate
+  return normalizeDate_(values[0]) === normalizeDate_(movement.date || movement.fecha)
     && String(values[4] || '').trim() === String(movement.tipo || '').trim()
     && String(values[5] || '').trim() === String(movement.concepto || '').trim()
     && String(values[6] || '').trim() === String(movement.descripcion || '').trim()
     && Math.abs(rowAmount - movementAmount) < 0.005;
+}
+
+function movementMatchesSheetRow_(sheet, row, movement) {
+  const sidCol = ensureMovementSidColumnCached_(sheet);
+  return movementRowMatches_(sheet.getRange(row, 1, 1, movementRowWidth_(sidCol)).getValues()[0], movement, sidCol);
 }
 
 function futureMovementHeaders_() {
@@ -1067,10 +1079,11 @@ function futureMovementHeaders_() {
 
 function addFutureMovement_(movement, sheetName, account) {
   if (!movement) throw new Error('Missing movement');
-  const sheet = getOrCreateSheet_(sheetName, futureMovementHeaders_());
-  ensureMovementSidColumnCached_(sheet);
-  const row = sheet.getLastRow() + 1;
-  writeMovementRow_(sheet, row, movement, movementSidFrom_(movement), account || movement.account || movement.cuenta || '');
+  appendMovementRows_(getOrCreateSheet_(sheetName, futureMovementHeaders_()), [{
+    movement: movement,
+    sid: movementSidFrom_(movement),
+    account: account || movement.account || movement.cuenta || ''
+  }]);
 }
 
 function parseTransferAccountText_(value) {
@@ -1096,12 +1109,6 @@ function isInvestmentPositionType_(value) {
   return true;
 }
 
-function readFutureMovements_(sheetName) {
-  const sheet = getSheet_(sheetName);
-  if (!sheet) return [];
-  const page = readMovementsPage_(sheetName, 0, Number.MAX_SAFE_INTEGER);
-  return page.rows;
-}
 
 // Comprobación barata y de solo lectura: ¿hay algún futuro vencido? Permite que la
 // carga normal (sin nada que mover) no tenga que esperar el script lock.
@@ -1143,6 +1150,21 @@ function moveDueFutureMovementsLocked_(futureSheetName, movementSheetName, bankS
   // appendMovementRows_: fila a fila eran ~3 llamadas a la API por vencimiento, y una
   // puesta al día de varios meses se comía el presupuesto de tiempo de la petición.
   const pendingAppends = [];
+  // Los saldos, igual. findBankRow_ leía la hoja Bancos entera por cada comprobación y
+  // adjustBank_/transferBank_ la leían y reescribían por cada vencimiento: unas tres
+  // idas y vueltas por fila. Se lee una vez, se acumulan los deltas y se escribe al
+  // final, en una sola operación.
+  const knownAccounts = {};
+  if (bankSheet && bankSheet.getLastRow() >= 2) {
+    bankSheet.getRange(2, 1, bankSheet.getLastRow() - 1, 1).getValues().forEach(function(row) {
+      const account = String(row[0] || '').trim();
+      if (account) knownAccounts[normalizeType_(account)] = true;
+    });
+  }
+  const accountExists = function(account) {
+    return !bankSheet || Boolean(knownAccounts[normalizeType_(String(account || '').trim())]);
+  };
+  const balanceChanges = [];
   for (let r = values.length - 1; r >= 1; r--) {
     const row = values[r];
     const date = parseMovementDate_(row[0]);
@@ -1155,13 +1177,13 @@ function moveDueFutureMovementsLocked_(futureSheetName, movementSheetName, bankS
       const amount = Math.abs(Number(movement.importe || 0));
       if (!accounts.from || !accounts.to || accounts.from === accounts.to || !Number.isFinite(amount) || amount <= 0) continue;
       // Account renamed or deleted since the transfer was scheduled: leave it as a future movement instead of crashing.
-      if (bankSheet && (!findBankRow_(bankSheet, accounts.from) || !findBankRow_(bankSheet, accounts.to))) continue;
-      transferBank_(bankSheetName, accounts.from, accounts.to, amount);
+      if (!accountExists(accounts.from) || !accountExists(accounts.to)) continue;
+      balanceChanges.push({ account: accounts.from, delta: -amount }, { account: accounts.to, delta: amount });
       moved.push({ ...movement, cuenta: `${accounts.from} → ${accounts.to}`, transferFrom: accounts.from, transferTo: accounts.to });
     } else {
-      if (row[8] && bankSheet && !findBankRow_(bankSheet, row[8])) continue;
+      if (row[8] && !accountExists(row[8])) continue;
       pendingAppends.push({ movement, sid: sid || movementSidFrom_(movement), account: row[8] || '' });
-      if (row[8]) adjustBank_(bankSheetName, row[8], movement.importe);
+      if (row[8]) balanceChanges.push({ account: row[8], delta: movement.importe });
       moved.push({ ...movement, cuenta: row[8] || '' });
     }
     rowsToDelete.push(r + 1);
@@ -1170,6 +1192,7 @@ function moveDueFutureMovementsLocked_(futureSheetName, movementSheetName, bankS
     const movementSheet = requireSheet_(movementSheetName);
     appendMovementRows_(movementSheet, pendingAppends);
   }
+  if (balanceChanges.length) adjustBankBalances_(bankSheetName, balanceChanges);
   rowsToDelete.sort((a, b) => b - a).forEach(rowNumber => futureSheet.deleteRow(rowNumber));
   return moved.reverse();
 }
@@ -1458,6 +1481,7 @@ function saveInvestmentEstimateAllocations_(ledgerSheetName, entries) {
   resetSheetHeaders_(sheet, investmentEstimateLedgerHeaders_());
   const existingIds = investmentEstimateLedgerKeys_(sheet);
   const saved = [];
+  const rows = [];
   (entries || []).forEach(function(entry) {
     const id = String(entry.id || '').trim() || ('est_' + Utilities.getUuid());
     const key = id || [entry.sidMovimiento || '', entry.data || '', entry.importe || '', entry.precioUsado || ''].join('|');
@@ -1481,10 +1505,15 @@ function saveInvestmentEstimateAllocations_(ledgerSheetName, entries) {
       shares,
       entry.origen || 'reparto confirmado'
     ];
-    appendRowSafe_(sheet, row.map(sanitizeCell_));
+    rows.push(row.map(sanitizeCell_));
     saved.push(entry);
     existingIds[key] = true;
   });
+  // Una escritura para todo el reparto. Con appendRowSafe_ dentro del bucle eran hasta
+  // 500 llamadas a la API en una sola operación.
+  if (rows.length) {
+    setRangeValuesSafe_(sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, rows[0].length), rows);
+  }
   return saved;
 }
 
@@ -2031,25 +2060,41 @@ function getYahooQuotes_(tickers) {
   // actualización entera: antes el throw dentro del forEach abortaba también los
   // que sí se habían resuelto. Los fallos se acumulan y se informan aparte.
   const failures = [];
-  uniqueTickers.forEach(ticker => {
-    if (out[ticker]) return;
+  // fetchAll lanza las peticiones a la vez. En serie eran N llamadas HTTP encadenadas
+  // dentro del script lock, y con el endpoint por lotes de Yahoo devolviendo 401/429 a
+  // menudo, ese respaldo es el caso normal, no la excepción.
+  const pending = uniqueTickers.filter(ticker => !out[ticker]);
+  if (pending.length) {
+    const requests = pending.map(ticker => yahooQuoteRequest_(ticker));
+    let responses = [];
     try {
-      out[ticker] = getYahooQuote_(ticker);
+      responses = UrlFetchApp.fetchAll(requests);
     } catch (err) {
-      failures.push({ ticker: ticker, error: String(err && err.message || err) });
+      pending.forEach(ticker => failures.push({ ticker: ticker, error: String(err && err.message || err) }));
+      responses = [];
     }
-  });
+    responses.forEach((response, index) => {
+      const ticker = pending[index];
+      try {
+        out[ticker] = parseYahooQuote_(ticker, response);
+      } catch (err) {
+        failures.push({ ticker: ticker, error: String(err && err.message || err) });
+      }
+    });
+  }
   if (failures.length) out.__failures = failures;
   return out;
 }
 
-function getYahooQuote_(ticker) {
-  const yahooTicker = yahooTickerAlias_(ticker);
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooTicker)}`;
-  const res = UrlFetchApp.fetch(url, {
+function yahooQuoteRequest_(ticker) {
+  return {
+    url: `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooTickerAlias_(ticker))}`,
     muteHttpExceptions: true,
     headers: { 'User-Agent': 'Mozilla/5.0' }
-  });
+  };
+}
+
+function parseYahooQuote_(ticker, res) {
   const code = res.getResponseCode();
   if (code !== 200) throw new Error(`Yahoo error ${code} para ${ticker}`);
   const json = JSON.parse(res.getContentText());
@@ -2058,7 +2103,7 @@ function getYahooQuote_(ticker) {
   if (!meta) throw new Error(`Respuesta Yahoo inválida para ${ticker}`);
   return {
     ticker,
-    yahooTicker,
+    yahooTicker: yahooTickerAlias_(ticker),
     currency: meta.currency || '',
     regularMarketPrice: Number(meta.regularMarketPrice || meta.previousClose),
     previousClose: Number(meta.previousClose || meta.chartPreviousClose || meta.regularMarketPrice)
@@ -2072,7 +2117,12 @@ function yahooTickerAlias_(ticker) {
   return text;
 }
 
+// Los tipos de cambio son los mismos para toda la ejecución, pero se volvían a pedir a
+// Yahoo en cada llamada — incluida una por cada fila nueva de inversión.
+var currencyRatesCache_ = null;
+
 function getCurrencyRates_() {
+  if (currencyRatesCache_) return currencyRatesCache_;
   const rates = { EUR: 1 };
   const quotes = getYahooQuotes_(['EURUSD=X', 'GBPEUR=X', 'EURCHF=X']);
   const eurUsd = Number(quotes['EURUSD=X'] && quotes['EURUSD=X'].regularMarketPrice);
@@ -2083,6 +2133,7 @@ function getCurrencyRates_() {
   rates.GBP = rates.gbpEur || 1;
   const eurChf = Number(quotes['EURCHF=X'] && quotes['EURCHF=X'].regularMarketPrice);
   rates.CHF = Number.isFinite(eurChf) && eurChf ? 1 / eurChf : 1;
+  currencyRatesCache_ = rates;
   return rates;
 }
 
@@ -2572,11 +2623,16 @@ function updateInvestmentCategoryNamesInTotals_(sheetName, renames, orderedCateg
   const sheet = getOrCreateSheet_(sheetName || DEFAULT_INVESTMENT_TOTALS_SHEET, investmentTotalsHeaders_());
   const requested = (orderedCategories || []).map(v => String(v || '').trim()).filter(Boolean);
   const requestedKeys = new Set(requested.map(normalizeType_));
+  // Una sola lectura de la hoja de inversiones para todo: la comprobación de abajo la
+  // repetía dentro de un bucle, releyendo la hoja entera por cada categoría sobrante.
+  const investments = readInvestments_(investmentSheetName || DEFAULT_INVESTMENT_SHEET);
   const positionsByType = {};
-  readInvestments_(investmentSheetName || DEFAULT_INVESTMENT_SHEET).forEach(item => {
+  const labelByType = {};
+  investments.forEach(item => {
     const key = normalizeType_(item.tipo);
     if (!key) return;
     positionsByType[key] = (positionsByType[key] || 0) + 1;
+    if (!labelByType[key]) labelByType[key] = item.tipo;
   });
 
   const existingByKey = {};
@@ -2610,7 +2666,7 @@ function updateInvestmentCategoryNamesInTotals_(sheetName, renames, orderedCateg
 
   Object.keys(positionsByType).forEach(key => {
     if (!requestedKeys.has(key)) {
-      const label = readInvestments_(investmentSheetName || DEFAULT_INVESTMENT_SHEET).find(item => normalizeType_(item.tipo) === key)?.tipo || key;
+      const label = labelByType[key] || key;
       throw new Error('No se puede borrar la categoría "' + label + '" porque tiene posiciones.');
     }
   });
@@ -2748,22 +2804,14 @@ function normalizeGoalKey_(value) {
   return '';
 }
 
-// Única forma de construir la respuesta. Con callback envuelve en JSONP (lo que pide
-// doGet desde el <script>); sin él, JSON a secas (doPost).
-function json_(payload, callback) {
-  // JSONP se ejecuta como JavaScript dentro de un <script>. Caracteres que son
-  // perfectamente válidos dentro de una celda (separadores Unicode de línea o
-  // secuencias HTML pegadas desde una nota) pueden hacer que navegadores móviles
-  // antiguos rechacen el script entero. Se escapan siempre, no solo movimientos.
-  const body = JSON.stringify(payload)
-    .replace(/</g, '\\u003c')
-    .replace(/>/g, '\\u003e')
-    .replace(/&/g, '\\u0026')
-    .replace(/\u2028/g, '\\u2028')
-    .replace(/\u2029/g, '\\u2029');
+// Única forma de construir la respuesta: JSON a secas, para doGet y doPost por igual.
+// El cliente las lee con fetch y JSON.parse. Ya no hace falta el envoltorio
+// JSONP ni escapar <, >, & o los separadores Unicode de línea: aquello solo era necesario
+// porque la respuesta se ejecutaba como JavaScript dentro de un <script>.
+function json_(payload) {
   return ContentService
-    .createTextOutput(callback ? `${callback}(${body});` : body)
-    .setMimeType(callback ? ContentService.MimeType.JAVASCRIPT : ContentService.MimeType.JSON);
+    .createTextOutput(JSON.stringify(payload))
+    .setMimeType(ContentService.MimeType.JSON);
 }
 
 function errorCode_(err) {
@@ -2779,6 +2827,13 @@ function errorCode_(err) {
   if (/Ya existe una cuenta/i.test(message)) return 'CONFLICT';
   if (/quota|límite|limit/i.test(message)) return 'QUOTA';
   return 'UNKNOWN';
+}
+
+// Sin capa de compatibilidad, una acción desconocida solo puede significar que el
+// Apps Script desplegado es más antiguo que la app. Reintentar no lo arregla, así que
+// lleva código propio para que el cliente pare y diga qué hacer.
+function unknownActionPayload_(action) {
+  return { ok: false, error: 'Acción no reconocida: ' + String(action || '(vacía)'), errorCode: 'UNKNOWN_ACTION' };
 }
 
 function errorPayload_(err) {

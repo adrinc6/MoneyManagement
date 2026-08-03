@@ -55,6 +55,9 @@ export function loadApp() {
     URLSearchParams,
     localStorage,
     navigator: { onLine: true },
+    AbortController: globalThis.AbortController,
+    // Los tests que tocan red sustituyen este stub; el resto no debe alcanzarlo.
+    fetch: async () => { throw new Error("fetch sin stub en el test"); },
     setTimeout: immediateTimeout,
     clearTimeout: cancelTimeout,
     setInterval: () => 0,
@@ -83,8 +86,11 @@ export function loadApp() {
     "globalThis.state = state;"
     + "globalThis.MAX_RECURRENCE_OCCURRENCES = MAX_RECURRENCE_OCCURRENCES;"
     + "globalThis.OP_QUEUE_KEY = OP_QUEUE_KEY;"
-    + "globalThis.OP_CONFIRM_DELAY_NOTICE_MS = OP_CONFIRM_DELAY_NOTICE_MS;"
-    + "globalThis.MOVEMENT_MAX_PAGES = MOVEMENT_MAX_PAGES;",
+    + "globalThis.MOVEMENT_MAX_PAGES = MOVEMENT_MAX_PAGES;"
+    + "globalThis.MAX_OPS_PER_BATCH = MAX_OPS_PER_BATCH;"
+    + "globalThis.MAX_OP_SEND_RETRIES = MAX_OP_SEND_RETRIES;"
+    + "globalThis.MAX_DOWNLOAD_RETRIES = MAX_DOWNLOAD_RETRIES;"
+    + "globalThis.RETRY_MAX_DELAY_MS = RETRY_MAX_DELAY_MS;",
     context,
     { filename: "app.js:expose" }
   );
