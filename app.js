@@ -690,7 +690,7 @@ function setInvestmentEstimateModeFromToggle(event) {
 async function loadInvestmentEstimatesForMode() {
   if (!state.config.scriptUrl) return false;
   setSyncStatus("Descargando reglas\ny estimaciones", "");
-  const payload = await fetchDownloadData({ action: "downloadInvestmentEstimates" }, { label: "estimaciones", showProgress: true, maxAttempts: 1 });
+  const payload = await fetchDownloadData({ action: "downloadInvestmentEstimates" }, { label: "estimaciones", showProgress: true });
   assertPayloadOk(payload);
   applyDataSnapshot({
     investmentEstimateRules: payload.investmentEstimateRules || [],
@@ -960,11 +960,10 @@ async function refreshDataImpl(options = {}) {
   }
 
   try {
-    // En un primer arranque, la parte que puede ser pesada (SID y totales) se prepara
-    // una vez por POST y se sondea. Las lecturas posteriores ya son bloques pequeños.
-    if (!cached && scope === "all" && !updateInvestments && !shouldMoveDueFutureMovements) {
-      await prepareInitialDownload(showProgress);
-    }
+    // La carga inicial usa las mismas lecturas que el resto de la aplicación. En
+    // móvil, depender antes de un POST de preparación añadía un segundo canal que
+    // podía fallar aunque la descarga directa de Sheets siguiera funcionando.
+    // Cada bloque espera su respuesta; nunca se vuelve a iniciar automáticamente.
     const flushedPending = await flushOpQueueBeforeDownload({ showProgress });
     let freshData = {};
     let movedFutureMovements = [];
@@ -2631,29 +2630,20 @@ async function fetchAppsScriptData(options = {}) {
 // Las descargas son mucho más caras que un checkClientOp: la primera llamada del arranque
 // puede tener que sincronizar la hoja de totales y leer varias hojas enteras. Con el techo
 // corto de JSONP_TIMEOUT_MS se abandonaba a los 20 s aunque el servidor fuese a responder.
-const DOWNLOAD_TIMEOUT_MS = 180000;
-const DOWNLOAD_MAX_ATTEMPTS = 1;
-const INITIAL_PREPARATION_TIMEOUT_MS = 180000;
+// Una lectura inicial puede tener que crear SID o calcular totales por primera vez.
+// Se deja margen suficiente para que Apps Script termine (su límite es seis minutos),
+// sin lanzar un segundo intento que reinicie la descarga.
+const DOWNLOAD_TIMEOUT_MS = 330000;
 
-// Reintenta una descarga ante fallos de red o de timeout. Merece la pena porque el intento
-// que expira NO cancela la ejecución de Apps Script: normalmente termina el trabajo caro
-// (sincronizar totales, rellenar la columna SID) y el siguiente intento va mucho más
-// rápido. Un payload con ok:false no se reintenta: lo valida assertPayloadOk en el llamante.
-async function fetchDownloadData(options = {}, { label = "datos", showProgress = false, maxAttempts = DOWNLOAD_MAX_ATTEMPTS } = {}) {
-  let lastError = null;
-  const attempts = Math.max(1, Number(maxAttempts) || 1);
-  for (let attempt = 1; attempt <= attempts; attempt++) {
-    try {
-      return await fetchAppsScriptData({ ...options, timeoutMs: DOWNLOAD_TIMEOUT_MS });
-    } catch (error) {
-      lastError = error;
-      if (attempt === attempts) break;
-      logSyncEvent(`Reintentando descarga de ${label} (intento ${attempt + 1} de ${attempts}).`, "warn", error.message || String(error));
-      syncStatusStep(showProgress, `Reintentando descarga\nIntento ${attempt + 1} de ${attempts}`, "warn");
-      await sleep(3000);
-    }
+// Una descarga representa un bloque concreto. No hay reintentos automáticos: si la
+// red falla, se conserva lo descargado y el usuario puede reanudar solo ese bloque.
+async function fetchDownloadData(options = {}, { label = "datos", showProgress = false } = {}) {
+  try {
+    return await fetchAppsScriptData({ ...options, timeoutMs: DOWNLOAD_TIMEOUT_MS });
+  } catch (error) {
+    logSyncEvent(`Falló la descarga de ${label}; no se reiniciará automáticamente.`, "warn", error.message || String(error));
+    throw error;
   }
-  throw lastError || new Error("No se pudo descargar");
 }
 
 const JSONP_TIMEOUT_MS = 20000;
@@ -4928,33 +4918,6 @@ async function fireAppsScript(payload) {
     throw new Error(`No se pudo iniciar el envío: ${error.message || error}`);
   }
   return finalPayload;
-}
-
-function initialPreparationStatus(phase = "") {
-  const labels = {
-    recibida: "Preparación recibida\nEsperando turno",
-    "preparando movimientos": "Preparando movimientos\nAsignando identificadores",
-    "sincronizando totales": "Sincronizando totales\nCalculando inversión",
-    lista: "Preparación completada"
-  };
-  return labels[phase] || "Preparando descarga inicial";
-}
-
-async function prepareInitialDownload(showProgress = false) {
-  const clientOpId = createSid("prepare");
-  await fireAppsScript({ action: "prepareInitialDownload", clientOpId });
-  const startedAt = Date.now();
-  while (Date.now() - startedAt < INITIAL_PREPARATION_TIMEOUT_MS) {
-    const status = await fetchAppsScriptData({ action: "checkClientOp", clientOpId });
-    if (status?.ok && status.completed) {
-      syncStatusStep(showProgress, initialPreparationStatus(status.phase || "lista"), "ok");
-      return true;
-    }
-    if (status?.ok && status.failed) throw new Error(status.error || "La preparación inicial fue rechazada.");
-    syncStatusStep(showProgress, initialPreparationStatus(status?.phase), "");
-    await sleep(OP_POLL_INTERVAL_MS);
-  }
-  throw new Error("La preparación inicial no confirmó su finalización en tres minutos. Puedes reanudar la descarga sin repetir los bloques ya guardados.");
 }
 
 function createSid(prefix = "id") {

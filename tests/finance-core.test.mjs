@@ -129,7 +129,7 @@ test("failQueuedOp detiene la operación sin reenviarla automáticamente", () =>
   app.writeOpQueue([]);
 });
 
-test("fetchDownloadData deja el reintento de una descarga para una acción explícita", async () => {
+test("fetchDownloadData no reinicia una descarga automáticamente", async () => {
   const original = app.fetchAppsScriptData;
   try {
     let calls = 0;
@@ -147,19 +147,30 @@ test("fetchDownloadData deja el reintento de una descarga para una acción expl�
   }
 });
 
-test("fetchDownloadData acepta un reintento explícitamente solicitado", async () => {
+test("fetchDownloadData ignora cualquier solicitud de reintento", async () => {
   const original = app.fetchAppsScriptData;
   try {
     let calls = 0;
-    app.fetchAppsScriptData = async options => {
+    app.fetchAppsScriptData = async () => {
       calls++;
-      if (calls === 1) throw new Error("Apps Script no respondió a tiempo");
-      return { ok: true, banks: [], timeoutMs: options.timeoutMs };
+      throw new Error("Apps Script no respondió a tiempo");
     };
-    const payload = await app.fetchDownloadData({ action: "downloadCoreData" }, { label: "datos base", maxAttempts: 2 });
-    assert.equal(calls, 2, "no reintenta más de lo necesario");
-    assert.equal(payload.ok, true);
-    assert.equal(payload.timeoutMs, 180000, "las descargas usan el timeout largo");
+    await assert.rejects(
+      () => app.fetchDownloadData({ action: "downloadCoreData" }, { label: "datos base", maxAttempts: 2 }),
+      /no respondió a tiempo/
+    );
+    assert.equal(calls, 1, "ni siquiera una petición que lo pida reinicia la descarga");
+  } finally {
+    app.fetchAppsScriptData = original;
+  }
+});
+
+test("las descargas esperan hasta cinco minutos y medio antes de declarar timeout", async () => {
+  const original = app.fetchAppsScriptData;
+  try {
+    app.fetchAppsScriptData = async options => ({ ok: true, timeoutMs: options.timeoutMs });
+    const payload = await app.fetchDownloadData({ action: "downloadCoreData" }, { label: "datos base" });
+    assert.equal(payload.timeoutMs, 330000);
   } finally {
     app.fetchAppsScriptData = original;
   }
