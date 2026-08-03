@@ -5445,9 +5445,14 @@ function normalizeInvestment(row) {
   const nombre = String(row.nombre || row.NOMBRE || row.name || row.NAME || row[2] || data).trim();
   const shortName = String(row.shortName || row.shortname || row.short_name || row.SHORT_NAME || row['SHORT NAME'] || row['Short Name'] || (isArrayRow ? row[3] : '') || '').trim();
   const tipo = prettyType(String(row.tipo || row.TIPO || row.type || row.TYPE || (isArrayRow ? row[4] : row[3]) || '').trim());
-  const cantidad = parseNumber(row.cantidad ?? row.CANTIDAD ?? row.shares ?? row.SHARES ?? (isArrayRow ? row[5] : row[4]));
+  let cantidad = parseNumber(row.cantidad ?? row.CANTIDAD ?? row.shares ?? row.SHARES ?? (isArrayRow ? row[5] : row[4]));
   const valor = parseNumber(row.valor ?? row.VALOR ?? row.price ?? row.PRICE ?? (isArrayRow ? row[6] : row[5]));
   const total = parseNumber(row.total ?? row.value ?? row.VALUE ?? row['VALOR TOTAL (€)'] ?? row['VALOR TOTAL'] ?? (isArrayRow ? row[7] : row[6]));
+  // Recupera posiciones reales de respuestas antiguas o de una fórmula de SHARES que
+  // haya llegado temporalmente vacía: VALUE / PRICE conserva la cantidad exacta.
+  if ((!Number.isFinite(cantidad) || cantidad === 0) && Number.isFinite(total) && total > 0 && Number.isFinite(valor) && valor > 0) {
+    cantidad = total / valor;
+  }
   const valorAnterior = parseNumber(row.valorAnterior ?? row.lastPrice ?? row['LAST PRICE'] ?? row['VALOR ANTERIOR'] ?? (isArrayRow ? row[8] : row[7]));
   const variacion = normalizePercentPoints(parseNumber(row.variacion ?? row.variation ?? row.VARIATION ?? row['% VARIACIÓN'] ?? row['% VARIACION'] ?? (isArrayRow ? row[9] : row[8])));
   const candidate = { data, nombre };

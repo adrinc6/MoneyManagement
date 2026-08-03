@@ -143,6 +143,9 @@ class FakeRange {
     return this.getValues().map(row => row.map(cell => (cell === null || cell === undefined ? "" : String(cell))));
   }
 
+  getNumRows() { return this.numRows; }
+  getNumColumns() { return this.numCols; }
+
   getValue() { return this.sheet._read(this.row, this.col); }
 
   setValue(value) {

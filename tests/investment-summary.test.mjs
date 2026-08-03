@@ -68,3 +68,17 @@ test("la variación se calcula sobre el cierre anterior cuando existe", () => {
   assert.equal(posicion.previous, 900, "10 participaciones x 90 de cierre anterior");
   assert.equal(posicion.variation, 100);
 });
+
+test("las cabeceras inglesas recuperan SHARES desde VALUE y PRICE si Sheets entrega cero", () => {
+  const gs = loadAppsScript();
+  const headers = ["CURRENCY", "TICKER", "NAME", "SHORT NAME", "TYPE", "SHARES", "PRICE", "VALUE", "LAST PRICE", "VARIATION"];
+  gs.__spreadsheet.addSheet(INVESTMENT_SHEET, [
+    headers,
+    ["EUR", "VWCE", "ETF All World", "VWCE", "Bolsa", 0, 200, 1000, 190, 0.05]
+  ]);
+
+  const [position] = gs.readInvestments_(INVESTMENT_SHEET);
+
+  assert.equal(position.cantidad, 5);
+  assert.equal(position.total, 1000);
+});

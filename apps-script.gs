@@ -1229,10 +1229,16 @@ function readInvestments_(sheetName) {
     : [];
   return values.slice(1)
     .map((row, index) => {
-      const cantidad = parseNumber_(row[col.cantidad - 1]);
+      let cantidad = parseNumber_(row[col.cantidad - 1]);
       const valor = parseNumber_(row[col.valor - 1]);
       let total = parseNumber_(col.total ? row[col.total - 1] : NaN);
       if (!Number.isFinite(total) && Number.isFinite(cantidad) && Number.isFinite(valor)) total = cantidad * valor;
+      // Algunas fórmulas/API de Sheets entregan SHARES vacío o 0 durante el recálculo,
+      // aunque PRICE y VALUE ya estén consolidados. No se pierde la posición: ambas
+      // cifras determinan de forma inequívoca la cantidad real.
+      if ((!Number.isFinite(cantidad) || cantidad === 0) && Number.isFinite(total) && total > 0 && Number.isFinite(valor) && valor > 0) {
+        cantidad = total / valor;
+      }
       return {
         rowNumber: index + 2,
         divisa: String(row[(col.divisa || 1) - 1] || '').trim() || 'EUR',
