@@ -101,8 +101,19 @@ test("buildUndo invierte una transferencia y descarta lo no reversible", () => {
   assert.equal(app.buildUndo({ action: "renameAccount" }), null);
 });
 
-test("la confirmación pasa a discreta tras un minuto sin reenviar", () => {
-  assert.equal(app.OP_CONFIRM_DELAY_NOTICE_MS, 60000);
+test("el backoff crece pero queda acotado, y siempre con jitter", () => {
+  // Sin jitter, varias peticiones que fallan a la vez vuelven a caer juntas sobre la
+  // misma ejecución de Google.
+  const alto = app.retryDelayMs(1, () => 1);
+  const bajo = app.retryDelayMs(1, () => 0);
+  assert.ok(alto > bajo, "el mismo intento no puede dar siempre la misma espera");
+
+  for (let attempt = 1; attempt <= 20; attempt++) {
+    const delay = app.retryDelayMs(attempt, () => 1);
+    assert.ok(delay >= 500, `el intento ${attempt} espera al menos el mínimo`);
+    assert.ok(delay <= app.RETRY_MAX_DELAY_MS * 1.3, `el intento ${attempt} no se dispara`);
+  }
+  assert.ok(app.retryDelayMs(4, () => 0.5) > app.retryDelayMs(1, () => 0.5), "crece con los intentos");
 });
 
 test("isOpActionable respeta el backoff y descarta las operaciones detenidas", () => {
@@ -189,10 +200,9 @@ test("la descarga inicial puede solicitar una espera sin timeout", async () => {
 
 test("la URL de Apps Script reemplaza parámetros antiguos y elimina fragmentos", () => {
   try {
-    app.state.config.scriptUrl = "https://script.google.com/macros/s/id/exec?origen=movil&action=antigua&callback=viejo#fragmento";
+    app.state.config.scriptUrl = "https://script.google.com/macros/s/id/exec?origen=movil&action=antigua#fragmento";
     const url = app.appsScriptGetUrl(new URLSearchParams({ action: "downloadCoreData" }));
-    assert.equal(url, "https://script.google.com/macros/s/id/exec?origen=movil&action=downloadCoreData&callback=viejo");
-    assert.equal(app.appsScriptJsonpUrl(url, "nuevo"), "https://script.google.com/macros/s/id/exec?origen=movil&action=downloadCoreData&callback=nuevo");
+    assert.equal(url, "https://script.google.com/macros/s/id/exec?origen=movil&action=downloadCoreData");
     app.state.config.scriptUrl = "https://script.google.com/macros/s/id/dev";
     assert.throws(() => app.assertAppsScriptDeploymentUrl(), /termina en \/dev/);
     app.state.config.scriptUrl = "https://script.google.com/macros/s/id/editor";
@@ -202,18 +212,32 @@ test("la URL de Apps Script reemplaza parámetros antiguos y elimina fragmentos"
   }
 });
 
-test("fetchDownloadData no reintenta un payload con ok:false", async () => {
+test("un error de datos no se reintenta y uno de servidor ocupado sí", async () => {
+  // La clasificación estaba justo del revés: assertPayloadOk vivía FUERA del bucle, así
+  // que un LOCK_TIMEOUT —lo más reintentable que hay— abortaba la actualización entera,
+  // mientras que un fallo de transporte sin información reintentaba para siempre.
   const original = app.fetchAppsScriptData;
   try {
     let calls = 0;
     app.fetchAppsScriptData = async () => {
       calls++;
-      return { ok: false, error: "Invalid app token" };
+      return { ok: false, error: "Invalid app token", errorCode: "AUTH" };
     };
-    const payload = await app.fetchDownloadData({ action: "downloadCoreData" }, { label: "datos base" });
-    assert.equal(calls, 1, "un error de negocio se devuelve tal cual, sin reintentos");
-    assert.equal(payload.ok, false);
-    assert.throws(() => app.assertPayloadOk(payload), /Invalid app token/);
+    await assert.rejects(
+      () => app.fetchDownloadData({ action: "downloadCoreData" }, { label: "datos base", recoverUntilSuccess: true }),
+      /token/i
+    );
+    assert.equal(calls, 1, "un token inválido no mejora repitiendo");
+
+    calls = 0;
+    app.fetchAppsScriptData = async () => {
+      calls++;
+      if (calls < 3) return { ok: false, error: "servidor ocupado", errorCode: "BUSY" };
+      return { ok: true, banks: [] };
+    };
+    const payload = await app.fetchDownloadData({ action: "downloadCoreData" }, { label: "datos base", recoverUntilSuccess: true });
+    assert.equal(payload.ok, true);
+    assert.equal(calls, 3, "el servidor ocupado sí se reintenta hasta que responde");
   } finally {
     app.fetchAppsScriptData = original;
   }
@@ -315,9 +339,8 @@ test("una operación pendiente se registra en la cola y en ningún otro sitio", 
   }
 });
 
-test("runOpQueue espera confirmación antes de enviar la siguiente operación", async () => {
+test("runOpQueue envía de una en una y la respuesta confirma sin sondeo", async () => {
   const originalFire = app.fireAppsScript;
-  const originalCheck = app.fetchAppsScriptData;
   try {
     app.state.config.scriptUrl = "https://example.test/exec";
     let inFlight = 0;
@@ -329,9 +352,8 @@ test("runOpQueue espera confirmación antes de enviar la siguiente operación", 
       await new Promise(resolve => globalThis.setTimeout(resolve, 0));
       sent.push(payload.action);
       inFlight--;
-      return payload;
+      return { payload, result: { ok: true } };
     };
-    app.fetchAppsScriptData = async () => ({ ok: true, completed: false, pending: true });
 
     app.writeOpQueue([
       { id: "op-a", status: "queued", attempts: 0, nextAttemptAt: 0, payload: { action: "transferBank", clientOpId: "c1" } },
@@ -341,59 +363,144 @@ test("runOpQueue espera confirmación antes de enviar la siguiente operación", 
 
     await app.runOpQueue();
 
-    assert.equal(maxInFlight, 1, "nunca hay dos peticiones a la vez");
-    assert.deepEqual(sent, ["transferBank"], "no envía la siguiente hasta confirmar la anterior");
+    assert.equal(maxInFlight, 1, "el backend serializa las escrituras: nunca dos a la vez");
+    assert.deepEqual(sent, ["transferBank", "addFutureMovement"],
+      "confirmadas por la respuesta, la cola avanza sin esperar 5 s por operación");
     assert.equal(app.readOpQueue().find(op => op.id === "op-b").status, "error", "la detenida sigue en error y no bloquea");
+    assert.equal(app.readOpQueue().filter(op => op.status !== "error").length, 0, "las enviadas salen de la cola");
   } finally {
     app.fireAppsScript = originalFire;
-    app.fetchAppsScriptData = originalCheck;
     app.writeOpQueue([]);
     app.state.config.scriptUrl = "";
   }
 });
 
-test("fireAppsScript usa sendBeacon antes de fetch y no espera la respuesta", async () => {
+test("fireAppsScript espera la respuesta del POST y la devuelve", async () => {
+  // Antes se mandaba con sendBeacon y la respuesta se tiraba, aunque doPost siempre
+  // ha contestado con el resultado completo: había que preguntar por él con
+  // checkClientOp cada cinco segundos.
   const originalFetch = app.fetch;
-  const originalBlob = app.Blob;
-  const originalBeacon = app.navigator.sendBeacon;
   try {
     app.state.config.scriptUrl = "https://example.test/exec";
-    app.Blob = class { constructor(parts) { this.parts = parts; } };
-    let fetchCalls = 0;
-    app.fetch = async () => {
-      fetchCalls++;
-      throw new TypeError("Load failed");
+    const requests = [];
+    app.fetch = async (url, options) => {
+      requests.push({ url, options });
+      return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true, applied: 1 }) };
     };
-    const beacons = [];
-    app.navigator.sendBeacon = (url, blob) => { beacons.push({ url, blob }); return true; };
 
-    const payload = await app.fireAppsScript({ action: "transferBank", from: "A", to: "B", amount: 5 });
+    const { payload, result } = await app.fireAppsScript({ action: "transferBank", from: "A", to: "B", amount: 5 });
 
-    assert.equal(fetchCalls, 0);
-    assert.equal(beacons.length, 1, "Beacon es la vía de envío principal");
-    assert.equal(beacons[0].url, "https://example.test/exec");
-    assert.ok(payload.clientOpId, "devuelve el payload con su clientOpId para poder confirmarlo");
-    assert.match(String(beacons[0].blob.parts[0]), /transferBank/);
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].options.method, "POST");
+    assert.equal(requests[0].options.keepalive, undefined,
+      "sin keepalive: su tope de 64 KiB tumbaba los lotes grandes al instante");
+    assert.match(String(requests[0].options.body), /transferBank/);
+    assert.ok(payload.clientOpId, "el clientOpId acuñado viaja de vuelta para poder reintentar sin duplicar");
+    assert.equal(result.ok, true, "la confirmación llega con la propia escritura");
   } finally {
     app.fetch = originalFetch;
-    app.Blob = originalBlob;
-    app.navigator.sendBeacon = originalBeacon;
     app.state.config.scriptUrl = "";
   }
 });
 
-test("fireAppsScript inicia fetch sin Beacon sin bloquear la confirmación", async () => {
+test("un fallo de red al enviar se distingue de un rechazo del servidor", async () => {
   const originalFetch = app.fetch;
-  const originalBeacon = app.navigator.sendBeacon;
   try {
     app.state.config.scriptUrl = "https://example.test/exec";
     app.fetch = async () => { throw new TypeError("Load failed"); };
-    app.navigator.sendBeacon = undefined;
-    const payload = await app.fireAppsScript({ action: "transferBank" });
-    assert.ok(payload.clientOpId);
+    await assert.rejects(() => app.fireAppsScript({ action: "transferBank" }), error => {
+      assert.equal(error.errorCode, "NETWORK");
+      return true;
+    });
+
+    app.fetch = async () => ({ ok: false, status: 403, text: async () => "" });
+    await assert.rejects(() => app.fireAppsScript({ action: "transferBank" }), error => {
+      assert.equal(error.errorCode, "CONFIG", "un 403 es el despliegue mal publicado, no un corte");
+      assert.equal(error.status, 403);
+      return true;
+    });
   } finally {
     app.fetch = originalFetch;
-    app.navigator.sendBeacon = originalBeacon;
     app.state.config.scriptUrl = "";
+  }
+});
+
+test("las operaciones seguidas viajan en un solo envío por lote", () => {
+  // Una recurrencia de 52 fechas eran 52 POST, 52 esperas del script lock y 52
+  // ejecuciones de Apps Script: minutos de espera para el usuario.
+  const payloads = Array.from({ length: 52 }, (_, n) => ({
+    action: "addFutureMovement",
+    movement: { sid: `f-${n}`, fecha: "2026-01-01", tipo: "Gasto", concepto: "Cuota", importe: -10 }
+  }));
+
+  const chunks = app.chunkOpsForSending(payloads);
+
+  assert.equal(chunks.length, 1, "52 fechas caben en un envío");
+  assert.equal(chunks[0].action, "batchOps");
+  assert.equal(chunks[0].ops.length, 52);
+  assert.ok(chunks[0].clientOpId, "el lote lleva su propio identificador");
+  chunks[0].ops.forEach(op => assert.ok(op.clientOpId, "y cada operación conserva el suyo, para deduplicar una a una"));
+});
+
+test("un lote demasiado grande se trocea en varios envíos", () => {
+  const payloads = Array.from({ length: 250 }, () => ({ action: "addFutureMovement", movement: {} }));
+  const chunks = app.chunkOpsForSending(payloads);
+
+  assert.equal(chunks.length, Math.ceil(250 / app.MAX_OPS_PER_BATCH));
+  chunks.forEach(chunk => assert.ok(chunk.ops.length <= app.MAX_OPS_PER_BATCH));
+  assert.equal(chunks.reduce((total, chunk) => total + chunk.ops.length, 0), 250, "no se pierde ninguna");
+});
+
+test("una operación suelta no se envuelve en un lote", () => {
+  const chunks = app.chunkOpsForSending([{ action: "transferBank", from: "A", to: "B", amount: 5 }]);
+  assert.equal(chunks.length, 1);
+  assert.equal(chunks[0].action, "transferBank", "sin envoltorio innecesario");
+});
+
+test("un lote declara las secciones de caché de todo lo que lleva dentro", () => {
+  const sections = app.queuePayloadSections({
+    action: "batchOps",
+    ops: [
+      { action: "addFutureMovement" },
+      { action: "transferBank" }
+    ]
+  });
+  assert.deepEqual(Array.from(sections).sort(), ["banks", "futureTransactions"]);
+});
+
+test("una respuesta ilegible se distingue de un corte de red", async () => {
+  // Google devuelve una página HTML de error cuando la ejecución no llega a arrancar.
+  // Con JSONP esto era indistinguible de un corte y por eso "fallaba y luego funcionaba".
+  const originalFetch = app.fetch;
+  try {
+    app.fetch = async () => ({ ok: true, status: 200, text: async () => "<!DOCTYPE html><title>Error</title>" });
+    await assert.rejects(() => app.appsScriptRequest("https://example.test/exec", {}), error => {
+      assert.equal(error.errorCode, "MALFORMED");
+      return true;
+    });
+  } finally {
+    app.fetch = originalFetch;
+  }
+});
+
+test("un timeout aborta la petición en vez de dejarla colgando", async () => {
+  const originalFetch = app.fetch;
+  try {
+    let abortedSignal = null;
+    app.fetch = (url, options) => new Promise((resolve, reject) => {
+      abortedSignal = options.signal;
+      options.signal.addEventListener("abort", () => {
+        const error = new Error("aborted");
+        error.name = "AbortError";
+        reject(error);
+      });
+    });
+    await assert.rejects(() => app.appsScriptRequest("https://example.test/exec", { timeoutMs: 5 }), error => {
+      assert.equal(error.errorCode, "TIMEOUT");
+      return true;
+    });
+    assert.equal(abortedSignal.aborted, true, "la petición se cancela de verdad, no se abandona");
+  } finally {
+    app.fetch = originalFetch;
   }
 });

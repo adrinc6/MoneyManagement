@@ -65,14 +65,13 @@ test("la descarga de inversiones no trae movimientos ni bancos", () => {
     "sin movedFutureMovements: esta descarga no vence futuros");
 });
 
-test("la respuesta JSONP escapa caracteres que pueden romper el script del móvil", () => {
+test("la respuesta es JSON plano legible con JSON.parse", () => {
   const gs = setup();
-  const output = gs.json_({ ok: true, descripcion: "<nota>&\u2028\u2029" }, "callbackPrueba");
-  assert.match(output.text, /^callbackPrueba\(\{/);
-  assert.match(output.text, /\\u003cnota\\u003e/);
-  assert.match(output.text, /\\u0026/);
-  assert.match(output.text, /\\u2028/);
-  assert.match(output.text, /\\u2029/);
+  const output = gs.json_({ ok: true, descripcion: "<nota>&\u2028\u2029" });
+  // El escapado de <, >, & y los separadores Unicode solo hacía falta cuando la
+  // respuesta se ejecutaba como JavaScript dentro de un <script>.
+  assert.deepEqual(JSON.parse(output.text), { ok: true, descripcion: "<nota>&\u2028\u2029" });
+  assert.equal(output.mimeType, "json");
 });
 
 test("las estimaciones se obtienen con un payload independiente", () => {
@@ -100,22 +99,39 @@ test("renombrar una categoría actualiza movimientos y estimaciones", () => {
   assert.equal(gs.__spreadsheet.getSheetByName(ledgerName).getRange(2, 5).getValue(), "ETFs");
 });
 
-test("la preparación inicial informa fases y queda confirmada una sola vez", () => {
+test("un lote aplica todas sus operaciones bajo un solo lock", () => {
+  // Una recurrencia de 52 fechas era 52 POST, 52 esperas de lock y 52 ejecuciones.
   const gs = setup();
-  const clientOpId = "prepare-test";
-  gs.doPost({ postData: { contents: JSON.stringify({
-    token: gs.__token,
-    action: "prepareInitialDownload",
-    clientOpId,
-    movementSheet: MOVEMENT_SHEET,
-    futureMovementSheet: FUTURE_SHEET,
-    investmentSheet: INVESTMENT_SHEET,
-    investmentTotalsSheet: TOTALS_SHEET
-  }) } });
+  const ops = [1, 2, 3].map(n => ({
+    action: "addFutureMovement",
+    clientOpId: `lote-op-${n}`,
+    sheetName: FUTURE_SHEET,
+    movement: { sid: `f-${n}`, fecha: `2026-0${n}-01`, tipo: "Gasto", concepto: "Cuota", descripcion: "", importe: -10 }
+  }));
 
-  const status = gs.buildClientOpStatusPayload_(clientOpId);
-  assert.equal(status.completed, true);
-  assert.equal(status.phase, "lista");
+  const response = JSON.parse(gs.doPost({ postData: { contents: JSON.stringify({
+    token: gs.__token,
+    action: "batchOps",
+    clientOpId: "lote-1",
+    futureMovementSheet: FUTURE_SHEET,
+    ops
+  }) } }).text);
+
+  assert.equal(response.ok, true);
+  assert.equal(response.applied, 3);
+  assert.equal(gs.__spreadsheet.getSheetByName(FUTURE_SHEET).getLastRow(), 4, "las tres filas están escritas");
+  // Cada operación conserva su clientOpId, así que reenviar el lote no duplica nada.
+  ops.forEach(op => assert.equal(gs.buildClientOpStatusPayload_(op.clientOpId).completed, true));
+
+  const repeat = JSON.parse(gs.doPost({ postData: { contents: JSON.stringify({
+    token: gs.__token,
+    action: "batchOps",
+    clientOpId: "lote-1",
+    futureMovementSheet: FUTURE_SHEET,
+    ops
+  }) } }).text);
+  assert.equal(repeat.duplicate, true, "el lote entero se deduplica por su propio clientOpId");
+  assert.equal(gs.__spreadsheet.getSheetByName(FUTURE_SHEET).getLastRow(), 4, "y no vuelve a escribir");
 });
 
 test("resolveSheets_ aplica los valores por defecto y respeta los nombres de la petición", () => {

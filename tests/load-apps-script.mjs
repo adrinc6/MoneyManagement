@@ -223,7 +223,7 @@ export function loadAppsScript({ token = "test-token" } = {}) {
     isNaN,
     parseFloat,
     parseInt,
-    SpreadsheetApp: { getActiveSpreadsheet: () => spreadsheet },
+    SpreadsheetApp: { getActiveSpreadsheet: () => spreadsheet, flush: () => {} },
     PropertiesService: { getDocumentProperties: makeProps, getScriptProperties: makeProps },
     LockService: {
       getScriptLock: () => ({
@@ -243,8 +243,8 @@ export function loadAppsScript({ token = "test-token" } = {}) {
       }
     },
     ContentService: {
-      createTextOutput: text => ({ text, setMimeType() { return this; } }),
-      MimeType: { JSON: "json", JAVASCRIPT: "javascript" }
+      createTextOutput: text => ({ text, mimeType: "", setMimeType(mime) { this.mimeType = mime; return this; } }),
+      MimeType: { JSON: "json" }
     },
     UrlFetchApp: {
       fetch: () => ({ getResponseCode: () => 500, getContentText: () => "{}" })

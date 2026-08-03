@@ -160,13 +160,10 @@ function safeSetItem(key, value) {
 const DATA_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const DATA_CACHE_VERSION = 3;
 const CACHE_SECTION_KEYS = ["transactions", "futureTransactions", "investments", "investmentTotals", "investmentEstimateRules", "investmentEstimateLedger", "banks", "investmentGoals", "categories"];
-// En móvil una respuesta JSONP muy grande puede terminar como un error genérico del
-// elemento <script>, aunque Apps Script y el token estén bien. 250 filas mantiene cada
-// bloque ligero y, como se guarda al terminar, no se pierde avance entre páginas.
-// Una página es una ejecución independiente de Apps Script (más las redirecciones
-// de Google). 250 filas multiplicaba el coste fijo de red sin aportar seguridad:
-// 1.000 filas de nueve columnas siguen siendo un JSON pequeño. Si una página
-// concreta falla, downloadMovementPages ya reduce solo ese rango progresivamente.
+// Cada página es una ejecución independiente de Apps Script (más las redirecciones de
+// Google), así que páginas pequeñas multiplican el coste fijo de red sin aportar nada:
+// 1.000 filas de nueve columnas siguen siendo un JSON pequeño. Cada página se guarda al
+// recibirse, y si una concreta falla downloadMovementPages reduce solo ese rango.
 const MOVEMENT_PAGE_SIZE = 1000;
 
 const state = {
@@ -221,7 +218,6 @@ document.addEventListener("DOMContentLoaded", () => {
   syncRefreshButtonLabel("registrar");
   refreshData({ scope: "all", cacheOnly: true })
     .catch(err => logSyncEvent("La carga inicial de datos falló.", "warn", String(err?.message || err)));
-  ensureOpQueuePoller();
   window.setTimeout(() => {
     Promise.resolve(retryPendingOps(null, { recoverSending: true }))
       .catch(err => console.error("retryPendingOps", err));
@@ -1038,8 +1034,8 @@ function refreshData(options = {}) {
   };
   if (!refreshInFlight) return start();
   // Una doble pulsación o dos eventos equivalentes no deben poner otra descarga
-  // idéntica en cola. Además de ensuciar el registro, esa ráfaga aumenta los fallos
-  // intermitentes del endpoint JSONP de Apps Script.
+  // idéntica en cola. Además de ensuciar el registro, esa ráfaga añade ejecuciones
+  // simultáneas de Apps Script, que es de donde salen los fallos intermitentes.
   if (refreshInFlightKey === requestKey) return refreshInFlight;
   if (!mustRunOnItsOwn) return refreshInFlight;
   // Encadenada: el catch evita que un fallo previo tumbe esta petición.
@@ -1246,7 +1242,6 @@ async function refreshDataImpl(options = {}) {
       if (updateInvestments || (onlyInvestments && !needsMovements)) {
         syncStatusStep(showProgress, investmentRequestStatus({ updateInvestments }), "");
         const payload = await fetchDownloadData({ updateInvestments, scope: "investments" }, { label: "inversiones", ...downloadRequestOptions });
-        assertPayloadOk(payload);
         freshData = {
           ...freshData,
           investments: payload.investments || [],
@@ -1267,7 +1262,6 @@ async function refreshDataImpl(options = {}) {
           const coreAction = moveDueNow ? "moveDueFutureMovements" : "downloadCoreData";
           syncStatusStep(showProgress, moveDueNow ? "Moviendo futuros vencidos\nDescargando datos base" : "Descargando datos base", "");
           core = await fetchDownloadData({ action: coreAction, skipFutureSids: moveSkipSids }, { label: "datos base", ...downloadRequestOptions });
-          assertPayloadOk(core);
           movedFutureMovements = core.movedFutureMovements || [];
           freshData = {
             ...freshData,
@@ -1317,7 +1311,6 @@ async function refreshDataImpl(options = {}) {
     if (needsInvestmentEstimates && !updateInvestments) {
       syncStatusStep(showProgress, "Descargando reglas\ny estimaciones", "");
       const estimates = await fetchDownloadData({ action: "downloadInvestmentEstimates" }, { label: "estimaciones", ...downloadRequestOptions });
-      assertPayloadOk(estimates);
       freshData = {
         ...freshData,
         investmentEstimateRules: estimates.investmentEstimateRules || [],
@@ -1441,7 +1434,12 @@ const ERROR_CODE_MESSAGES = {
   NOT_FOUND: "El elemento ya no existe en Sheets (puede que se haya borrado desde otro sitio).",
   VALIDATION: "Los datos enviados no son válidos.",
   CONFLICT: "Hay un conflicto con datos existentes.",
-  QUOTA: "Google ha limitado las peticiones por hoy. Inténtalo más tarde."
+  QUOTA: "Google ha limitado las peticiones por hoy. Inténtalo más tarde.",
+  BUSY: "El servidor estaba ocupado con otra operación.",
+  TIMEOUT: "Apps Script no respondió a tiempo.",
+  NETWORK: "No se pudo contactar con Apps Script.",
+  MALFORMED: "Apps Script devolvió una respuesta ilegible.",
+  CONFIG: "El despliegue de Apps Script no es accesible. Revisa que esté publicado con acceso para cualquiera."
 };
 
 function assertPayloadOk(payload) {
@@ -1455,7 +1453,7 @@ function assertPayloadOk(payload) {
 }
 
 // Guardia solo ante un backend defectuoso que avance para siempre. No es un timeout
-// de descarga: con 250 filas por página cubre hasta 250.000 movimientos.
+// de descarga: con 1.000 filas por página cubre hasta un millón de movimientos.
 const MOVEMENT_MAX_PAGES = 1000;
 
 async function downloadMovementPages(kind, label, options = {}) {
@@ -1491,7 +1489,6 @@ async function downloadMovementPages(kind, label, options = {}) {
         return `Reduciendo esta página a ${pageLimit} filas`;
       }
     });
-    assertPayloadOk(payload);
     const pageRows = kind === "future" ? (payload.futureTransactions || []) : (payload.transactions || []);
     rows.push(...pageRows);
     total = Number.isFinite(Number(payload.total)) ? Number(payload.total) : rows.length;
@@ -1963,6 +1960,12 @@ function writeSentHistory(history) {
 // recurrencia de 52 fechas llenaría "Enviados hoy" con 52 filas y, como writeSentHistory
 // recorta a las últimas 100, empezaría a tirar entradas anteriores en silencio.
 function rememberSentOp(payload, item = null) {
+  // El historial y el deshacer trabajan operación a operación: un lote se guarda como las
+  // operaciones que lleva dentro, no como una entrada opaca.
+  if (payload?.action === "batchOps") {
+    (payload.ops || []).forEach(op => rememberSentOp(op, item));
+    return;
+  }
   const history = readSentHistory();
   if (item?.batchId) {
     const existing = history.find(entry => entry && entry.batchId === item.batchId && entry.day === todayKey());
@@ -2015,7 +2018,8 @@ const OP_LABELS = {
   transferBank: "Transferencia",
   renameAccount: "Renombrar cuenta",
   deleteAccount: "Eliminar cuenta",
-  reassignFutureMovementsAccount: "Reasignar movs. futuros"
+  reassignFutureMovementsAccount: "Reasignar movs. futuros",
+  batchOps: "Lote de cambios"
 };
 
 function opLabel(action, fallback = "Operación") {
@@ -2045,9 +2049,8 @@ function opStatusText(op) {
   const attempts = Number(op.attempts || 0);
   if (op.status === "error") return "Error (no se reintenta solo)";
   if (op.status === "sending") return "Enviando";
-  if (op.status === "checking") return op.confirmationDelayed ? "Confirmando en segundo plano" : "Confirmando";
   if (attempts) return `Pendiente (reintento ${attempts + 1} en ${Math.max(1, Math.round((Number(op.nextAttemptAt || 0) - Date.now()) / 1000))} s)`;
-  return "Pendiente (auto cada 5 s)";
+  return "Pendiente";
 }
 
 // Un alta periódica son N operaciones en la cola. Se agrupan por batchId para que
@@ -2074,7 +2077,7 @@ function groupPendingOps(queue = []) {
 function describePendingGroup(group) {
   const total = Number(group.ops[0]?.batchSize || group.ops.length);
   const failed = group.ops.filter(op => op.status === "error");
-  const active = group.ops.find(op => op.status === "sending" || op.status === "checking") || group.ops[0];
+  const active = group.ops.find(op => op.status === "sending") || group.ops[0];
   if (group.ops.length === 1 && !group.ops[0].batchId) {
     return { text: group.ops[0].error ? `${opStatusText(group.ops[0])}: ${group.ops[0].error}` : opStatusText(group.ops[0]), failed: failed.length };
   }
@@ -2329,6 +2332,10 @@ async function undoSentOp(entryId) {
 
 function queuePayloadSections(payload = {}) {
   const action = payload.action || "";
+  // Un lote toca la unión de lo que tocan sus operaciones.
+  if (action === "batchOps") {
+    return unique((payload.ops || []).flatMap(op => queuePayloadSections(op)));
+  }
   const targetsFutureSheet = String(payload.sheetName || "") === (state.config.futureMovementSheet || "Movimientos futuros");
   if (["addMovement", "updateMovement", "deleteMovement"].includes(action)) {
     return targetsFutureSheet
@@ -2355,43 +2362,59 @@ function withClientOpId(payload = {}) {
   return { ...payload, clientOpId: createSid("op") };
 }
 
-async function recoverInterruptedSendingOps() {
-  const queue = readOpQueue();
-  const sending = queue.filter(op => op.status === "sending");
-  if (!sending.length) return;
-  if (state.config.scriptUrl) {
-    for (const op of sending) {
-      const clientOpId = op.payload?.clientOpId;
-      if (!clientOpId) continue;
-      try {
-        const payload = await fetchAppsScriptData({ action: "checkClientOp", clientOpId });
-        if (payload?.ok && payload.completed) {
-          logSyncEvent(`Envío interrumpido ya confirmado: ${op.payload?.action || "cambio"}.`, "ok");
-          rememberSentOp(op.payload, op);
-          const synced = queuePayloadSections(op.payload);
-          markCacheSectionsSynced(synced);
-          writeDataCache({ syncedSections: synced });
-          writeOpQueue(readOpQueue().filter(item => item.id !== op.id));
-        }
-      } catch (error) {
-        logSyncEvent("No se pudo comprobar un envío interrumpido; seguirá verificándose sin reenviarlo.", "warn", error.message || String(error));
-      }
+// Única razón por la que sigue existiendo checkClientOp: una operación que se quedó en
+// "sending" porque se cerró la app mientras el POST estaba en vuelo. No sabemos si llegó
+// a aplicarse, y reenviarla a ciegas duplicaría el cambio. No es un segundo camino de
+// confirmación —esa la da la respuesta del POST—, es el único modo de resolver un caso
+// que la respuesta ya no puede contestar.
+//
+// Antes esto corría DOS veces en cada arranque (desde el DOMContentLoaded y desde
+// flushOpQueueBeforeDownload), lanzando dos consultas simultáneas por cada operación.
+let reconcileInFlight = null;
+
+function reconcileInterruptedOps() {
+  if (!reconcileInFlight) {
+    reconcileInFlight = runReconcileInterruptedOps().finally(() => { reconcileInFlight = null; });
+  }
+  return reconcileInFlight;
+}
+
+async function runReconcileInterruptedOps() {
+  const interrupted = readOpQueue().filter(op => op.status === "sending" && op.payload?.clientOpId);
+  if (!interrupted.length || !state.config.scriptUrl) return;
+  // Son lecturas independientes: no hay razón para encadenarlas.
+  const results = await Promise.all(interrupted.map(async op => {
+    try {
+      const payload = await fetchAppsScriptData({ action: "checkClientOp", clientOpId: op.payload.clientOpId });
+      return { op, completed: Boolean(payload?.ok && payload.completed) };
+    } catch (error) {
+      logSyncEvent("No se pudo comprobar un envío interrumpido; se reintentará el envío.", "warn", describeRequestError(error));
+      return { op, completed: false };
     }
-  }
-  const refreshedQueue = readOpQueue();
-  let changed = false;
-  refreshedQueue.forEach(op => {
-    if (op.status !== "sending") return;
-    op.status = "checking";
-    op.nextAttemptAt = Date.now() + OP_POLL_INTERVAL_MS;
-    op.lastSentAt = Number(op.lastSentAt || Date.now());
-    op.error = null;
-    changed = true;
+  }));
+
+  results.filter(entry => entry.completed).forEach(({ op }) => {
+    logSyncEvent(`Envío interrumpido ya confirmado: ${opLabel(op.payload?.action)}.`, "ok");
+    rememberSentOp(op.payload, op);
+    const synced = queuePayloadSections(op.payload);
+    markCacheSectionsSynced(synced);
+    writeDataCache({ syncedSections: synced });
+    writeOpQueue(readOpQueue().filter(item => item.id !== op.id));
   });
-  if (changed) {
-    writeOpQueue(refreshedQueue);
-    logSyncEvent("Envíos interrumpidos retenidos para confirmar sin reenviarlos.", "warn");
-  }
+
+  // Las que no llegaron a aplicarse vuelven a la cola. Reenviarlas es seguro: el
+  // servidor deduplica por clientOpId, que la operación conserva.
+  const pendingIds = new Set(results.filter(entry => !entry.completed).map(entry => entry.op.id));
+  if (!pendingIds.size) return;
+  const queue = readOpQueue();
+  queue.forEach(op => {
+    if (!pendingIds.has(op.id)) return;
+    op.status = "retry";
+    op.nextAttemptAt = 0;
+    op.error = null;
+  });
+  writeOpQueue(queue);
+  logSyncEvent(`${pendingIds.size} envío(s) interrumpido(s) vuelven a la cola.`, "warn");
 }
 
 function queueOp(payload) {
@@ -2401,16 +2424,34 @@ function queueOp(payload) {
 // Encola varias operaciones como un grupo. Las altas periódicas ya no viajan en un único
 // payload gigante (que WebKit rechazaba de plano con "Load failed"): se mandan de una en
 // una. El batchId permite mostrarlas como una sola fila con progreso en vez de 52.
+// Tope por envío. El servidor valida el mismo 500, y por encima de ~200 KB el cuerpo
+// empieza a ser incómodo para un móvil con mala cobertura.
+const MAX_OPS_PER_BATCH = 100;
+
+// Varias operaciones seguidas viajan en una sola petición. Una recurrencia de 52 fechas
+// era 52 POST, 52 esperas del lock y 52 ejecuciones de Apps Script; ahora es una.
+// Cada operación interna conserva su clientOpId, así que el servidor sigue deduplicando
+// una a una y un reintento del lote no duplica lo que ya entró.
+function chunkOpsForSending(list) {
+  if (list.length <= 1) return list.map(payload => withClientOpId(payload));
+  const chunks = [];
+  for (let index = 0; index < list.length; index += MAX_OPS_PER_BATCH) {
+    const ops = list.slice(index, index + MAX_OPS_PER_BATCH).map(payload => withClientOpId(payload));
+    chunks.push(withClientOpId({ action: "batchOps", ops }));
+  }
+  return chunks;
+}
+
 function queueOps(payloads, { label = "" } = {}) {
   const list = (payloads || []).filter(Boolean);
   if (!list.length) return null;
   const queue = readOpQueue();
+  const entries = chunkOpsForSending(list);
   const batchId = list.length > 1 ? createSid("batch") : "";
   const batchLabel = label || opLabel(list[0].action);
   const sections = new Set();
   const createdAt = Date.now();
-  list.forEach((payload, index) => {
-    const queuedPayload = withClientOpId(payload);
+  entries.forEach((queuedPayload, index) => {
     queuePayloadSections(queuedPayload).forEach(section => sections.add(section));
     queue.push({
       id: `${createdAt}-${index}-${Math.random().toString(16).slice(2)}`,
@@ -2421,12 +2462,12 @@ function queueOps(payloads, { label = "" } = {}) {
       batchId,
       batchLabel,
       batchIndex: index,
-      batchSize: list.length,
+      batchSize: entries.length,
       payload: queuedPayload
     });
   });
   logSyncEvent(list.length > 1
-    ? `${list.length} operaciones en cola: ${batchLabel}.`
+    ? `${list.length} operaciones en cola (${entries.length} envío(s)): ${batchLabel}.`
     : `Operación en cola: ${list[0].action || "cambio"}.`, "");
   const dirtySections = [...sections];
   markCacheSectionsDirty(dirtySections);
@@ -2437,25 +2478,16 @@ function queueOps(payloads, { label = "" } = {}) {
     setNotice("El cambio se aplicó en pantalla pero NO se pudo guardar en la cola de envío. Se perderá al recargar: libera espacio y reinténtalo.", "warn");
     logSyncEvent("No se pudo encolar una operación (almacenamiento lleno).", "warn", batchLabel);
   }
-  ensureOpQueuePoller();
   setTimeout(() => runOpQueue(), 0);
   return batchId;
 }
 
-const OP_POLL_INTERVAL_MS = 5000;
-// Cada cambio se POSTea una sola vez. Tras un minuto sin respuesta, el estado pasa a
-// ser discreto pero continúa verificándose: nunca se reenvía una operación aceptada.
-const OP_CONFIRM_DELAY_NOTICE_MS = 60000;
-const MAX_UNCONFIRMED_OPS = 1;
-let opQueuePollerHandle = null;
+// Reintentos del propio POST. Es seguro repetirlo: el servidor deduplica por clientOpId
+// y responde {duplicate:true} si ya lo aplicó.
+const MAX_OP_SEND_RETRIES = 5;
 const opsInFlight = new Set();
 
 let opRunnerActive = false;
-
-function ensureOpQueuePoller() {
-  if (opQueuePollerHandle) return;
-  opQueuePollerHandle = window.setInterval(() => pollPendingOps(), OP_POLL_INTERVAL_MS);
-}
 
 // Primera operación lista para trabajar, en orden de llegada. Salta las detenidas en
 // "error" y las que están esperando su backoff, para que una fecha problemática no
@@ -2464,10 +2496,12 @@ function nextActionableOp(queue = readOpQueue(), now = Date.now()) {
   return queue.find(op => isOpActionable(op, now) && !opsInFlight.has(op.id)) || null;
 }
 
-// Procesa la cola ESTRICTAMENTE de una en una. Antes se lanzaban todas las pendientes en
-// paralelo: con una recurrencia de decenas de fechas eso son decenas de peticiones
-// simultáneas contra Apps Script, que las serializa detrás del script lock y acaba
-// atascándose. En serie cada envío es pequeño, independiente y reanudable.
+// Procesa la cola ESTRICTAMENTE de una en una: el backend serializa las escrituras tras
+// un lock global, así que mandarlas en paralelo solo genera esperas y timeouts de lock.
+//
+// Cada envío termina cuando responde el servidor, sin esperas artificiales. Antes había
+// un sondeo cada 5 s con una sola operación sin confirmar a la vez, así que cada cambio
+// costaba como mínimo esos 5 s aunque el servidor hubiera terminado en medio segundo.
 async function runOpQueue() {
   if (opRunnerActive) return;
   if (!state.config.scriptUrl) return;
@@ -2478,25 +2512,41 @@ async function runOpQueue() {
     while ((op = nextActionableOp())) {
       // Cortacircuitos: si la misma operación sale dos veces seguidas sin cambiar de
       // estado, algo no progresa y seguir iterando congelaría la pestaña en bucle.
-      const signature = `${op.id}|${op.status}|${op.nextAttemptAt || 0}`;
+      const signature = `${op.id}|${op.status}|${op.attempts || 0}`;
       if (signature === lastSignature) {
         failQueuedOp(op.id, "La cola no avanza. Reintenta manualmente desde Ajustes › Conexión.");
         break;
       }
       lastSignature = signature;
-      if (op.status === "sending" || op.status === "checking") {
-        await checkQueuedOp(op.id);
-      } else {
-        // No se lanzan más envíos de los que se pueden tener sin confirmar: el
-        // poller retomará la cola en cuanto alguno se confirme.
-        const unconfirmed = readOpQueue().filter(o => o.status === "sending" || o.status === "checking").length;
-        if (unconfirmed >= MAX_UNCONFIRMED_OPS) break;
-        await sendQueuedOp(op.id);
-      }
+      await sendQueuedOp(op.id);
     }
   } finally {
     opRunnerActive = false;
+    scheduleOpQueueWakeup();
   }
+}
+
+// Un solo temporizador, y solo si de verdad hay algo esperando su backoff. Sustituye al
+// setInterval de 5 s que corría siempre —incluso con la cola vacía— y que nunca se
+// limpiaba.
+let opQueueWakeupHandle = null;
+
+function scheduleOpQueueWakeup() {
+  if (opQueueWakeupHandle) {
+    window.clearTimeout(opQueueWakeupHandle);
+    opQueueWakeupHandle = null;
+  }
+  const now = Date.now();
+  const waiting = readOpQueue()
+    .filter(op => op.status !== "done" && op.status !== "error" && Number(op.nextAttemptAt || 0) > now)
+    .map(op => Number(op.nextAttemptAt));
+  if (!waiting.length) return;
+  const delay = Math.max(250, Math.min(...waiting) - now);
+  opQueueWakeupHandle = window.setTimeout(() => {
+    opQueueWakeupHandle = null;
+    renderPendingOpsTable(readOpQueue());
+    runOpQueue().catch(err => console.error("runOpQueue", err));
+  }, delay);
 }
 
 function isOpActionable(op, now = Date.now()) {
@@ -2506,7 +2556,7 @@ function isOpActionable(op, now = Date.now()) {
 
 // Los reenvíos automáticos saturaban Apps Script cuando una ejecución tardaba en tomar
 // el lock. Un fallo queda visible y solo se vuelve a enviar mediante «Reintentar ahora».
-function failQueuedOp(opId, error) {
+function failQueuedOp(opId, error, detail = "") {
   const queue = readOpQueue();
   const target = queue.find(op => op.id === opId);
   if (!target) return;
@@ -2514,18 +2564,8 @@ function failQueuedOp(opId, error) {
   target.error = String(error || "").trim() || "Error desconocido";
   target.status = "error";
   target.nextAttemptAt = 0;
-  logSyncEvent(`Operación sin confirmar: ${target.payload?.action || "cambio"}.`, "warn", target.error);
+  logSyncEvent(`Operación sin confirmar: ${opLabel(target.payload?.action, "cambio")}.`, "warn", detail || target.error);
   writeOpQueue(queue);
-}
-
-async function pollPendingOps() {
-  if (!state.config.scriptUrl) return;
-  const queue = readOpQueue();
-  const pending = queue.filter(op => op.status !== "done" && op.status !== "error");
-  if (!pending.length) return;
-  // Refresca la cuenta atrás del próximo reintento en la tabla de Conexión.
-  renderPendingOpsTable(queue);
-  await runOpQueue();
 }
 
 function markOpStatus(opId, patch) {
@@ -2553,92 +2593,74 @@ function completeQueuedOp(item) {
   }
 }
 
+// Un único envío: se manda, se espera la respuesta y esa respuesta decide. No hay
+// sondeo posterior — doPost ya contesta con el resultado.
 async function sendQueuedOp(opId) {
   if (opsInFlight.has(opId)) return;
   if (!state.config.scriptUrl) return;
   const queue = readOpQueue();
   const item = queue.find(op => op.id === opId);
-  if (!item || item.status === "done" || item.status === "error" || item.status === "sending" || item.status === "checking") return;
+  if (!item || item.status === "done" || item.status === "error" || item.status === "sending") return;
   opsInFlight.add(opId);
-  ensureOpQueuePoller();
   markOpStatus(opId, { status: "sending", error: null, nextAttemptAt: 0 });
   setSyncStatus(queueActionStatus(item.payload, item), "");
   try {
-    await fireAppsScript(item.payload);
-    // Enviada: se confirma por sondeo, sin volver a hacer POST. La siguiente operación
-    // espera: el backend usa un lock global y debe recibirlas estrictamente en orden.
-    markOpStatus(opId, { status: "checking", error: null, nextAttemptAt: Date.now() + OP_POLL_INTERVAL_MS, lastSentAt: Date.now() });
+    const { payload, result } = await fireAppsScript(item.payload);
+    // El clientOpId se acuña en el primer intento y viaja con la operación: sin
+    // guardarlo, un reintento pediría uno nuevo y el servidor no podría deduplicar.
+    if (payload?.clientOpId && payload.clientOpId !== item.payload?.clientOpId) {
+      markOpStatus(opId, { payload });
+    }
+    // Otra ejecución del servidor está aplicando ya este mismo clientOpId (un envío
+    // anterior que seguía vivo). No está hecha todavía: se espera y se vuelve a mandar,
+    // que es idempotente.
+    if (result?.ok && result.pending) {
+      const busy = new Error("El servidor sigue aplicando este cambio.");
+      busy.errorCode = "BUSY";
+      throw busy;
+    }
+    if (result?.ok) {
+      completeQueuedOp(readOpQueue().find(op => op.id === opId) || item);
+      return;
+    }
+    // Mensaje de la app para el usuario; el texto crudo del servidor se conserva aparte
+    // para el registro de Ajustes › Conexión, que es donde interesa el detalle.
+    const error = new Error(ERROR_CODE_MESSAGES[result?.errorCode] || result?.error || "Apps Script rechazó la operación.");
+    error.errorCode = result?.errorCode || "";
+    error.detail = result?.error || "";
+    throw error;
   } catch (error) {
-    markOpStatus(opId, { lastSentAt: Date.now() });
-    failQueuedOp(opId, error.message || error);
-    logSyncEvent(`No se pudo enviar (se reintentará): ${item.payload?.action || "cambio"}.`, "warn", `${error.name || "Error"}: ${error.message || String(error)}`);
+    handleQueuedOpFailure(opId, error);
   } finally {
     opsInFlight.delete(opId);
     renderPendingOpsBadge();
   }
 }
 
-async function checkQueuedOp(opId) {
-  if (opsInFlight.has(opId)) return;
-  const queue = readOpQueue();
-  const item = queue.find(op => op.id === opId);
-  if (!item || item.status === "done" || item.status === "error") return;
-  const clientOpId = item.payload?.clientOpId;
-  if (!clientOpId) {
-    // Sin clientOpId no hay forma de confirmarla nunca. Devolver sin tocar el estado
-    // hacía que runOpQueue eligiera esta misma operación en bucle y congelara la pestaña.
-    markOpStatus(opId, { status: "error", error: "Operación sin identificador; no se puede confirmar.", nextAttemptAt: 0 });
-    logSyncEvent("Operación descartada: no tiene identificador de confirmación.", "warn");
+// Un problema de configuración o de datos no mejora repitiendo: se para y se enseña el
+// motivo. Lo transitorio (servidor ocupado, 5xx, corte de red) se reintenta con backoff
+// hasta agotar los intentos, y solo entonces queda a la espera de «Reintentar ahora».
+function handleQueuedOpFailure(opId, error) {
+  const item = readOpQueue().find(op => op.id === opId);
+  if (!item) return;
+  const attempts = Number(item.attempts || 0) + 1;
+  const detail = describeRequestError(error);
+  if (isPermanentError(error) || attempts >= MAX_OP_SEND_RETRIES) {
+    failQueuedOp(opId, error.message || String(error), detail);
+    setSyncStatus("Error al enviar\nRevisa Ajustes › Conexión", "warn");
     return;
   }
-  opsInFlight.add(opId);
-  try {
-    const result = await fetchAppsScriptData({ action: "checkClientOp", clientOpId });
-    if (result?.ok && result.completed) {
-      completeQueuedOp(item);
-      return;
-    }
-    // El servidor registró un error para esta operación: se para y se muestra el motivo.
-    if (result?.ok && result.failed) {
-      markOpStatus(opId, { status: "error", error: result.error || "Apps Script rechazó la operación.", nextAttemptAt: 0 });
-      logSyncEvent(`Apps Script devolvió un error: ${item.payload?.action || "cambio"}.`, "warn", result.error || "");
-      setSyncStatus("Error al enviar\nRevisa Ajustes › Conexión", "warn");
-      return;
-    }
-    // El servidor sigue trabajando en ella: no cuenta como intento fallido, pero hay que
-    // dejarla en espera hasta el siguiente ciclo. Sin nextAttemptAt, runOpQueue la
-    // volvería a elegir de inmediato y el bucle giraría en vacío consultando sin parar.
-    if (result?.ok && result.pending) {
-      markOpStatus(opId, { status: "checking", error: null, nextAttemptAt: Date.now() + OP_POLL_INTERVAL_MS });
-      return;
-    }
-    // Sin noticias puede ser una ejecución esperando el lock o una consulta JSONP
-    // puntual fallida. Se sigue consultando sin reenviar el POST ni mostrar ese fallo
-    // técnico como si el cambio hubiese sido rechazado.
-    const sentAt = Number(item.lastSentAt || 0);
-    markOpStatus(opId, {
-      status: "checking",
-      error: null,
-      confirmationDelayed: Boolean(sentAt && Date.now() - sentAt >= OP_CONFIRM_DELAY_NOTICE_MS),
-      nextAttemptAt: Date.now() + OP_POLL_INTERVAL_MS
-    });
-  } catch (error) {
-    const sentAt = Number(item.lastSentAt || 0);
-    logSyncEvent("No se pudo comprobar todavía una operación enviada; seguirá verificándose.", "warn", error.message || String(error));
-    markOpStatus(opId, {
-      status: "checking",
-      error: null,
-      confirmationDelayed: Boolean(sentAt && Date.now() - sentAt >= OP_CONFIRM_DELAY_NOTICE_MS),
-      nextAttemptAt: Date.now() + OP_POLL_INTERVAL_MS
-    });
-  } finally {
-    opsInFlight.delete(opId);
-    renderPendingOpsBadge();
-  }
+  markOpStatus(opId, {
+    status: "retry",
+    attempts,
+    error: null,
+    lastSentAt: Date.now(),
+    nextAttemptAt: Date.now() + retryDelayMs(attempts)
+  });
+  logSyncEvent(`Reintentando el envío de ${opLabel(item.payload?.action)}.`, "", `Intento ${attempts}: ${detail}`);
 }
 
 function kickOpQueue() {
-  ensureOpQueuePoller();
   runOpQueue().catch(err => console.error("runOpQueue", err));
 }
 
@@ -2646,7 +2668,7 @@ function kickOpQueue() {
 // "error" y reinicia el contador de intentos y el backoff. El identificador puede ser el
 // de una operación suelta o el batchId de un grupo entero.
 async function retryPendingOps(opId = null, { recoverSending = true } = {}) {
-  if (recoverSending) await recoverInterruptedSendingOps();
+  if (recoverSending) await reconcileInterruptedOps();
   const queue = readOpQueue();
   const targets = opId
     ? queue.filter(op => op.id === opId || (op.batchId && op.batchId === opId))
@@ -2654,10 +2676,9 @@ async function retryPendingOps(opId = null, { recoverSending = true } = {}) {
   targets.forEach(op => {
     op.attempts = 0;
     op.nextAttemptAt = 0;
-    if (op.status !== "checking") op.status = "retry";
+    op.status = "retry";
   });
   writeOpQueue(queue);
-  ensureOpQueuePoller();
   await runOpQueue();
 }
 
@@ -2832,14 +2853,14 @@ async function resolveDueFutureMovementsToMove(dueMovements) {
 }
 
 async function fetchAppsScriptData(options = {}) {
-  if (!state.config.scriptUrl) throw new Error("falta la URL de Apps Script");
+  if (!state.config.scriptUrl) throw configError("falta la URL de Apps Script");
   assertAppsScriptDeploymentUrl();
-  if (navigator.onLine === false) throw new Error("Sin conexión");
-  const action = options.action || (options.updateInvestments
-    ? "updateInvestmentPrices"
-    : options.scope === "investments"
-      ? "downloadInvestments"
-      : "downloadData");
+  if (navigator.onLine === false) {
+    const offline = new Error("Sin conexión");
+    offline.errorCode = "NETWORK";
+    throw offline;
+  }
+  const action = options.action || (options.updateInvestments ? "updateInvestmentPrices" : "downloadInvestments");
   const params = new URLSearchParams({
     action,
     token: state.config.appToken,
@@ -2869,33 +2890,38 @@ async function fetchAppsScriptData(options = {}) {
         : action === "checkClientOp"
           ? "la confirmación"
           : "los datos solicitados";
-  return jsonp(appsScriptGetUrl(params), {
+  return appsScriptRequest(appsScriptGetUrl(params), {
     timeoutMs: options.timeoutMs,
-    confirmationCheck: action === "checkClientOp",
     requestLabel
   });
+}
+
+// Todos estos fallos son de configuración: reintentarlos no arregla nada, así que van
+// marcados con CONFIG para que el clasificador los detenga en el primer intento.
+function configError(message) {
+  const error = new Error(message);
+  error.errorCode = "CONFIG";
+  return error;
 }
 
 function assertAppsScriptDeploymentUrl() {
   const url = String(state.config.scriptUrl || "").trim();
   if (/\/dev(?:[/?#]|$)/i.test(url)) {
-    throw new Error("La URL de Apps Script termina en /dev. En Ajustes usa la URL publicada que termina en /exec.");
+    throw configError("La URL de Apps Script termina en /dev. En Ajustes usa la URL publicada que termina en /exec.");
   }
   try {
     const parsed = new URL(url);
     if (!/\/exec\/?$/i.test(parsed.pathname)) {
-      throw new Error("La URL de Apps Script debe ser la del despliegue y terminar en /exec.");
+      throw configError("La URL de Apps Script debe ser la del despliegue y terminar en /exec.");
     }
   } catch (error) {
     if (String(error?.message || error).includes("debe ser")) throw error;
-    throw new Error("La URL de Apps Script no es válida. En Ajustes pega la URL completa del despliegue /exec.");
+    throw configError("La URL de Apps Script no es válida. En Ajustes pega la URL completa del despliegue /exec.");
   }
 }
 
 // Se normaliza la URL copiada desde el navegador: se eliminan fragmentos y se
-// sustituyen los parámetros de la app. Es especialmente importante reemplazar
-// callback, porque un callback antiguo produce una respuesta JSONP que el móvil
-// no puede ejecutar aunque Apps Script haya respondido correctamente.
+// sustituyen los parámetros de la app.
 function appsScriptGetUrl(params) {
   const url = new URL(String(state.config.scriptUrl || "").trim());
   url.hash = "";
@@ -2903,45 +2929,120 @@ function appsScriptGetUrl(params) {
   return url.toString();
 }
 
-function appsScriptJsonpUrl(url, callback) {
-  const parsed = new URL(url);
-  parsed.hash = "";
-  parsed.searchParams.set("callback", callback);
-  return parsed.toString();
+// Las descargas son mucho más caras que una confirmación: la primera llamada del arranque
+// puede tener que sincronizar la hoja de totales y leer varias hojas enteras. Se deja
+// margen suficiente para que Apps Script termine (su límite es seis minutos).
+const REQUEST_TIMEOUT_MS = 30000;
+const DOWNLOAD_TIMEOUT_MS = 330000;
+// Una escritura puede pasar hasta 30 s esperando el lock del script (waitLock) antes de
+// empezar a trabajar. El techo tiene que quedar holgadamente por encima de eso.
+const POST_TIMEOUT_MS = 120000;
+const POST_CONTENT_TYPE = "text/plain;charset=utf-8";
+
+// Errores que no mejoran por repetir la petición: configuración, token o datos mal
+// formados. Todo lo demás (servidor ocupado, 5xx, corte de red) es transitorio.
+//
+// Antes esto se decidía con una regex sobre el texto en español del mensaje, así que
+// reescribir un aviso cambiaba en silencio la política de reintentos. Y la comprobación
+// vivía FUERA del bucle: un LOCK_TIMEOUT —el caso más reintentable que hay— abortaba la
+// actualización entera, mientras que un fallo de transporte sin información reintentaba
+// para siempre. Estaba justo del revés.
+const PERMANENT_ERROR_CODES = new Set(["AUTH", "SHEET_NOT_FOUND", "VALIDATION", "NOT_FOUND", "CONFIG"]);
+
+function isPermanentError(error) {
+  return PERMANENT_ERROR_CODES.has(String(error?.errorCode || ""));
 }
 
-// Las descargas son mucho más caras que un checkClientOp: la primera llamada del arranque
-// puede tener que sincronizar la hoja de totales y leer varias hojas enteras. Con el techo
-// corto de JSONP_TIMEOUT_MS se abandonaba a los 20 s aunque el servidor fuese a responder.
-// Una lectura inicial puede tener que crear SID o calcular totales por primera vez.
-// Se deja margen suficiente para que Apps Script termine (su límite es seis minutos),
-// sin lanzar un segundo intento que reinicie la descarga.
-const DOWNLOAD_TIMEOUT_MS = 330000;
+// Espera con crecimiento exponencial y jitter. El jitter importa: sin él, varias
+// peticiones que fallan a la vez vuelven a caer juntas sobre la misma ejecución de Google.
+const RETRY_BASE_DELAY_MS = 500;
+const RETRY_MAX_DELAY_MS = 8000;
 
-function isPermanentDownloadError(error) {
-  const message = String(error?.message || error || "");
-  return /invalid app token|^auth:|sheet not found|unknown action|falta la url|url de apps script|no es válida/i.test(message);
+function retryDelayMs(attempt, random = Math.random) {
+  const exponential = Math.min(RETRY_MAX_DELAY_MS, RETRY_BASE_DELAY_MS * 2 ** (Math.max(1, Number(attempt) || 1) - 1));
+  const jitter = 1 + (random() - 0.5) * 0.6;
+  return Math.max(RETRY_BASE_DELAY_MS, Math.round(exponential * jitter));
 }
 
 function waitForDownloadRecovery(attempt) {
-  // Solo hay una pequeña espera tras un error de transporte, para no golpear la
-  // misma ejecución de Google en ráfaga. No es un límite temporal: se sigue hasta
-  // que la misma página responda o aparezca un error de configuración real.
-  const delay = Math.min(5000, 500 * Math.max(1, Number(attempt) || 1));
-  return new Promise(resolve => window.setTimeout(resolve, delay));
+  return new Promise(resolve => window.setTimeout(resolve, retryDelayMs(attempt)));
 }
 
-// Una descarga inicial no se abandona por un error transitorio. Solo se repite el
-// bloque que estaba en curso; las páginas anteriores siguen en caché y nunca se
-// reinicia la descarga completa.
+// Petición única contra el despliegue de Apps Script. json_ devuelve JSON plano cuando no
+// hay parámetro callback, y el despliegue "acceso para cualquiera" responde con
+// Access-Control-Allow-Origin: *, así que la respuesta se puede leer de verdad — al
+// contrario que con JSONP, donde un <script> que falla solo decía "error" sin código ni
+// cuerpo y era imposible distinguir un corte real de un servidor ocupado.
+async function appsScriptRequest(url, { timeoutMs = REQUEST_TIMEOUT_MS, requestLabel = "los datos solicitados", method = "GET", body = null } = {}) {
+  const controller = new AbortController();
+  // Una descarga inicial puede pedir explícitamente no tener límite: la caché todavía no
+  // existe y se prefiere esperar a Apps Script antes que reiniciar el trabajo.
+  const limit = Number(timeoutMs);
+  const timer = Number.isFinite(limit) && limit > 0
+    ? window.setTimeout(() => controller.abort(), limit)
+    : null;
+  let response;
+  try {
+    response = await fetch(url, {
+      method,
+      signal: controller.signal,
+      redirect: "follow",
+      ...(body === null ? {} : { headers: { "Content-Type": POST_CONTENT_TYPE }, body })
+    });
+  } catch (error) {
+    const aborted = error?.name === "AbortError";
+    const failure = new Error(aborted
+      ? `Apps Script no respondió a tiempo al pedir ${requestLabel}.`
+      : `No se pudo contactar con Apps Script al pedir ${requestLabel}: ${error?.message || error}`);
+    failure.errorCode = aborted ? "TIMEOUT" : "NETWORK";
+    throw failure;
+  } finally {
+    if (timer) window.clearTimeout(timer);
+  }
+  if (!response.ok) {
+    const failure = new Error(`Apps Script respondió ${response.status} al pedir ${requestLabel}.`);
+    // 401/403 salen cuando el despliegue no es público: repetir no arregla nada.
+    failure.errorCode = response.status === 401 || response.status === 403 ? "CONFIG" : "HTTP";
+    failure.status = response.status;
+    throw failure;
+  }
+  const text = await response.text();
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    // Google devuelve una página HTML de error cuando la ejecución no llega a arrancar.
+    // Con JSONP esto era indistinguible de un corte de red; ahora se ve y se reintenta.
+    const failure = new Error(`Apps Script devolvió una respuesta ilegible al pedir ${requestLabel}.`);
+    failure.errorCode = "MALFORMED";
+    throw failure;
+  }
+}
+
+// Tope de reintentos por bloque. Antes era un while(true) literal: una descarga inicial
+// contra un backend roto se quedaba reconectando indefinidamente sin decir por qué.
+const MAX_DOWNLOAD_RETRIES = 40;
+
+// Una descarga no se abandona por un error transitorio. Solo se repite el bloque que
+// estaba en curso; las páginas anteriores siguen en caché y nunca se reinicia la
+// descarga completa.
 async function fetchDownloadData(options = {}, { label = "datos", showProgress = false, timeoutMs = DOWNLOAD_TIMEOUT_MS, recoverUntilSuccess = false, onRecovery = null } = {}) {
   let recoveryAttempt = 0;
   while (true) {
     try {
-      return await fetchAppsScriptData({ ...options, timeoutMs });
+      const payload = await fetchAppsScriptData({ ...options, timeoutMs });
+      // Dentro del bucle: un {ok:false} transitorio del servidor merece el mismo
+      // reintento que un corte de red.
+      assertPayloadOk(payload);
+      return payload;
     } catch (error) {
-      if (!recoverUntilSuccess || isPermanentDownloadError(error)) {
-        logSyncEvent(`Falló la descarga de ${label}; no se reiniciará automáticamente.`, "warn", error.message || String(error));
+      const permanent = isPermanentError(error);
+      if (!recoverUntilSuccess || permanent || recoveryAttempt >= MAX_DOWNLOAD_RETRIES) {
+        const reason = permanent
+          ? "no se reintenta: es un problema de configuración o de datos"
+          : recoveryAttempt >= MAX_DOWNLOAD_RETRIES
+            ? `se agotaron los ${MAX_DOWNLOAD_RETRIES} reintentos`
+            : "no se reiniciará automáticamente";
+        logSyncEvent(`Falló la descarga de ${label}; ${reason}.`, "warn", describeRequestError(error));
         throw error;
       }
       recoveryAttempt += 1;
@@ -2949,51 +3050,28 @@ async function fetchDownloadData(options = {}, { label = "datos", showProgress =
         ? String(onRecovery({ attempt: recoveryAttempt, error }) || "")
         : "";
       if (recoveryAttempt === 1 || recoveryAttempt % 6 === 0) {
-        logSyncEvent(`Reconectando al descargar ${label}; se conserva el progreso.`, "", `Intento ${recoveryAttempt}`);
+        logSyncEvent(`Reconectando al descargar ${label}; se conserva el progreso.`, "", `Intento ${recoveryAttempt}: ${describeRequestError(error)}`);
       }
       syncStatusStep(showProgress, lineMessage(
         `Descargando ${label}`,
         `Reconectando sin reiniciar (intento ${recoveryAttempt})`,
         recoveryDetail
-      ), "warn");
+      // Los primeros intentos no se pintan como aviso: un reintento aislado es normal y
+      // teñir la barra de amarillo hacía parecer roto algo que iba a funcionar.
+      ), recoveryAttempt >= 3 ? "warn" : "");
       await waitForDownloadRecovery(recoveryAttempt);
     }
   }
 }
 
-const JSONP_TIMEOUT_MS = 20000;
-
-function jsonp(url, { timeoutMs = JSONP_TIMEOUT_MS, confirmationCheck = false, requestLabel = "datos" } = {}) {
-  return new Promise((resolve, reject) => {
-    const cb = `moneyJsonp_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-    const script = document.createElement("script");
-    let timer = null;
-    const cleanup = () => {
-      if (timer) { window.clearTimeout(timer); timer = null; }
-      script.remove();
-      delete window[cb];
-    };
-    window[cb] = data => { cleanup(); resolve(data); };
-    script.onerror = () => {
-      cleanup();
-      const error = new Error(confirmationCheck
-        ? "No se pudo comprobar todavía la confirmación."
-        : `La conexión con Apps Script se interrumpió al recibir ${requestLabel}.`);
-      error.code = "APPS_SCRIPT_TRANSPORT";
-      reject(error);
-    };
-    // Una descarga inicial puede pedir explícitamente no tener límite temporal: la
-    // caché todavía no existe y se prefiere esperar a Apps Script antes que reiniciar
-    // el trabajo. El resto de llamadas conserva su límite normal.
-    if (Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0) {
-      timer = window.setTimeout(() => {
-        cleanup();
-        reject(new Error(confirmationCheck ? "La confirmación todavía no respondió." : "Apps Script no respondió a tiempo"));
-      }, Number(timeoutMs));
-    }
-    script.src = appsScriptJsonpUrl(url, cb);
-    document.body.appendChild(script);
-  });
+// Motivo legible para el registro de Ajustes › Conexión: con fetch hay código y estado
+// reales que enseñar, en vez del "la conexión se interrumpió" genérico de antes.
+function describeRequestError(error) {
+  const code = String(error?.errorCode || "");
+  const status = error?.status ? ` (HTTP ${error.status})` : "";
+  const message = error?.message || String(error);
+  const detail = error?.detail && error.detail !== message ? ` — ${error.detail}` : "";
+  return `${code ? `${code}${status}: ` : ""}${message}${detail}`;
 }
 
 function syncOptions() {
@@ -5188,8 +5266,6 @@ async function saveBanks() {
   }
 }
 
-const POST_CONTENT_TYPE = "text/plain;charset=utf-8";
-
 function appsScriptRequestBody(payload) {
   return JSON.stringify({
     token: state.config.appToken,
@@ -5205,43 +5281,30 @@ function appsScriptRequestBody(payload) {
   });
 }
 
-// Segundo camino de red para cuando fetch falla de plano (en WebKit eso es un TypeError
-// con el mensaje "Load failed"). sendBeacon usa otra ruta del motor y suele pasar donde
-// fetch no. No devuelve respuesta, pero tampoco hace falta: la confirmación siempre viene
-// de checkClientOp.
-function sendAppsScriptBeacon(body) {
-  if (typeof navigator === "undefined" || typeof navigator.sendBeacon !== "function") return false;
-  if (typeof Blob === "undefined") return false;
-  try {
-    return navigator.sendBeacon(state.config.scriptUrl, new Blob([body], { type: POST_CONTENT_TYPE }));
-  } catch (error) {
-    return false;
-  }
-}
-
+// El POST espera su respuesta y la devuelve. doPost siempre ha contestado con el
+// resultado completo; antes se tiraba (sendBeacon no devuelve nada, y no-cors da una
+// respuesta opaca) y había que preguntar por él con checkClientOp cada cinco segundos.
+// Ahora la confirmación llega con la propia escritura.
+//
+// El cuerpo puede ser grande (un lote de fechas), así que nada de keepalive: su límite de
+// 64 KiB hacía que fetch fallase al instante con "Load failed" en WebKit.
 async function fireAppsScript(payload) {
-  if (navigator.onLine === false) throw new Error("Sin conexión");
+  if (navigator.onLine === false) {
+    const offline = new Error("Sin conexión");
+    offline.errorCode = "NETWORK";
+    throw offline;
+  }
   assertAppsScriptDeploymentUrl();
   const finalPayload = withClientOpId(payload || {});
-  const body = appsScriptRequestBody(finalPayload);
-  // Apps Script no expone la respuesta de un POST no-CORS hasta terminar la ejecución.
-  // sendBeacon confirma que el navegador lo ha aceptado sin esperar ese trabajo; a partir
-  // de aquí la única fuente de verdad es checkClientOp cada cinco segundos.
-  if (sendAppsScriptBeacon(body)) return finalPayload;
-  // Alternativa para navegadores sin Beacon. Se lanza sin esperar: si termina tarde o
-  // falla, el sondeo decide tras un minuto sin emitir un segundo POST automático.
-  try {
-    fetch(state.config.scriptUrl, {
-      method: "POST",
-      mode: "no-cors",
-      keepalive: true,
-      headers: { "Content-Type": POST_CONTENT_TYPE },
-      body
-    }).catch(error => logSyncEvent("El navegador no pudo despachar el POST; se comprobará durante un minuto.", "warn", error.message || String(error)));
-  } catch (error) {
-    throw new Error(`No se pudo iniciar el envío: ${error.message || error}`);
-  }
-  return finalPayload;
+  // Misma normalización de URL que las lecturas: una URL pegada con fragmento o con
+  // parámetros sueltos no debe comportarse distinto según sea GET o POST.
+  const result = await appsScriptRequest(appsScriptGetUrl(new URLSearchParams()), {
+    method: "POST",
+    body: appsScriptRequestBody(finalPayload),
+    requestLabel: `el envío de ${opLabel(finalPayload.action)}`,
+    timeoutMs: POST_TIMEOUT_MS
+  });
+  return { payload: finalPayload, result };
 }
 
 function createSid(prefix = "id") {

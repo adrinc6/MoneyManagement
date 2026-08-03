@@ -22,8 +22,7 @@ var DAILY_NOTIFICATION_HOUR = 22;
 
 function doGet(e) {
   const params = e && e.parameter ? e.parameter : {};
-  const callback = params.callback || '';
-  const action = params.action || 'all';
+  const action = params.action || '';
   // Los nombres de hoja viajan juntos en todas las lecturas: se resuelven una vez y se
   // pasan como un objeto, en vez de como nueve argumentos posicionales que había que
   // mantener en el mismo orden en cada llamada.
@@ -45,8 +44,6 @@ function doGet(e) {
       payload = buildClientOpStatusPayload_(params.clientOpId || '');
     } else if (action === 'quickStatus') {
       payload = buildQuickStatusPayload_(movementSheet, futureMovementSheet, investmentSheet, bankSheet, dataSheet, investmentTotalsSheet);
-    } else if (action === 'downloadData') {
-      payload = buildDataPayload_(sheets, { movements: true, banks: true, estimates: false, movedFutureMovements: [] });
     } else if (action === 'downloadCoreData') {
       // La carga inicial no debe quedarse esperando a las hojas de estimaciones,
       // que pueden crecer mucho. Se descargan después, solo si el usuario usa ese modo.
@@ -75,14 +72,6 @@ function doGet(e) {
         banks: readBanks_(bankSheet),
         investmentTotals: readInvestmentTotals_(investmentTotalsSheet)
       };
-    } else if (action === 'all') {
-      const movedFutureMovements = moveDueFutureMovements_(futureMovementSheet, movementSheet, bankSheet, skipFutureSids);
-      if (movedFutureMovements.length) {
-        applyInvestmentCostChanges_(sheets, movedFutureMovements.map(function(movement) {
-          return { movement: movement, sign: 1 };
-        }), movementSheet);
-      }
-      payload = buildDataPayload_(sheets, { movements: true, banks: true, movedFutureMovements });
     } else if (action === 'updateInvestmentPrices') {
       payload = withScriptLock_(function() {
         const priceUpdateResult = updateInvestmentQuotesFromYahoo(investmentSheet);
@@ -110,7 +99,7 @@ function doGet(e) {
     payload = errorPayload_(err);
   }
 
-  return json_(payload, callback);
+  return json_(payload);
 }
 
 function resolveSheets_(source) {
@@ -210,9 +199,6 @@ function processedClientOpsKey_() {
   return PROCESSED_CLIENT_OPS_KEY;
 }
 
-function failedClientOpsKey_() {
-  return 'moneyFailedClientOps';
-}
 
 function appliedBatchSidsKey_() {
   return 'moneyAppliedBatchSids';
@@ -226,24 +212,6 @@ function receivedClientOpsKey_() {
   return 'moneyReceivedClientOps';
 }
 
-function initialDownloadPreparationKey_() {
-  return 'moneyInitialDownloadPreparation';
-}
-
-function setInitialDownloadPreparationPhase_(clientOpId, phase) {
-  if (!clientOpId) return;
-  const now = Date.now();
-  const items = readBoundedList_(initialDownloadPreparationKey_())
-    .filter(function(item) { return item && item.id !== clientOpId && now - Number(item.at || 0) < 15 * 60 * 1000; });
-  items.push({ id: clientOpId, phase: phase || 'recibida', at: now });
-  storeBoundedList_(initialDownloadPreparationKey_(), items);
-}
-
-function initialDownloadPreparationPhase_(clientOpId) {
-  if (!clientOpId) return '';
-  const item = readBoundedList_(initialDownloadPreparationKey_()).find(function(entry) { return entry && entry.id === clientOpId; });
-  return item ? String(item.phase || '') : '';
-}
 
 // Marca "recibida, esperando turno". La fila de "Pendientes" solo se escribe DESPUÉS
 // de obtener el script lock, así que durante esa espera (hasta 30 s) checkClientOp
@@ -315,23 +283,15 @@ function movementSidHeader_() {
   return MOVEMENT_SID_HEADER;
 }
 
+// Único consumidor: la reconciliación del arranque, para operaciones que se quedaron a
+// medias porque se cerró la app con el POST en vuelo. Solo necesita saber si el cambio
+// llegó a aplicarse o si sigue en curso; el motivo de un fallo ya viaja en la respuesta
+// del propio POST, así que no hay que guardarlo aquí para que alguien lo recoja después.
 function buildClientOpStatusPayload_(clientOpId) {
   if (!clientOpId) return { ok: true, completed: false, pending: false };
-  const phase = initialDownloadPreparationPhase_(clientOpId);
-  if (wasClientOpProcessed_(clientOpId)) return { ok: true, completed: true, pending: false, phase: phase || 'lista' };
-  // "pending" gana al último error: si hay un reintento en curso, el error anterior
-  // ya no describe el estado actual de la operación.
-  if (isClientOpPending_(clientOpId)) return { ok: true, completed: false, pending: true, phase: phase || 'recibida' };
-  // Recibida pero todavía esperando el script lock: sigue viva, no es un fallo.
-  if (isClientOpReceived_(clientOpId)) return { ok: true, completed: false, pending: true, phase: phase || 'recibida' };
-  const failure = clientOpFailure_(clientOpId);
-  if (failure) {
-    // retryable: fallos transitorios (lock ocupado) que el cliente debe reintentar
-    // con su backoff normal en vez de detener la operación con error terminal.
-    const retryable = String(failure).indexOf('LOCK_TIMEOUT') === 0;
-    return { ok: true, completed: false, pending: false, failed: true, retryable, phase, error: failure };
-  }
-  return { ok: true, completed: false, pending: false, phase };
+  if (wasClientOpProcessed_(clientOpId)) return { ok: true, completed: true, pending: false };
+  const pending = isClientOpPending_(clientOpId) || isClientOpReceived_(clientOpId);
+  return { ok: true, completed: false, pending: pending };
 }
 
 // Guarda una lista acotada en DocumentProperties (límite de 9 KB por valor),
@@ -363,44 +323,16 @@ function rememberProcessedClientOp_(clientOpId) {
       .filter(item => item && item.id !== clientOpId);
     items.push({ id: clientOpId, at: new Date().toISOString() });
     storeBoundedList_(processedClientOpsKey_(), items);
-    // La operación ya está confirmada: ni el último error ni el registro de saldos
-    // aplicados a medias tienen sentido y solo ocuparían sitio.
-    forgetClientOpFailure_(clientOpId);
+    // La operación ya está confirmada: el registro de saldos aplicados a medias no
+    // tiene sentido y solo ocuparía sitio.
     forgetAppliedBatchSids_(clientOpId);
   } catch (err) {
     // No dejar que un fallo aquí oculte que la operación sí se completó.
   }
 }
 
-// El POST del cliente va con mode:"no-cors", así que no puede leer la respuesta ni el
-// error. Sin esto un fallo del servidor era invisible y la operación se quedaba
-// reintentándose en bucle mostrando "Enviando/Confirmando" para siempre.
-function rememberClientOpFailure_(clientOpId, message) {
-  if (!clientOpId) return;
-  try {
-    // Un reintento que choca con el lock (o que llega mientras la ejecución original
-    // sigue viva) no es un fallo de la operación: no debe marcarla como errónea.
-    if (wasClientOpProcessed_(clientOpId) || isClientOpPending_(clientOpId)) return;
-    const items = readBoundedList_(failedClientOpsKey_())
-      .filter(item => item && item.id !== clientOpId);
-    items.push({ id: clientOpId, at: new Date().toISOString(), error: String(message || 'Error desconocido').slice(0, 300) });
-    storeBoundedList_(failedClientOpsKey_(), items);
-  } catch (err) {
-    // Un fallo registrando el fallo no debe romper la respuesta de error.
-  }
-}
 
-function forgetClientOpFailure_(clientOpId) {
-  if (!clientOpId) return;
-  const items = readBoundedList_(failedClientOpsKey_());
-  const next = items.filter(item => item && item.id !== clientOpId);
-  if (next.length !== items.length) storeBoundedList_(failedClientOpsKey_(), next);
-}
 
-function clientOpFailure_(clientOpId) {
-  const found = readBoundedList_(failedClientOpsKey_()).find(item => item && item.id === clientOpId);
-  return found ? String(found.error || 'Error desconocido') : '';
-}
 
 // Los saldos de "Bancos" se ajustan con sumas, no son idempotentes: si un lote falla
 // a medias y el cliente lo reintenta, el dinero se movería dos veces. Registramos qué
@@ -489,7 +421,6 @@ function doPost(e) {
     // "pendiente" mientras esta petición espera su turno, en vez de "no sé nada"
     // (que el cliente contabilizaba como intento fallido).
     rememberReceivedClientOp_(payload.clientOpId || '');
-    if (payload.action === 'prepareInitialDownload') setInitialDownloadPreparationPhase_(payload.clientOpId || '', 'recibida');
     // withScriptLock_ es el único sitio que sabe esperar el lock, con su timeout y su
     // error LOCK_TIMEOUT reintentable. doPost lo reimplementaba a mano, duplicando el
     // literal de 30 s, el mensaje y el manejo de scriptLockHeld_.
@@ -502,9 +433,7 @@ function doPost(e) {
         return json_({ ok: true, pending: true });
       }
       pendingId = appendPendingPost_(payload);
-      // Nuevo intento en marcha: el error registrado en el anterior ya no aplica.
-      forgetClientOpFailure_(payload.clientOpId || '');
-      return dispatchPostAction_(payload, pendingId);
+      return finishPost_(pendingId, payload, applyPostAction_(payload));
     });
   } catch (err) {
     // Si la acción falla a medias, no dejamos la fila en "Pendientes": si no se
@@ -513,15 +442,9 @@ function doPost(e) {
     if (pendingId) {
       try { removePendingPost_(pendingId); } catch (cleanupErr) {}
     }
-    // El cliente no puede leer esta respuesta (no-cors): dejamos el error registrado
-    // para que lo recoja checkClientOp y lo muestre en vez de reintentar sin fin.
-    // Excepción: un timeout de lock NO es un fallo de la operación — si se registrara,
-    // el cliente la marcaría como error terminal por una colisión transitoria.
-    const message = String(err && err.message || err || '');
-    if (payload && payload.action === 'prepareInitialDownload') setInitialDownloadPreparationPhase_(payload.clientOpId || '', 'error');
-    if (message.indexOf('LOCK_TIMEOUT') !== 0) {
-      rememberClientOpFailure_(payload && payload.clientOpId || '', message);
-    }
+    // El cliente lee esta respuesta: el motivo y su errorCode le llegan directamente y
+    // decide con ellos si reintentar o parar. Ya no hace falta dejarlo apuntado para que
+    // lo recoja una consulta posterior.
     return json_(errorPayload_(err));
   } finally {
     forgetReceivedClientOp_(payload && payload.clientOpId || '');
@@ -531,23 +454,34 @@ function doPost(e) {
 // El token es OBLIGATORIO: sin él, cualquiera con la URL /exec podía leer y
 // modificar todas las finanzas. Configura APP_TOKEN arriba y el mismo valor en
 // Ajustes de la app.
-// Despacho de acciones de doPost. Se ejecuta siempre con el script lock tomado.
-function dispatchPostAction_(payload, pendingId) {
-    if (payload.action === 'prepareInitialDownload') {
-      const sheets = resolveSheets_(payload);
-      setInitialDownloadPreparationPhase_(payload.clientOpId || '', 'preparando movimientos');
-      ensureMovementSidColumnCached_(requireSheet_(sheets.movement));
-      ensureMovementSidColumnCached_(requireSheet_(sheets.future));
-      setInitialDownloadPreparationPhase_(payload.clientOpId || '', 'sincronizando totales');
-      syncInvestmentTotalsSheet_(sheets.investmentTotals, sheets.investment, sheets.movement);
-      setInitialDownloadPreparationPhase_(payload.clientOpId || '', 'lista');
-      return finishPost_(pendingId, payload, { ok: true, prepared: true });
+// Aplica UNA acción y devuelve su respuesta, sin cerrar la petición. Se ejecuta siempre
+// con el script lock tomado. Que "aplicar" esté separado de "cerrar la petición" es lo
+// que permite a batchOps aplicar N acciones seguidas bajo el mismo lock, en vez de pagar
+// un POST, una espera de lock y una ejecución de Apps Script por cada una.
+function applyPostAction_(payload) {
+    if (payload.action === 'batchOps') {
+      // Un alta periódica de 52 fechas era 52 peticiones; aquí es una. Cada acción
+      // interna conserva su propio clientOpId, así que los guardias de idempotencia
+      // (saldos ya aplicados, sids ya escritos) siguen valiendo uno a uno y un reintento
+      // del lote no duplica lo que ya entró.
+      const ops = Array.isArray(payload.ops) ? payload.ops : [];
+      if (!ops.length) throw new Error('VALIDATION: el lote no lleva operaciones.');
+      if (ops.length > 500) throw new Error('VALIDATION: demasiadas operaciones en el lote (máximo 500).');
+      const results = ops.map(function(op) {
+        const merged = Object.assign({}, payload, op);
+        delete merged.ops;
+        const result = applyPostAction_(merged);
+        if (result && result.ok === false) throw new Error(result.error || 'Una operación del lote falló.');
+        if (merged.clientOpId) rememberProcessedClientOp_(merged.clientOpId);
+        return result;
+      });
+      return { ok: true, applied: results.length };
     }
     if (payload.action === 'addMovement') {
       addMovement_(Object.assign({}, payload.movement || {}, { cuenta: payload.account || payload.movement && payload.movement.cuenta || '' }), payload.sheetName || DEFAULT_MOVEMENT_SHEET);
       // Solo los movimientos de inversión cambian el coste y, con él, la hoja de totales.
-      // Para el resto, resincronizarla era trabajo caro tirado — y ahora que las altas
-      // periódicas llegan de una en una, sería ese coste multiplicado por cada fecha.
+      // Para el resto, resincronizarla es trabajo caro tirado — y dentro de un lote sería
+      // ese coste multiplicado por cada fecha.
       if (isInvestmentMovement_(payload.movement)) {
         adjustInvestmentCostFromMovement_(resolveSheets_(payload), payload.sheetName || DEFAULT_MOVEMENT_SHEET, payload.movement, 1);
       }
@@ -562,11 +496,11 @@ function dispatchPostAction_(payload, pendingId) {
           if (movementSid && payload.clientOpId) rememberAppliedBatchSids_(payload.clientOpId, [movementSid]);
         }
       }
-      return finishPost_(pendingId, payload, { ok: true });
+      return { ok: true };
     }
     if (payload.action === 'addFutureMovement') {
       addFutureMovement_(payload.movement, payload.sheetName || DEFAULT_FUTURE_MOVEMENT_SHEET, payload.account || '');
-      return finishPost_(pendingId, payload, { ok: true });
+      return { ok: true };
     }
     if (payload.action === 'updateMovement') {
       updateMovement_(payload.movement, payload.sheetName || DEFAULT_MOVEMENT_SHEET, payload.previousMovement || null);
@@ -574,12 +508,12 @@ function dispatchPostAction_(payload, pendingId) {
         { movement: payload.previousMovement, sign: -1 },
         { movement: payload.movement, sign: 1 }
       ], payload.sheetName || DEFAULT_MOVEMENT_SHEET);
-      return finishPost_(pendingId, payload, { ok: true });
+      return { ok: true };
     }
     if (payload.action === 'deleteMovement') {
       deleteMovement_(payload.rowNumber, payload.sheetName || DEFAULT_MOVEMENT_SHEET, payload.movement || null);
       adjustInvestmentCostFromMovement_(resolveSheets_(payload), payload.sheetName || DEFAULT_MOVEMENT_SHEET, payload.movement, -1);
-      return finishPost_(pendingId, payload, { ok: true });
+      return { ok: true };
     }
     if (payload.action === 'deleteMovementsBatch') {
       deleteMovementsBatch_(payload.movements || [], payload.sheetName || DEFAULT_MOVEMENT_SHEET);
@@ -588,7 +522,7 @@ function dispatchPostAction_(payload, pendingId) {
         (payload.movements || []).map(function(item) { return { movement: item && (item.movement || item), sign: -1 }; }),
         payload.sheetName || DEFAULT_MOVEMENT_SHEET
       );
-      return finishPost_(pendingId, payload, { ok: true });
+      return { ok: true };
     }
     if (payload.action === 'updateInvestment') {
       updateInvestment_(payload.investment || {}, payload.sheetName || DEFAULT_INVESTMENT_SHEET, payload.previousInvestment || null);
@@ -596,65 +530,65 @@ function dispatchPostAction_(payload, pendingId) {
         updateInvestmentQuotesFromYahoo(payload.sheetName || DEFAULT_INVESTMENT_SHEET);
       }
       syncInvestmentTotalsSheet_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.sheetName || DEFAULT_INVESTMENT_SHEET, payload.movementSheet || DEFAULT_MOVEMENT_SHEET);
-      return finishPost_(pendingId, payload, { ok: true, pricesUpdated: Boolean(payload.newInvestment) });
+      return { ok: true, pricesUpdated: Boolean(payload.newInvestment) };
     }
     if (payload.action === 'deleteInvestment') {
       deleteInvestment_(payload.investment || {}, payload.sheetName || DEFAULT_INVESTMENT_SHEET, payload.rowNumber || 0);
       syncInvestmentTotalsSheet_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.sheetName || DEFAULT_INVESTMENT_SHEET, payload.movementSheet || DEFAULT_MOVEMENT_SHEET);
-      return finishPost_(pendingId, payload, { ok: true, investmentDeleted: true });
+      return { ok: true, investmentDeleted: true };
     }
     if (payload.action === 'saveInvestmentCategories') {
       saveInvestmentCategories_(payload.sheetName || DEFAULT_INVESTMENT_SHEET, payload.investmentTypes || [], payload.renames || {}, payload.movementSheet || DEFAULT_MOVEMENT_SHEET, payload.futureMovementSheet || DEFAULT_FUTURE_MOVEMENT_SHEET, payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.investmentEstimateRulesSheet || DEFAULT_INVESTMENT_ESTIMATE_RULES_SHEET, payload.investmentEstimateLedgerSheet || DEFAULT_INVESTMENT_ESTIMATE_LEDGER_SHEET);
       syncInvestmentTotalsSheet_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.sheetName || DEFAULT_INVESTMENT_SHEET, payload.movementSheet || DEFAULT_MOVEMENT_SHEET);
-      return finishPost_(pendingId, payload, { ok: true });
+      return { ok: true };
     }
     if (payload.action === 'saveInvestmentEstimateRules') {
       saveInvestmentEstimateRules_(payload.rules || [], payload.investmentEstimateRulesSheet || DEFAULT_INVESTMENT_ESTIMATE_RULES_SHEET);
-      return finishPost_(pendingId, payload, { ok: true });
+      return { ok: true };
     }
     if (payload.action === 'clearInvestmentEstimates') {
       clearInvestmentEstimates_(payload.investmentEstimateLedgerSheet || DEFAULT_INVESTMENT_ESTIMATE_LEDGER_SHEET, payload.movementSheet || DEFAULT_MOVEMENT_SHEET);
-      return finishPost_(pendingId, payload, { ok: true });
+      return { ok: true };
     }
     if (payload.action === 'saveInvestmentEstimateAllocations') {
       const saved = saveInvestmentEstimateAllocations_(payload.investmentEstimateLedgerSheet || DEFAULT_INVESTMENT_ESTIMATE_LEDGER_SHEET, payload.entries || []);
-      return finishPost_(pendingId, payload, { ok: true, estimatesSaved: saved.length });
+      return { ok: true, estimatesSaved: saved.length };
     }
     if (payload.action === 'saveInvestmentGoals') {
       saveInvestmentGoals_(payload.goals || {}, payload.sheetName || DEFAULT_OBJECTIVE_SHEET);
-      return finishPost_(pendingId, payload, { ok: true });
+      return { ok: true };
     }
     if (payload.action === 'saveInvestmentModePreference') {
       saveInvestmentModePreference_(payload.investmentMode || payload.mode || 'real');
-      return finishPost_(pendingId, payload, { ok: true, investmentModeSaved: true, investmentMode: investmentModePreference_() });
+      return { ok: true, investmentModeSaved: true, investmentMode: investmentModePreference_() };
     }
     if (payload.action === 'saveBanks') {
       saveBanks_(payload.banks || [], payload.bankSheet || DEFAULT_BANK_SHEET);
-      return finishPost_(pendingId, payload, { ok: true });
+      return { ok: true };
     }
     if (payload.action === 'transferBank') {
       // Mover saldo es una suma: sin este guardia, un reenvío duplicaría el dinero.
       const transferSid = String(payload.transferSid || '').trim();
       if (transferSid && wasTransferApplied_(transferSid)) {
-        return finishPost_(pendingId, payload, { ok: true, duplicate: true });
+        return { ok: true, duplicate: true };
       }
       transferBank_(payload.bankSheet || DEFAULT_BANK_SHEET, payload.from, payload.to, Number(payload.amount || 0));
       rememberAppliedTransfer_(transferSid);
-      return finishPost_(pendingId, payload, { ok: true });
+      return { ok: true };
     }
     if (payload.action === 'renameAccount') {
       const renamed = renameAccount_(payload.bankSheet || DEFAULT_BANK_SHEET, payload.movementSheet || DEFAULT_MOVEMENT_SHEET, payload.futureMovementSheet || DEFAULT_FUTURE_MOVEMENT_SHEET, payload.oldName || '', payload.newName || '');
-      return finishPost_(pendingId, payload, Object.assign({ ok: true }, renamed));
+      return Object.assign({ ok: true }, renamed);
     }
     if (payload.action === 'deleteAccount') {
       const deleted = deleteAccount_(payload.bankSheet || DEFAULT_BANK_SHEET, payload.movementSheet || DEFAULT_MOVEMENT_SHEET, payload.futureMovementSheet || DEFAULT_FUTURE_MOVEMENT_SHEET, payload.account || '', Boolean(payload.force));
-      return finishPost_(pendingId, payload, Object.assign({ ok: true }, deleted));
+      return Object.assign({ ok: true }, deleted);
     }
     if (payload.action === 'reassignFutureMovementsAccount') {
       const changed = reassignFutureMovementsAccount_(payload.futureMovementSheet || DEFAULT_FUTURE_MOVEMENT_SHEET, payload.oldName || '', payload.newName || '');
-      return finishPost_(pendingId, payload, { ok: true, changed });
+      return { ok: true, changed };
     }
-    return finishPost_(pendingId, payload, { ok: false, error: 'Unknown action' });
+    return { ok: false, error: 'Unknown action' };
 }
 
 function requireToken_(token) {
@@ -720,11 +654,17 @@ function purgeStalePendingRows_(sheet) {
 }
 
 function finishPost_(pendingId, requestPayload, responsePayload) {
+  // Las escrituras de Sheets quedan en búfer hasta el final de la ejecución. Sin este
+  // flush, otra ejecución (la reconciliación con checkClientOp) podía leer la hoja
+  // "Pendientes" todavía con la fila puesta y responder "sigue en curso" sobre algo ya
+  // terminado, dejando la operación dando vueltas.
+  SpreadsheetApp.flush();
   removePendingPost_(pendingId);
   const response = responsePayload || requestPayload || { ok: true };
   if (response.ok !== false && requestPayload && requestPayload.action) {
     rememberProcessedClientOp_(requestPayload.clientOpId || '');
   }
+  SpreadsheetApp.flush();
   return json_(response);
 }
 
@@ -2748,22 +2688,14 @@ function normalizeGoalKey_(value) {
   return '';
 }
 
-// Única forma de construir la respuesta. Con callback envuelve en JSONP (lo que pide
-// doGet desde el <script>); sin él, JSON a secas (doPost).
-function json_(payload, callback) {
-  // JSONP se ejecuta como JavaScript dentro de un <script>. Caracteres que son
-  // perfectamente válidos dentro de una celda (separadores Unicode de línea o
-  // secuencias HTML pegadas desde una nota) pueden hacer que navegadores móviles
-  // antiguos rechacen el script entero. Se escapan siempre, no solo movimientos.
-  const body = JSON.stringify(payload)
-    .replace(/</g, '\\u003c')
-    .replace(/>/g, '\\u003e')
-    .replace(/&/g, '\\u0026')
-    .replace(/\u2028/g, '\\u2028')
-    .replace(/\u2029/g, '\\u2029');
+// Única forma de construir la respuesta: JSON a secas, para doGet y doPost por igual.
+// El cliente las lee con fetch y JSON.parse. Ya no hace falta el envoltorio
+// JSONP ni escapar <, >, & o los separadores Unicode de línea: aquello solo era necesario
+// porque la respuesta se ejecutaba como JavaScript dentro de un <script>.
+function json_(payload) {
   return ContentService
-    .createTextOutput(callback ? `${callback}(${body});` : body)
-    .setMimeType(callback ? ContentService.MimeType.JAVASCRIPT : ContentService.MimeType.JSON);
+    .createTextOutput(JSON.stringify(payload))
+    .setMimeType(ContentService.MimeType.JSON);
 }
 
 function errorCode_(err) {

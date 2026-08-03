@@ -56,8 +56,7 @@ self.addEventListener("activate", event => {
 });
 
 function isLiveData(url) {
-  return LIVE_DATA_HOSTS.some(host => url.hostname === host || url.hostname.endsWith(`.${host}`))
-    || url.searchParams.has("callback");
+  return LIVE_DATA_HOSTS.some(host => url.hostname === host || url.hostname.endsWith(`.${host}`));
 }
 
 self.addEventListener("fetch", event => {
