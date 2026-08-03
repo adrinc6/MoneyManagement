@@ -187,6 +187,18 @@ test("la descarga inicial puede solicitar una espera sin timeout", async () => {
   }
 });
 
+test("la URL de Apps Script conserva sus parámetros al añadir la consulta", () => {
+  try {
+    app.state.config.scriptUrl = "https://script.google.com/macros/s/id/exec?origen=movil";
+    const url = app.appsScriptGetUrl(new URLSearchParams({ action: "downloadCoreData", callback: "cb" }));
+    assert.equal(url, "https://script.google.com/macros/s/id/exec?origen=movil&action=downloadCoreData&callback=cb");
+    app.state.config.scriptUrl = "https://script.google.com/macros/s/id/dev";
+    assert.throws(() => app.assertAppsScriptDeploymentUrl(), /termina en \/dev/);
+  } finally {
+    app.state.config.scriptUrl = "";
+  }
+});
+
 test("fetchDownloadData no reintenta un payload con ok:false", async () => {
   const original = app.fetchAppsScriptData;
   try {

@@ -2605,6 +2605,7 @@ async function resolveDueFutureMovementsToMove(dueMovements) {
 
 async function fetchAppsScriptData(options = {}) {
   if (!state.config.scriptUrl) throw new Error("falta la URL de Apps Script");
+  assertAppsScriptDeploymentUrl();
   if (navigator.onLine === false) throw new Error("Sin conexión");
   const action = options.action || (options.updateInvestments
     ? "updateInvestmentPrices"
@@ -2631,7 +2632,27 @@ async function fetchAppsScriptData(options = {}) {
   if (options.movementKind) params.set("movementKind", options.movementKind);
   if (Number.isFinite(Number(options.offset))) params.set("offset", String(Number(options.offset)));
   if (Number.isFinite(Number(options.limit))) params.set("limit", String(Number(options.limit)));
-  return jsonp(`${state.config.scriptUrl}?${params.toString()}`, { timeoutMs: options.timeoutMs });
+  return jsonp(appsScriptGetUrl(params), { timeoutMs: options.timeoutMs });
+}
+
+function assertAppsScriptDeploymentUrl() {
+  const url = String(state.config.scriptUrl || "").trim();
+  if (/\/dev(?:[/?#]|$)/i.test(url)) {
+    throw new Error("La URL de Apps Script termina en /dev. En Ajustes usa la URL publicada que termina en /exec.");
+  }
+}
+
+// La URL guardada puede llevar parámetros (por ejemplo, al copiarla desde un
+// navegador). Añadir un segundo '?' convierte action y callback en parte del
+// primer parámetro: Apps Script devuelve una respuesta que el <script> no puede
+// ejecutar y el móvil solo informa "No se pudo leer Apps Script".
+function appsScriptGetUrl(params) {
+  const raw = String(state.config.scriptUrl || "").trim();
+  const hashAt = raw.indexOf("#");
+  const base = hashAt >= 0 ? raw.slice(0, hashAt) : raw;
+  const hash = hashAt >= 0 ? raw.slice(hashAt) : "";
+  const separator = base.includes("?") ? (/[?&]$/.test(base) ? "" : "&") : "?";
+  return `${base}${separator}${params.toString()}${hash}`;
 }
 
 // Las descargas son mucho más caras que un checkClientOp: la primera llamada del arranque
@@ -2667,7 +2688,10 @@ function jsonp(url, { timeoutMs = JSONP_TIMEOUT_MS } = {}) {
       delete window[cb];
     };
     window[cb] = data => { cleanup(); resolve(data); };
-    script.onerror = () => { cleanup(); reject(new Error("no se pudo leer Apps Script")); };
+    script.onerror = () => {
+      cleanup();
+      reject(new Error("No se pudo leer Apps Script. Comprueba en Ajustes que la URL termina en /exec y que el despliegue permite acceder desde el móvil."));
+    };
     // Una descarga inicial puede pedir explícitamente no tener límite temporal: la
     // caché todavía no existe y se prefiere esperar a Apps Script antes que reiniciar
     // el trabajo. El resto de llamadas conserva su límite normal.
@@ -4907,6 +4931,7 @@ function sendAppsScriptBeacon(body) {
 
 async function fireAppsScript(payload) {
   if (navigator.onLine === false) throw new Error("Sin conexión");
+  assertAppsScriptDeploymentUrl();
   const finalPayload = withClientOpId(payload || {});
   const body = appsScriptRequestBody(finalPayload);
   // Apps Script no expone la respuesta de un POST no-CORS hasta terminar la ejecución.
