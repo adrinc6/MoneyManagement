@@ -115,7 +115,7 @@ function safeSetItem(key, value) {
   }
 }
 const DATA_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-const DATA_CACHE_VERSION = 3;
+const DATA_CACHE_VERSION = 4;
 const CACHE_SECTION_KEYS = ["transactions", "futureTransactions", "investments", "investmentTotals", "investmentEstimateRules", "investmentEstimateLedger", "banks", "investmentGoals", "categories"];
 // En móvil una respuesta JSONP muy grande puede terminar como un error genérico del
 // elemento <script>, aunque Apps Script y el token estén bien. 250 filas mantiene cada
@@ -185,7 +185,10 @@ document.addEventListener("DOMContentLoaded", () => {
   renderSyncSettingsPanel();
   renderSettingsPanelTabs();
   syncRefreshButtonLabel("registrar");
-  refreshData({ scope: "all", cacheOnly: true })
+  // La caché se pinta primero dentro de refreshDataImpl, pero el arranque continúa
+  // con una sincronización completa. Usar cacheOnly aquí dejaba sin ver cualquier
+  // movimiento o inversión añadido en Sheets desde la última apertura.
+  refreshData({ scope: "all", initialSync: true })
     .catch(err => logSyncEvent("La carga inicial de datos falló.", "warn", String(err?.message || err)));
   ensureOpQueuePoller();
   window.setTimeout(() => {
@@ -943,6 +946,7 @@ function refreshRequestKey(options = {}) {
     updateInvestments: Boolean(options.updateInvestments),
     scope: options.scope || (options.updateInvestments ? "investments" : "all"),
     cacheOnly: Boolean(options.cacheOnly),
+    initialSync: Boolean(options.initialSync),
     resumeSections: [...(options.resumeSections || [])].sort()
   });
 }
@@ -981,6 +985,7 @@ function refreshData(options = {}) {
 
 async function refreshDataImpl(options = {}) {
   const force = Boolean(options.force);
+  const initialSync = Boolean(options.initialSync);
   const updateInvestments = Boolean(options.updateInvestments);
   const scope = options.scope || (updateInvestments ? "investments" : "all");
   const showProgress = Boolean(options.showProgress || force || updateInvestments);
@@ -995,7 +1000,7 @@ async function refreshDataImpl(options = {}) {
   // La primera descarga construye la caché desde cero: no debe abortarse porque
   // haya tardado mucho. Una reanudación conserva la misma garantía: ya tiene
   // páginas correctas guardadas y solo le faltan las restantes.
-  const initialDownload = !cached && scope === "all" && !updateInvestments;
+  const initialDownload = (!cached || initialSync) && scope === "all" && !updateInvestments;
   const resumingInitialDownload = Boolean(resumeSections.length || cached?.meta?.downloadProgress);
   const unlimitedDownload = initialDownload || resumingInitialDownload;
   const downloadRequestOptions = {
@@ -1022,7 +1027,8 @@ async function refreshDataImpl(options = {}) {
   const dueFutureMovementsFromCache = findDueFutureMovements(cached?.data?.futureTransactions || state.futureTransactions || []);
   const shouldMoveDueFutureMovements = Boolean(scope !== "investments" && scope !== "banks" && dueFutureMovementsFromCache.length);
 
-  if (cached && options.cacheOnly && !force && !updateInvestments && !shouldMoveDueFutureMovements) {
+  const cacheHasPendingDownload = Boolean(cached?.meta?.partial || Object.keys(cached?.meta?.downloadProgress || {}).length);
+  if (cached && options.cacheOnly && !cacheHasPendingDownload && !force && !updateInvestments && !shouldMoveDueFutureMovements) {
     setNotice(
       cacheIsStale(cached)
         ? staleCacheMessage(cached)
@@ -1097,7 +1103,7 @@ async function refreshDataImpl(options = {}) {
       ? resumeSections
       : updateInvestments
       ? ["investments", "investmentTotals", "investmentEstimateRules", "investmentEstimateLedger", "investmentGoals"]
-      : !cached || force
+      : !cached || force || initialSync
         ? requestedSections.filter(section => !skipDirty(section))
         : [];
     if (force && opQueueBusy && requestedSections.some(section => cachedSectionIsDirty(cached, section))) {
@@ -1113,7 +1119,10 @@ async function refreshDataImpl(options = {}) {
 
     // Las estimaciones se descargan por separado y solo en ese modo. No forman parte
     // del arranque normal ni reinician el tiempo de la descarga de datos base.
-    const needsInvestmentEstimates = state.investmentMode === "estimated"
+    // Una sincronización completa debe dejar todas las secciones en caché, aunque
+    // ahora esté seleccionado el modo de inversión real. De lo contrario las reglas
+    // y movimientos estimados quedaban como «Sin datos» hasta visitar ese modo.
+    const needsInvestmentEstimates = (scope === "all" || state.investmentMode === "estimated")
       && neededSections.some(section => ["investmentEstimateRules", "investmentEstimateLedger"].includes(section));
 
     if (shouldMoveDueFutureMovements) {
@@ -1123,7 +1132,7 @@ async function refreshDataImpl(options = {}) {
       setNotice(`Hay ${dueFutureMovementsFromCache.length} movimiento(s) futuro(s) vencido(s). Los muevo y actualizo lo necesario...`, "warn");
     }
 
-    if (cached && neededSections.length && !force && !updateInvestments && !shouldMoveDueFutureMovements) {
+    if (cached && neededSections.length && !force && !initialSync && !updateInvestments && !shouldMoveDueFutureMovements) {
       const changedLabels = neededSections.map(formatCacheSectionName).join(", ");
       syncOptions();
       renderCurrentView();
@@ -1607,13 +1616,40 @@ function dataCacheConfigKey() {
 
 function readDataCache() {
   try {
-    const cached = JSON.parse(localStorage.getItem(DATA_CACHE_KEY) || "null");
+    const cached = expandCacheRecord(JSON.parse(localStorage.getItem(DATA_CACHE_KEY) || "null"));
     if (!cached || cached.configKey !== dataCacheConfigKey() || !cached.data) return null;
     const meta = normalizeCacheMeta(cached);
     return { ...cached, meta, savedAt: meta.savedAt || cached.savedAt || 0 };
   } catch {
     return null;
   }
+}
+
+function compactMovementRows(rows) {
+  return (rows || []).map(row => [row.sid || "", Number(row.rowNumber || 0) || 0,
+    row.fecha || row.date || "", row.tipo || "", row.concepto || "", row.descripcion || "",
+    row.importe ?? row.amount ?? 0, row.cuenta || ""]);
+}
+
+function expandMovementRows(rows) {
+  return (rows || []).map(row => Array.isArray(row) ? {
+    sid: row[0], rowNumber: row[1], fecha: row[2], tipo: row[3], concepto: row[4],
+    descripcion: row[5], importe: row[6], cuenta: row[7]
+  } : row);
+}
+
+function compactCacheRecord(record) {
+  if (!record?.data) return record;
+  return { ...record, compactVersion: 1, data: { ...record.data,
+    transactions: compactMovementRows(record.data.transactions),
+    futureTransactions: compactMovementRows(record.data.futureTransactions) } };
+}
+
+function expandCacheRecord(record) {
+  if (!record?.data || record.compactVersion !== 1) return record;
+  return { ...record, data: { ...record.data,
+    transactions: expandMovementRows(record.data.transactions),
+    futureTransactions: expandMovementRows(record.data.futureTransactions) } };
 }
 
 function writeDataCache(options = {}) {
@@ -1670,62 +1706,26 @@ function isQuotaError(error) {
 
 let quotaWarningAt = 0;
 
-// El caché guarda TODAS las transacciones; en históricos largos puede superar la
-// cuota de localStorage (~5 MB). En vez de tragarnos el error en silencio (lo que
-// dejaría el caché inservible sin avisar), podamos progresivamente las secciones
-// más pesadas y reintentamos, avisando en el panel Sync.
+// La caché es íntegra o no se reemplaza. Guardar solo 400 filas hacía desaparecer
+// meses sin que el usuario pudiera distinguir una copia parcial de una completa.
 function persistDataCache(record) {
-  const payload = { ...record, data: { ...record.data } };
-  const pruneOrder = [
-    "investmentEstimateLedger",
-    "futureTransactions",
-    "transactions"
-  ];
-  let pruned = false;
-  for (let attempt = 0; attempt < pruneOrder.length + 1; attempt++) {
-    try {
-      localStorage.setItem(DATA_CACHE_KEY, JSON.stringify(payload));
-      if (pruned) warnCacheQuota(true);
-      return;
-    } catch (error) {
-      if (!isQuotaError(error)) throw error;
-      const section = pruneOrder[attempt];
-      if (section && Array.isArray(payload.data[section])) {
-        // Conservamos solo lo más reciente de la sección más pesada.
-        payload.data[section] = trimRecentRows(payload.data[section]);
-        payload.meta = { ...(payload.meta || {}), partial: true };
-        pruned = true;
-        continue;
-      }
-      // Ni podando cabe: soltamos el caché para no dejar datos corruptos a medias.
-      try { localStorage.removeItem(DATA_CACHE_KEY); } catch (_) { }
-      warnCacheQuota(false);
-      return;
-    }
+  try {
+    localStorage.setItem(DATA_CACHE_KEY, JSON.stringify(record));
+    return true;
+  } catch (error) {
+    if (!isQuotaError(error)) throw error;
+    warnCacheQuota(false);
+    return false;
   }
-}
-
-function trimRecentRows(rows, keep = 400) {
-  if (!Array.isArray(rows) || rows.length <= keep) return rows;
-  const withDate = rows.every(row => row && (row.fecha || row.date));
-  if (withDate) {
-    return [...rows]
-      .sort((a, b) => String(b.fecha || b.date || "").localeCompare(String(a.fecha || a.date || "")))
-      .slice(0, keep);
-  }
-  return rows.slice(-keep);
 }
 
 function warnCacheQuota(recovered) {
   const now = Date.now();
   if (now - quotaWarningAt < 60000) return;
   quotaWarningAt = now;
-  if (recovered) {
-    logSyncEvent("Caché local llena: se guardó una versión reducida (histórico antiguo se recargará al sincronizar).", "warn");
-    setNotice("Caché local casi llena: se guardó una versión reducida. Los datos siguen a salvo en Sheets.", "warn", 3600);
-  } else {
+  if (!recovered) {
     logSyncEvent("Caché local llena: no se pudo guardar copia local; se descargará desde Sheets al abrir.", "warn");
-    setNotice("No se pudo guardar la caché local (almacenamiento lleno). La app funcionará descargando desde Sheets.", "warn", 3600);
+    setNotice("No caben todos los datos en localStorage. No se guardó una copia incompleta; libera espacio del sitio y actualiza de nuevo.", "warn", 6000);
   }
 }
 
