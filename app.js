@@ -1617,7 +1617,8 @@ function dataCacheConfigKey() {
 function readDataCache() {
   try {
     const cached = expandCacheRecord(JSON.parse(localStorage.getItem(DATA_CACHE_KEY) || "null"));
-    if (!cached || cached.configKey !== dataCacheConfigKey() || !cached.data) return null;
+    if (!cached || Number(cached.meta?.version || 0) !== DATA_CACHE_VERSION
+      || cached.configKey !== dataCacheConfigKey() || !cached.data) return null;
     const meta = normalizeCacheMeta(cached);
     return { ...cached, meta, savedAt: meta.savedAt || cached.savedAt || 0 };
   } catch {
