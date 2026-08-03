@@ -31,6 +31,50 @@ window.addEventListener("online", () => {
   logSyncEvent("Conexión recuperada", "ok");
 });
 
+// El service worker hace skipWaiting + clients.claim: al desplegar una versión nueva toma
+// el control a mitad de sesión mientras sigue corriendo el app.js anterior, y hay que
+// recargar una vez para que HTML y JS sean de la misma versión.
+//
+// hadController es la condición que faltaba. En la PRIMERA visita ningún worker controla
+// la página, así que la instalación inicial también dispara controllerchange: se recargaba
+// sin motivo y, encima, a mitad de la descarga inicial. Solo se recarga cuando el worker
+// nuevo RELEVA a uno anterior.
+const hadServiceWorkerController = Boolean(navigator.serviceWorker?.controller);
+let serviceWorkerReloaded = false;
+let serviceWorkerUpdateWaiting = false;
+
+function shouldReloadForServiceWorker({ hadController, alreadyReloaded, dialogOpen, downloadInFlight } = {}) {
+  return Boolean(hadController) && !alreadyReloaded && !dialogOpen && !downloadInFlight;
+}
+
+function applyServiceWorkerUpdate() {
+  if (!serviceWorkerUpdateWaiting) return;
+  const allowed = shouldReloadForServiceWorker({
+    hadController: hadServiceWorkerController,
+    alreadyReloaded: serviceWorkerReloaded,
+    // Con un diálogo abierto se perdería lo que el usuario esté escribiendo.
+    dialogOpen: Boolean(document.querySelector("dialog[open]")),
+    // Y a mitad de una descarga se perdería el bloque en vuelo.
+    downloadInFlight: Boolean(refreshInFlight)
+  });
+  if (!allowed) return;
+  serviceWorkerReloaded = true;
+  window.location.reload();
+}
+
+if (navigator.serviceWorker) {
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    serviceWorkerUpdateWaiting = true;
+    applyServiceWorkerUpdate();
+  });
+  // Reintento en los dos momentos que desbloquean una recarga aplazada: al cerrarse un
+  // diálogo (close no burbujea, de ahí la captura) y al terminar una descarga.
+  document.addEventListener("close", applyServiceWorkerUpdate, true);
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("sw.js").catch(err => console.warn("SW no registrado", err));
+  });
+}
+
 const DEFAULT_CONFIG = {
   scriptUrl: "",
   appToken: "",
@@ -148,7 +192,6 @@ const state = {
   evolutionRange: loadEvolutionRange(),
   accountGroups: loadAccountGroups(),
   cacheMeta: defaultCacheMeta(),
-  downloadResume: null,
   investmentNotificationsSending: false,
   pendingInvestmentAllocationPrompts: [],
   currentInvestmentAllocationPrompt: null,
@@ -372,7 +415,7 @@ function syncRefreshButtonLabel(viewId = activeViewId()) {
   const btn = document.getElementById("refreshBtn");
   if (!btn) return;
   const isFullDownload = viewId === "ajustes";
-  const resuming = Boolean(state.downloadResume?.sections?.length);
+  const resuming = pendingResumeSections().length > 0;
   const label = resuming ? "Reanudar descarga pendiente" : (isFullDownload ? "Forzar descarga completa ALL desde Sheets" : "Actualizar");
   btn.title = label;
   btn.setAttribute("aria-label", label);
@@ -385,10 +428,11 @@ function syncRefreshButtonLabel(viewId = activeViewId()) {
 
 function refreshActiveViewData() {
   const viewId = activeViewId();
-  if (state.downloadResume?.sections?.length) {
+  const pending = pendingResumeSections();
+  if (pending.length) {
     return refreshData({
-      scope: state.downloadResume.scope || refreshScopeForView(viewId),
-      resumeSections: state.downloadResume.sections,
+      scope: downloadResumeState()?.scope || refreshScopeForView(viewId),
+      resumeSections: pending,
       manualRefresh: true,
       showProgress: true,
       successMessage: "Descarga reanudada desde el último bloque guardado."
@@ -762,22 +806,64 @@ function normalizeCacheMeta(cached = {}) {
   // Conserva la marca de caché podada por falta de espacio: refreshData la usa para
   // forzar la re-descarga de las secciones truncadas.
   if (meta.partial) base.partial = true;
-  if (meta.downloadProgress && typeof meta.downloadProgress === "object") {
-    const progress = {};
-    Object.entries(meta.downloadProgress).forEach(([section, value]) => {
-      if (!CACHE_SECTION_KEYS.includes(section)) return;
-      const nextOffset = Number(value?.nextOffset);
-      const total = Number(value?.total);
-      if (!Number.isFinite(nextOffset) || nextOffset < 0 || !Number.isFinite(total) || total < nextOffset) return;
-      progress[section] = { nextOffset, total };
-    });
-    if (Object.keys(progress).length) base.downloadProgress = progress;
-  }
+  const resume = normalizeDownloadResume(meta.resume);
+  if (resume) base.resume = resume;
   return base;
 }
 
+// Estado ÚNICO de "qué queda por descargar", persistido junto a la caché: las secciones
+// que faltan y, dentro de una sección paginada, el offset alcanzado. Antes esto vivía
+// partido en dos representaciones — state.downloadResume (solo memoria) y
+// meta.downloadProgress —, así que una recarga a mitad de la descarga inicial dejaba
+// datos parciales y perdía la única pista de por dónde continuar.
+function normalizeDownloadResume(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const sections = (Array.isArray(raw.sections) ? raw.sections : []).filter(section => CACHE_SECTION_KEYS.includes(section));
+  const offsets = {};
+  Object.entries(raw.offsets || {}).forEach(([section, value]) => {
+    if (!CACHE_SECTION_KEYS.includes(section)) return;
+    const nextOffset = Number(value?.nextOffset);
+    const total = Number(value?.total);
+    if (!Number.isFinite(nextOffset) || nextOffset < 0 || !Number.isFinite(total) || total < nextOffset) return;
+    offsets[section] = { nextOffset, total };
+  });
+  if (!sections.length && !Object.keys(offsets).length) return null;
+  return { scope: String(raw.scope || "all"), sections, offsets };
+}
+
+function downloadResumeState() {
+  return state.cacheMeta?.resume || null;
+}
+
+// Secciones que quedaron a medias: las que nunca llegaron a descargarse y las paginadas
+// que se cortaron con un offset ya guardado.
+function pendingResumeSections(allowedSections = CACHE_SECTION_KEYS) {
+  const resume = downloadResumeState();
+  if (!resume) return [];
+  return unique([...resume.sections, ...Object.keys(resume.offsets)])
+    .filter(section => allowedSections.includes(section));
+}
+
+function updateDownloadResume(mutate) {
+  const meta = normalizeCacheMeta({ meta: state.cacheMeta, savedAt: Date.now() });
+  const next = mutate({ scope: "all", sections: [], offsets: {}, ...(meta.resume || {}) });
+  const normalized = normalizeDownloadResume(next);
+  if (normalized) meta.resume = normalized;
+  else delete meta.resume;
+  meta.savedAt = Date.now();
+  state.cacheMeta = meta;
+}
+
+function setDownloadResume(scope, sections) {
+  updateDownloadResume(resume => ({ ...resume, scope: scope || resume.scope, sections }));
+}
+
+function clearDownloadResume() {
+  updateDownloadResume(() => null);
+}
+
 function movementDownloadResume(section, cached) {
-  const progress = state.cacheMeta?.downloadProgress?.[section] || cached?.meta?.downloadProgress?.[section];
+  const progress = downloadResumeState()?.offsets?.[section] || cached?.meta?.resume?.offsets?.[section];
   if (!progress || !Number.isFinite(Number(progress.nextOffset)) || Number(progress.nextOffset) <= 0) return {};
   const previousRows = Array.isArray(cached?.data?.[section]) ? cached.data[section] : state[section];
   return {
@@ -787,18 +873,16 @@ function movementDownloadResume(section, cached) {
 }
 
 function setMovementDownloadProgress(section, progress) {
-  const meta = normalizeCacheMeta({ meta: state.cacheMeta, savedAt: Date.now() });
-  meta.downloadProgress = { ...(meta.downloadProgress || {}), [section]: progress };
-  meta.savedAt = Date.now();
-  state.cacheMeta = meta;
+  updateDownloadResume(resume => ({ ...resume, offsets: { ...resume.offsets, [section]: progress } }));
 }
 
 function clearMovementDownloadProgress(section) {
-  if (!state.cacheMeta?.downloadProgress?.[section]) return;
-  const meta = normalizeCacheMeta({ meta: state.cacheMeta, savedAt: Date.now() });
-  delete meta.downloadProgress?.[section];
-  if (!Object.keys(meta.downloadProgress || {}).length) delete meta.downloadProgress;
-  state.cacheMeta = meta;
+  if (!downloadResumeState()?.offsets?.[section]) return;
+  updateDownloadResume(resume => {
+    const offsets = { ...resume.offsets };
+    delete offsets[section];
+    return { ...resume, offsets };
+  });
 }
 
 // Guarda cada página correcta inmediatamente. Si Google corta una petición posterior,
@@ -976,18 +1060,26 @@ async function refreshDataImpl(options = {}) {
   const scope = options.scope || (updateInvestments ? "investments" : "all");
   const showProgress = Boolean(options.showProgress || force || updateInvestments);
   const requestedSections = cacheSectionsForScope(scope);
-  const resumeSections = Array.isArray(options.resumeSections) ? options.resumeSections.filter(section => requestedSections.includes(section)) : [];
   let downloadedSectionsThisRun = [];
   const manualRefresh = Boolean(options.manualRefresh);
   setRefreshLoading(true);
   syncStatusStep(showProgress, refreshStartStatus({ scope, updateInvestments }), "");
 
   const cached = readDataCache();
+  if (cached) state.cacheMeta = normalizeCacheMeta(cached);
+  // Una descarga que se cortó (un corte de red, o el relevo del service worker) deja sus
+  // secciones pendientes anotadas en la caché. El arranque las retoma por su cuenta: antes
+  // se quedaba en "Datos cargados desde caché" sobre datos a medias y hacía falta pulsar
+  // Actualizar a mano.
+  const persistedResume = pendingResumeSections(requestedSections);
+  const resumeSections = Array.isArray(options.resumeSections) && options.resumeSections.length
+    ? options.resumeSections.filter(section => requestedSections.includes(section))
+    : (options.cacheOnly ? persistedResume : []);
   // La primera descarga construye la caché desde cero: no debe abortarse porque
   // haya tardado mucho. Una reanudación conserva la misma garantía: ya tiene
   // páginas correctas guardadas y solo le faltan las restantes.
   const initialDownload = !cached && scope === "all" && !updateInvestments;
-  const resumingInitialDownload = Boolean(resumeSections.length || cached?.meta?.downloadProgress);
+  const resumingInitialDownload = Boolean(resumeSections.length || downloadResumeState());
   const unlimitedDownload = initialDownload || resumingInitialDownload;
   const downloadRequestOptions = {
     showProgress,
@@ -1000,7 +1092,6 @@ async function refreshDataImpl(options = {}) {
     pageGapMs: 0
   };
   if (cached) {
-    state.cacheMeta = normalizeCacheMeta(cached);
     applyDataSnapshot(cached.data);
     syncOptions();
     renderCurrentView();
@@ -1013,7 +1104,7 @@ async function refreshDataImpl(options = {}) {
   const dueFutureMovementsFromCache = findDueFutureMovements(cached?.data?.futureTransactions || state.futureTransactions || []);
   const shouldMoveDueFutureMovements = Boolean(scope !== "investments" && scope !== "banks" && dueFutureMovementsFromCache.length);
 
-  if (cached && options.cacheOnly && !force && !updateInvestments && !shouldMoveDueFutureMovements) {
+  if (cached && options.cacheOnly && !force && !updateInvestments && !shouldMoveDueFutureMovements && !resumeSections.length) {
     setNotice(
       cacheIsStale(cached)
         ? staleCacheMessage(cached)
@@ -1069,6 +1160,9 @@ async function refreshDataImpl(options = {}) {
       downloadedSectionsThisRun = unique([...downloadedSectionsThisRun, ...sections]);
       syncedSections = unique([...syncedSections, ...sections]);
       markCacheSectionsSynced(sections);
+      // Una sección terminada sale de lo pendiente en la misma escritura que sus datos,
+      // así que la caché nunca dice que falta algo que ya está guardado.
+      setDownloadResume(scope, pendingResumeSections().filter(section => !sections.includes(section)));
       syncOptions();
       renderCurrentView();
       writeDataCache({ syncedSections: sections });
@@ -1114,7 +1208,7 @@ async function refreshDataImpl(options = {}) {
       setNotice(`Hay ${dueFutureMovementsFromCache.length} movimiento(s) futuro(s) vencido(s). Los muevo y actualizo lo necesario...`, "warn");
     }
 
-    if (cached && neededSections.length && !force && !updateInvestments && !shouldMoveDueFutureMovements) {
+    if (cached && neededSections.length && !resumeSections.length && !force && !updateInvestments && !shouldMoveDueFutureMovements) {
       const changedLabels = neededSections.map(formatCacheSectionName).join(", ");
       syncOptions();
       renderCurrentView();
@@ -1139,6 +1233,12 @@ async function refreshDataImpl(options = {}) {
       if (showProgress) window.setTimeout(() => setSyncStatus("", ""), 1800);
       return true;
     } else {
+      // Lo pendiente se anota justo ANTES de descargar, no al fallar: si la descarga se
+      // corta sin pasar por el catch (una recarga, cerrar la pestaña), la caché ya sabe
+      // qué falta y el siguiente arranque lo retoma solo.
+      setDownloadResume(scope, neededSections);
+      writeDataCache();
+
       const needsMovements = neededSections.some(section => ["transactions", "futureTransactions"].includes(section));
       const needsCore = neededSections.some(section => ["investments", "investmentTotals", "investmentEstimateRules", "investmentEstimateLedger", "banks", "investmentGoals", "categories"].includes(section));
       const onlyInvestments = neededSections.every(section => ["investments", "investmentTotals", "investmentEstimateRules", "investmentEstimateLedger", "investmentGoals", "categories"].includes(section));
@@ -1194,9 +1294,11 @@ async function refreshDataImpl(options = {}) {
               ...movementDownloadResume("transactions", cached),
               onPage: progress => commitDownloadedMovementPage("transactions", progress, freshData)
             });
+            // El offset se limpia antes de commitear para que una sola escritura de caché
+            // deje la sección completa y sin rastro de progreso a medias.
+            clearMovementDownloadProgress("transactions");
             freshData.transactions = transactions;
             commitDownloadedBlock({ transactions });
-            clearMovementDownloadProgress("transactions");
           }
           if (neededSections.includes("futureTransactions") || movementReconciliationNeeded) {
             const futureTransactions = await downloadMovementPages("future", "movimientos futuros", {
@@ -1204,9 +1306,9 @@ async function refreshDataImpl(options = {}) {
               ...movementDownloadResume("futureTransactions", cached),
               onPage: progress => commitDownloadedMovementPage("futureTransactions", progress, freshData)
             });
+            clearMovementDownloadProgress("futureTransactions");
             freshData.futureTransactions = futureTransactions;
             commitDownloadedBlock({ futureTransactions });
-            clearMovementDownloadProgress("futureTransactions");
           }
         }
       }
@@ -1258,6 +1360,7 @@ async function refreshDataImpl(options = {}) {
     markCacheSectionsSynced(syncedSections);
     // Si se re-descargó el histórico completo, la caché deja de estar podada.
     if (state.cacheMeta?.partial && syncedSections.includes("transactions")) delete state.cacheMeta.partial;
+    clearDownloadResume();
     syncOptions();
     renderCurrentView();
     writeDataCache({ syncedSections });
@@ -1276,19 +1379,19 @@ async function refreshDataImpl(options = {}) {
     ), "ok");
     syncStatusStep(showProgress, "Caché actualizada", "ok");
     logSyncEvent(`Actualización completada: ${syncedSections.length ? syncedSections.join(", ") : "sin cambios"}.`, "ok");
-    state.downloadResume = null;
     syncRefreshButtonLabel();
     renderSyncSettingsPanel();
     if (showProgress) window.setTimeout(() => setSyncStatus("", ""), 2500);
     return true;
   } catch (error) {
     console.error(error);
-    const incompleteSections = Object.keys(state.cacheMeta?.downloadProgress || {});
+    const incompleteSections = Object.keys(downloadResumeState()?.offsets || {});
     const remainingSections = requestedSections.filter(section =>
       !downloadedSectionsThisRun.includes(section) || incompleteSections.includes(section)
     );
-    if (downloadedSectionsThisRun.length && remainingSections.length) {
-      state.downloadResume = { scope, sections: remainingSections };
+    setDownloadResume(scope, remainingSections);
+    writeDataCache();
+    if (remainingSections.length) {
       syncRefreshButtonLabel();
       logSyncEvent(`Descarga parcial guardada; se puede reanudar: ${remainingSections.join(", ")}.`, "warn", error.message || String(error));
     }
@@ -1296,7 +1399,7 @@ async function refreshDataImpl(options = {}) {
       setNotice(lineMessage(
         cached ? "No se pudo actualizar; sigo usando caché." : "No se pudo actualizar; mantengo los datos ya cargados.",
         error.message,
-        state.downloadResume ? "Pulsa Actualizar para reanudar solo los bloques pendientes." : ""
+        remainingSections.length ? "Pulsa Actualizar para reanudar solo los bloques pendientes." : ""
       ), "warn");
       syncStatusStep(showProgress, cached ? "Usando caché" : "Datos mantenidos", "warn");
       logSyncEvent(cached ? "No se pudo actualizar; usando caché." : "No se pudo actualizar; datos existentes mantenidos.", "warn", error.message || String(error));

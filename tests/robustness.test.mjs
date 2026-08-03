@@ -385,3 +385,60 @@ test("cambiar de semanal a mensual empieza sin selección", () => {
   assert.equal(picker.innerHTML.includes("checked"), false,
     "los días de la semana no se arrastran a los días del mes");
 });
+
+test("la primera instalación del service worker no recarga la página", () => {
+  // El bug: sw.js hace skipWaiting + clients.claim, así que en la PRIMERA visita la
+  // página pasa de no-controlada a controlada y controllerchange disparaba una recarga
+  // que además cortaba la descarga inicial. Solo debe recargar cuando releva a otro.
+  assert.equal(app.shouldReloadForServiceWorker({
+    hadController: false, alreadyReloaded: false, dialogOpen: false, downloadInFlight: false
+  }), false, "instalación inicial: no se recarga");
+
+  assert.equal(app.shouldReloadForServiceWorker({
+    hadController: true, alreadyReloaded: false, dialogOpen: false, downloadInFlight: false
+  }), true, "actualización sobre un worker anterior: sí se recarga");
+});
+
+test("la recarga por actualización espera a que no haya trabajo que perder", () => {
+  const base = { hadController: true, alreadyReloaded: false, dialogOpen: false, downloadInFlight: false };
+
+  assert.equal(app.shouldReloadForServiceWorker({ ...base, downloadInFlight: true }), false,
+    "no se recarga a mitad de una descarga: se perdería el bloque en vuelo");
+  assert.equal(app.shouldReloadForServiceWorker({ ...base, dialogOpen: true }), false,
+    "no se recarga con un diálogo abierto: se perdería lo que el usuario escribe");
+  assert.equal(app.shouldReloadForServiceWorker({ ...base, alreadyReloaded: true }), false,
+    "nunca se recarga dos veces");
+});
+
+test("la reanudación de una descarga sobrevive a una recarga de la página", () => {
+  // Antes esto vivía en state.downloadResume, solo en memoria: al recargar a mitad de la
+  // descarga inicial se perdía la única pista de qué faltaba y la app se quedaba mostrando
+  // datos parciales como si estuvieran completos.
+  const app = loadApp();
+  app.setDownloadResume("all", ["transactions", "banks"]);
+  app.setMovementDownloadProgress("transactions", { nextOffset: 2000, total: 5000 });
+
+  // Una recarga = releer la caché persistida y normalizarla de cero.
+  const persisted = JSON.parse(JSON.stringify({ meta: app.state.cacheMeta }));
+  const app2 = loadApp();
+  app2.state.cacheMeta = app2.normalizeCacheMeta(persisted);
+
+  assert.deepEqual(Array.from(app2.pendingResumeSections()).sort(), ["banks", "transactions"]);
+  const resumed = app2.movementDownloadResume("transactions", null);
+  assert.equal(resumed.startOffset, 2000, "se retoma en el offset guardado, no desde la página 1");
+  assert.equal(resumed.initialRows.length, 0);
+});
+
+test("terminar una descarga deja la caché sin nada pendiente", () => {
+  const app = loadApp();
+  app.setDownloadResume("all", ["transactions"]);
+  app.setMovementDownloadProgress("transactions", { nextOffset: 1000, total: 1000 });
+  assert.equal(app.pendingResumeSections().length, 1);
+
+  app.clearMovementDownloadProgress("transactions");
+  app.clearDownloadResume();
+
+  assert.equal(app.pendingResumeSections().length, 0);
+  assert.equal(app.normalizeCacheMeta({ meta: app.state.cacheMeta }).resume, undefined,
+    "sin nada pendiente no queda rastro de reanudación en la caché");
+});
