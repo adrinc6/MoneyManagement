@@ -51,6 +51,8 @@ export function loadApp() {
     Date,
     Math,
     JSON,
+    URL,
+    URLSearchParams,
     localStorage,
     navigator: { onLine: true },
     setTimeout: immediateTimeout,
@@ -65,6 +67,8 @@ export function loadApp() {
     setInterval: () => 0,
     clearInterval: noop,
     crypto: globalThis.crypto,
+    URL,
+    URLSearchParams,
     localStorage
   };
   context.document = documentStub;

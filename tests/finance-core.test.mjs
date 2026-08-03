@@ -187,13 +187,16 @@ test("la descarga inicial puede solicitar una espera sin timeout", async () => {
   }
 });
 
-test("la URL de Apps Script conserva sus parámetros al añadir la consulta", () => {
+test("la URL de Apps Script reemplaza parámetros antiguos y elimina fragmentos", () => {
   try {
-    app.state.config.scriptUrl = "https://script.google.com/macros/s/id/exec?origen=movil";
-    const url = app.appsScriptGetUrl(new URLSearchParams({ action: "downloadCoreData", callback: "cb" }));
-    assert.equal(url, "https://script.google.com/macros/s/id/exec?origen=movil&action=downloadCoreData&callback=cb");
+    app.state.config.scriptUrl = "https://script.google.com/macros/s/id/exec?origen=movil&action=antigua&callback=viejo#fragmento";
+    const url = app.appsScriptGetUrl(new URLSearchParams({ action: "downloadCoreData" }));
+    assert.equal(url, "https://script.google.com/macros/s/id/exec?origen=movil&action=downloadCoreData&callback=viejo");
+    assert.equal(app.appsScriptJsonpUrl(url, "nuevo"), "https://script.google.com/macros/s/id/exec?origen=movil&action=downloadCoreData&callback=nuevo");
     app.state.config.scriptUrl = "https://script.google.com/macros/s/id/dev";
     assert.throws(() => app.assertAppsScriptDeploymentUrl(), /termina en \/dev/);
+    app.state.config.scriptUrl = "https://script.google.com/macros/s/id/editor";
+    assert.throws(() => app.assertAppsScriptDeploymentUrl(), /terminar en \/exec/);
   } finally {
     app.state.config.scriptUrl = "";
   }

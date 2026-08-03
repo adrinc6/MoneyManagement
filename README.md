@@ -178,9 +178,16 @@ Si dejas el token vacío, no se manda nada y el resto de la app funciona igual.
 2. Ve a `Extensiones > Apps Script`.
 3. Pega el contenido de `apps-script.gs`.
 4. **Define tu propio `APP_TOKEN`** (obligatorio: es la única protección del endpoint).
-5. Despliega como `Aplicación web`.
-6. Copia la URL `/exec`.
+5. Despliega como `Aplicación web`, ejecutada como **tú** y con acceso para
+   **cualquiera**. Es imprescindible para que la PWA pueda leerla desde un móvil
+   sin una sesión de Google concreta; el `APP_TOKEN` sigue protegiendo los datos.
+6. Copia la URL publicada que termina en `/exec` (no la URL de prueba `/dev`).
 7. Abre la app, entra en `Ajustes`, pega la URL y **el mismo token**, y guarda.
+
+Desde el navegador del móvil, abrir esa URL `/exec` debe devolver una respuesta
+de Apps Script (aunque indique que falta el token). Si redirige a inicio de sesión
+o muestra una página de permisos, revisa el acceso del despliegue antes de usarla
+en la app.
 
 > El token es obligatorio. Sin él, cualquiera que conozca tu URL `/exec` podría
 > leer y modificar tus finanzas. Si dejas `APP_TOKEN` vacío, el backend rechaza

@@ -2640,19 +2640,33 @@ function assertAppsScriptDeploymentUrl() {
   if (/\/dev(?:[/?#]|$)/i.test(url)) {
     throw new Error("La URL de Apps Script termina en /dev. En Ajustes usa la URL publicada que termina en /exec.");
   }
+  try {
+    const parsed = new URL(url);
+    if (!/\/exec\/?$/i.test(parsed.pathname)) {
+      throw new Error("La URL de Apps Script debe ser la del despliegue y terminar en /exec.");
+    }
+  } catch (error) {
+    if (String(error?.message || error).includes("debe ser")) throw error;
+    throw new Error("La URL de Apps Script no es válida. En Ajustes pega la URL completa del despliegue /exec.");
+  }
 }
 
-// La URL guardada puede llevar parámetros (por ejemplo, al copiarla desde un
-// navegador). Añadir un segundo '?' convierte action y callback en parte del
-// primer parámetro: Apps Script devuelve una respuesta que el <script> no puede
-// ejecutar y el móvil solo informa "No se pudo leer Apps Script".
+// Se normaliza la URL copiada desde el navegador: se eliminan fragmentos y se
+// sustituyen los parámetros de la app. Es especialmente importante reemplazar
+// callback, porque un callback antiguo produce una respuesta JSONP que el móvil
+// no puede ejecutar aunque Apps Script haya respondido correctamente.
 function appsScriptGetUrl(params) {
-  const raw = String(state.config.scriptUrl || "").trim();
-  const hashAt = raw.indexOf("#");
-  const base = hashAt >= 0 ? raw.slice(0, hashAt) : raw;
-  const hash = hashAt >= 0 ? raw.slice(hashAt) : "";
-  const separator = base.includes("?") ? (/[?&]$/.test(base) ? "" : "&") : "?";
-  return `${base}${separator}${params.toString()}${hash}`;
+  const url = new URL(String(state.config.scriptUrl || "").trim());
+  url.hash = "";
+  params.forEach((value, key) => url.searchParams.set(key, value));
+  return url.toString();
+}
+
+function appsScriptJsonpUrl(url, callback) {
+  const parsed = new URL(url);
+  parsed.hash = "";
+  parsed.searchParams.set("callback", callback);
+  return parsed.toString();
 }
 
 // Las descargas son mucho más caras que un checkClientOp: la primera llamada del arranque
@@ -2680,7 +2694,6 @@ function jsonp(url, { timeoutMs = JSONP_TIMEOUT_MS, confirmationCheck = false } 
   return new Promise((resolve, reject) => {
     const cb = `moneyJsonp_${Date.now()}_${Math.random().toString(36).slice(2)}`;
     const script = document.createElement("script");
-    const sep = url.includes("?") ? "&" : "?";
     let timer = null;
     const cleanup = () => {
       if (timer) { window.clearTimeout(timer); timer = null; }
@@ -2692,7 +2705,7 @@ function jsonp(url, { timeoutMs = JSONP_TIMEOUT_MS, confirmationCheck = false } 
       cleanup();
       reject(new Error(confirmationCheck
         ? "No se pudo comprobar todavía la confirmación."
-        : "No se pudo leer Apps Script. Comprueba en Ajustes que la URL termina en /exec y que el despliegue permite acceder desde el móvil."));
+        : "No se pudo conectar con Apps Script desde este móvil. Abre la URL /exec en el navegador del móvil: si pide iniciar sesión o no abre, revisa el acceso del despliegue."));
     };
     // Una descarga inicial puede pedir explícitamente no tener límite temporal: la
     // caché todavía no existe y se prefiere esperar a Apps Script antes que reiniciar
@@ -2703,7 +2716,7 @@ function jsonp(url, { timeoutMs = JSONP_TIMEOUT_MS, confirmationCheck = false } 
         reject(new Error(confirmationCheck ? "La confirmación todavía no respondió." : "Apps Script no respondió a tiempo"));
       }, Number(timeoutMs));
     }
-    script.src = `${url}${sep}callback=${cb}`;
+    script.src = appsScriptJsonpUrl(url, cb);
     document.body.appendChild(script);
   });
 }
