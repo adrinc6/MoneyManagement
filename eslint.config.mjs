@@ -42,7 +42,8 @@ const nodeGlobals = {
   process: "readonly",
   console: "readonly",
   globalThis: "readonly",
-  URL: "readonly"
+  URL: "readonly",
+  URLSearchParams: "readonly"
 };
 
 export default [
