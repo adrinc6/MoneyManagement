@@ -143,6 +143,7 @@ const state = {
   evolutionRange: loadEvolutionRange(),
   accountGroups: loadAccountGroups(),
   cacheMeta: defaultCacheMeta(),
+  downloadResume: null,
   investmentNotificationsSending: false,
   pendingInvestmentAllocationPrompts: [],
   currentInvestmentAllocationPrompt: null,
@@ -366,15 +367,28 @@ function syncRefreshButtonLabel(viewId = activeViewId()) {
   const btn = document.getElementById("refreshBtn");
   if (!btn) return;
   const isFullDownload = viewId === "ajustes";
-  const label = isFullDownload ? "Forzar descarga completa ALL desde Sheets" : "Actualizar";
+  const resuming = Boolean(state.downloadResume?.sections?.length);
+  const label = resuming ? "Reanudar descarga pendiente" : (isFullDownload ? "Forzar descarga completa ALL desde Sheets" : "Actualizar");
   btn.title = label;
   btn.setAttribute("aria-label", label);
-  btn.classList.toggle("refresh-all", isFullDownload);
-  btn.querySelector(".refresh-all-label")?.classList.toggle("hidden", !isFullDownload);
+  btn.classList.toggle("refresh-all", isFullDownload || resuming);
+  const text = btn.querySelector(".refresh-all-label");
+  if (text && resuming) text.textContent = "Reanudar";
+  if (text && !resuming) text.textContent = "ALL";
+  text?.classList.toggle("hidden", !isFullDownload && !resuming);
 }
 
 function refreshActiveViewData() {
   const viewId = activeViewId();
+  if (state.downloadResume?.sections?.length) {
+    return refreshData({
+      scope: state.downloadResume.scope || refreshScopeForView(viewId),
+      resumeSections: state.downloadResume.sections,
+      manualRefresh: true,
+      showProgress: true,
+      successMessage: "Descarga reanudada desde el último bloque guardado."
+    });
+  }
   if (viewId === "ajustes") return forceFullRefreshFromSettings();
   if (viewId === "registrar") return compareLocalWithSheets();
 
@@ -664,7 +678,31 @@ function setInvestmentEstimateModeFromToggle(event) {
   syncInvestmentEstimateModeUi();
   refreshChartTheme();
   setNotice(state.investmentMode === "estimated" ? "Modo estimación activado." : "Modo real activado.", "ok", 1800);
+  if (state.investmentMode === "estimated") {
+    loadInvestmentEstimatesForMode().catch(error => {
+      setNotice(lineMessage("No se pudieron cargar las estimaciones.", error.message || String(error)), "warn");
+      logSyncEvent("No se pudieron cargar las estimaciones al activar el modo.", "warn", error.message || String(error));
+    });
+  }
   saveInvestmentModePreference();
+}
+
+async function loadInvestmentEstimatesForMode() {
+  if (!state.config.scriptUrl) return false;
+  setSyncStatus("Descargando reglas\ny estimaciones", "");
+  const payload = await fetchDownloadData({ action: "downloadInvestmentEstimates" }, { label: "estimaciones", showProgress: true, maxAttempts: 1 });
+  assertPayloadOk(payload);
+  applyDataSnapshot({
+    investmentEstimateRules: payload.investmentEstimateRules || [],
+    investmentEstimateLedger: payload.investmentEstimateLedger || []
+  }, { onlyPresentSections: true });
+  markCacheSectionsSynced(["investmentEstimateRules", "investmentEstimateLedger"]);
+  syncOptions();
+  renderCurrentView();
+  writeDataCache({ syncedSections: ["investmentEstimateRules", "investmentEstimateLedger"] });
+  setSyncStatus("Estimaciones cargadas", "ok");
+  window.setTimeout(() => setSyncStatus("", ""), 1800);
+  return true;
 }
 
 function saveInvestmentModePreference() {
@@ -860,6 +898,8 @@ async function refreshDataImpl(options = {}) {
   const scope = options.scope || (updateInvestments ? "investments" : "all");
   const showProgress = Boolean(options.showProgress || force || updateInvestments);
   const requestedSections = cacheSectionsForScope(scope);
+  const resumeSections = Array.isArray(options.resumeSections) ? options.resumeSections.filter(section => requestedSections.includes(section)) : [];
+  let downloadedSectionsThisRun = [];
   const manualRefresh = Boolean(options.manualRefresh);
   setRefreshLoading(true);
   syncStatusStep(showProgress, refreshStartStatus({ scope, updateInvestments }), "");
@@ -920,10 +960,26 @@ async function refreshDataImpl(options = {}) {
   }
 
   try {
+    // En un primer arranque, la parte que puede ser pesada (SID y totales) se prepara
+    // una vez por POST y se sondea. Las lecturas posteriores ya son bloques pequeños.
+    if (!cached && scope === "all" && !updateInvestments && !shouldMoveDueFutureMovements) {
+      await prepareInitialDownload(showProgress);
+    }
     const flushedPending = await flushOpQueueBeforeDownload({ showProgress });
     let freshData = {};
     let movedFutureMovements = [];
     let syncedSections = [];
+    const commitDownloadedBlock = block => {
+      if (!Object.keys(block || {}).length) return;
+      applyDataSnapshot(block, { onlyPresentSections: true });
+      const sections = syncedSectionsFromData(block);
+      downloadedSectionsThisRun = unique([...downloadedSectionsThisRun, ...sections]);
+      syncedSections = unique([...syncedSections, ...sections]);
+      markCacheSectionsSynced(sections);
+      syncOptions();
+      renderCurrentView();
+      writeDataCache({ syncedSections: sections });
+    };
 
     // Una sección "dirty" (con cambios locales sin confirmar) no se descarga para no
     // pisarlos, PERO con un refresh forzado y la cola drenada (o muerta en error) sí:
@@ -935,7 +991,9 @@ async function refreshDataImpl(options = {}) {
       if (force && !opQueueBusy) return false;
       return true;
     };
-    let neededSections = updateInvestments
+    let neededSections = resumeSections.length
+      ? resumeSections
+      : updateInvestments
       ? ["investments", "investmentTotals", "investmentEstimateRules", "investmentEstimateLedger", "investmentGoals"]
       : !cached || force
         ? requestedSections.filter(section => !skipDirty(section))
@@ -1026,24 +1084,27 @@ async function refreshDataImpl(options = {}) {
             investmentTotals: core.investmentTotals || state.investmentTotals,
             categories: core.categories || state.categories
           };
+          commitDownloadedBlock({
+            investments: freshData.investments,
+            banks: freshData.banks,
+            investmentGoals: freshData.investmentGoals,
+            investmentTotals: freshData.investmentTotals,
+            categories: freshData.categories
+          });
         }
         const movementReconciliationNeeded = moveDueNow && !movedFutureMovements.length;
         if (needsMovements || movementReconciliationNeeded) {
           syncStatusStep(showProgress, movementReconciliationNeeded ? "Reconciliando movimientos" : "Descargando movimientos", "");
-          const movementDownloads = [];
           if (neededSections.includes("transactions") || movementReconciliationNeeded) {
-            movementDownloads.push(downloadMovementPages("realized", "movimientos", { showProgress }));
-          } else {
-            movementDownloads.push(Promise.resolve(null));
+            const transactions = await downloadMovementPages("realized", "movimientos", { showProgress });
+            freshData.transactions = transactions;
+            commitDownloadedBlock({ transactions });
           }
           if (neededSections.includes("futureTransactions") || movementReconciliationNeeded) {
-            movementDownloads.push(downloadMovementPages("future", "movimientos futuros", { showProgress }));
-          } else {
-            movementDownloads.push(Promise.resolve(null));
+            const futureTransactions = await downloadMovementPages("future", "movimientos futuros", { showProgress });
+            freshData.futureTransactions = futureTransactions;
+            commitDownloadedBlock({ futureTransactions });
           }
-          const [transactions, futureTransactions] = await Promise.all(movementDownloads);
-          if (transactions) freshData.transactions = transactions;
-          if (futureTransactions) freshData.futureTransactions = futureTransactions;
         }
       }
     }
@@ -1112,15 +1173,24 @@ async function refreshDataImpl(options = {}) {
     ), "ok");
     syncStatusStep(showProgress, "Caché actualizada", "ok");
     logSyncEvent(`Actualización completada: ${syncedSections.length ? syncedSections.join(", ") : "sin cambios"}.`, "ok");
+    state.downloadResume = null;
+    syncRefreshButtonLabel();
     renderSyncSettingsPanel();
     if (showProgress) window.setTimeout(() => setSyncStatus("", ""), 2500);
     return true;
   } catch (error) {
     console.error(error);
+    const remainingSections = requestedSections.filter(section => !downloadedSectionsThisRun.includes(section));
+    if (downloadedSectionsThisRun.length && remainingSections.length) {
+      state.downloadResume = { scope, sections: remainingSections };
+      syncRefreshButtonLabel();
+      logSyncEvent(`Descarga parcial guardada; se puede reanudar: ${remainingSections.join(", ")}.`, "warn", error.message || String(error));
+    }
     if (cached || hasAnyLoadedData()) {
       setNotice(lineMessage(
         cached ? "No se pudo actualizar; sigo usando caché." : "No se pudo actualizar; mantengo los datos ya cargados.",
-        error.message
+        error.message,
+        state.downloadResume ? "Pulsa Actualizar para reanudar solo los bloques pendientes." : ""
       ), "warn");
       syncStatusStep(showProgress, cached ? "Usando caché" : "Datos mantenidos", "warn");
       logSyncEvent(cached ? "No se pudo actualizar; usando caché." : "No se pudo actualizar; datos existentes mantenidos.", "warn", error.message || String(error));
@@ -2562,25 +2632,25 @@ async function fetchAppsScriptData(options = {}) {
 // puede tener que sincronizar la hoja de totales y leer varias hojas enteras. Con el techo
 // corto de JSONP_TIMEOUT_MS se abandonaba a los 20 s aunque el servidor fuese a responder.
 const DOWNLOAD_TIMEOUT_MS = 180000;
-const DOWNLOAD_MAX_ATTEMPTS = 3;
-const DOWNLOAD_RETRY_DELAYS_MS = [3000, 8000];
+const DOWNLOAD_MAX_ATTEMPTS = 1;
+const INITIAL_PREPARATION_TIMEOUT_MS = 180000;
 
 // Reintenta una descarga ante fallos de red o de timeout. Merece la pena porque el intento
 // que expira NO cancela la ejecución de Apps Script: normalmente termina el trabajo caro
 // (sincronizar totales, rellenar la columna SID) y el siguiente intento va mucho más
 // rápido. Un payload con ok:false no se reintenta: lo valida assertPayloadOk en el llamante.
-async function fetchDownloadData(options = {}, { label = "datos", showProgress = false } = {}) {
+async function fetchDownloadData(options = {}, { label = "datos", showProgress = false, maxAttempts = DOWNLOAD_MAX_ATTEMPTS } = {}) {
   let lastError = null;
-  for (let attempt = 1; attempt <= DOWNLOAD_MAX_ATTEMPTS; attempt++) {
+  const attempts = Math.max(1, Number(maxAttempts) || 1);
+  for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
       return await fetchAppsScriptData({ ...options, timeoutMs: DOWNLOAD_TIMEOUT_MS });
     } catch (error) {
       lastError = error;
-      if (attempt === DOWNLOAD_MAX_ATTEMPTS) break;
-      const delay = DOWNLOAD_RETRY_DELAYS_MS[attempt - 1] ?? DOWNLOAD_RETRY_DELAYS_MS[DOWNLOAD_RETRY_DELAYS_MS.length - 1];
-      logSyncEvent(`Reintentando descarga de ${label} (intento ${attempt + 1} de ${DOWNLOAD_MAX_ATTEMPTS}).`, "warn", error.message || String(error));
-      syncStatusStep(showProgress, `Reintentando descarga\nIntento ${attempt + 1} de ${DOWNLOAD_MAX_ATTEMPTS}`, "warn");
-      await sleep(delay);
+      if (attempt === attempts) break;
+      logSyncEvent(`Reintentando descarga de ${label} (intento ${attempt + 1} de ${attempts}).`, "warn", error.message || String(error));
+      syncStatusStep(showProgress, `Reintentando descarga\nIntento ${attempt + 1} de ${attempts}`, "warn");
+      await sleep(3000);
     }
   }
   throw lastError || new Error("No se pudo descargar");
@@ -4805,9 +4875,6 @@ async function saveBanks() {
   }
 }
 
-// Cada operación viaja sola, así que el cuerpo es pequeño y no hace falta el margen que
-// necesitaban los lotes. Un timeout más corto detecta antes los envíos que no salen.
-const POST_TIMEOUT_MS = 30000;
 const POST_CONTENT_TYPE = "text/plain;charset=utf-8";
 
 function appsScriptRequestBody(payload) {
@@ -4843,33 +4910,51 @@ async function fireAppsScript(payload) {
   if (navigator.onLine === false) throw new Error("Sin conexión");
   const finalPayload = withClientOpId(payload || {});
   const body = appsScriptRequestBody(finalPayload);
-  // Con mode:"no-cors" no leemos la respuesta, pero sin timeout un POST colgado
-  // dejaría la operación en estado "sending" indefinidamente. Abortamos para que
-  // la cola la marque como "retry" y la reintente en el siguiente ciclo.
-  const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
-  const timer = controller ? window.setTimeout(() => controller.abort(), POST_TIMEOUT_MS) : null;
+  // Apps Script no expone la respuesta de un POST no-CORS hasta terminar la ejecución.
+  // sendBeacon confirma que el navegador lo ha aceptado sin esperar ese trabajo; a partir
+  // de aquí la única fuente de verdad es checkClientOp cada cinco segundos.
+  if (sendAppsScriptBeacon(body)) return finalPayload;
+  // Alternativa para navegadores sin Beacon. Se lanza sin esperar: si termina tarde o
+  // falla, el sondeo decide tras un minuto sin emitir un segundo POST automático.
   try {
-    await fetch(state.config.scriptUrl, {
+    fetch(state.config.scriptUrl, {
       method: "POST",
       mode: "no-cors",
-      // El cuerpo es pequeño (muy por debajo del límite de 64 KB de keepalive), así que
-      // el envío sobrevive a que la app pase a segundo plano o se cierre la pestaña.
       keepalive: true,
-      signal: controller ? controller.signal : undefined,
       headers: { "Content-Type": POST_CONTENT_TYPE },
       body
-    });
+    }).catch(error => logSyncEvent("El navegador no pudo despachar el POST; se comprobará durante un minuto.", "warn", error.message || String(error)));
   } catch (error) {
-    if (error && error.name === "AbortError") throw new Error("El envío tardó demasiado; se reintentará");
-    if (sendAppsScriptBeacon(body)) {
-      logSyncEvent("fetch falló; enviado con sendBeacon.", "warn", `${error.name || "Error"}: ${error.message || String(error)}`);
-      return finalPayload;
-    }
-    throw error;
-  } finally {
-    if (timer) window.clearTimeout(timer);
+    throw new Error(`No se pudo iniciar el envío: ${error.message || error}`);
   }
   return finalPayload;
+}
+
+function initialPreparationStatus(phase = "") {
+  const labels = {
+    recibida: "Preparación recibida\nEsperando turno",
+    "preparando movimientos": "Preparando movimientos\nAsignando identificadores",
+    "sincronizando totales": "Sincronizando totales\nCalculando inversión",
+    lista: "Preparación completada"
+  };
+  return labels[phase] || "Preparando descarga inicial";
+}
+
+async function prepareInitialDownload(showProgress = false) {
+  const clientOpId = createSid("prepare");
+  await fireAppsScript({ action: "prepareInitialDownload", clientOpId });
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < INITIAL_PREPARATION_TIMEOUT_MS) {
+    const status = await fetchAppsScriptData({ action: "checkClientOp", clientOpId });
+    if (status?.ok && status.completed) {
+      syncStatusStep(showProgress, initialPreparationStatus(status.phase || "lista"), "ok");
+      return true;
+    }
+    if (status?.ok && status.failed) throw new Error(status.error || "La preparación inicial fue rechazada.");
+    syncStatusStep(showProgress, initialPreparationStatus(status?.phase), "");
+    await sleep(OP_POLL_INTERVAL_MS);
+  }
+  throw new Error("La preparación inicial no confirmó su finalización en tres minutos. Puedes reanudar la descarga sin repetir los bloques ya guardados.");
 }
 
 function createSid(prefix = "id") {

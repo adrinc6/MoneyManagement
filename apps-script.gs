@@ -227,6 +227,25 @@ function receivedClientOpsKey_() {
   return 'moneyReceivedClientOps';
 }
 
+function initialDownloadPreparationKey_() {
+  return 'moneyInitialDownloadPreparation';
+}
+
+function setInitialDownloadPreparationPhase_(clientOpId, phase) {
+  if (!clientOpId) return;
+  const now = Date.now();
+  const items = readBoundedList_(initialDownloadPreparationKey_())
+    .filter(function(item) { return item && item.id !== clientOpId && now - Number(item.at || 0) < 15 * 60 * 1000; });
+  items.push({ id: clientOpId, phase: phase || 'recibida', at: now });
+  storeBoundedList_(initialDownloadPreparationKey_(), items);
+}
+
+function initialDownloadPreparationPhase_(clientOpId) {
+  if (!clientOpId) return '';
+  const item = readBoundedList_(initialDownloadPreparationKey_()).find(function(entry) { return entry && entry.id === clientOpId; });
+  return item ? String(item.phase || '') : '';
+}
+
 // Marca "recibida, esperando turno". La fila de "Pendientes" solo se escribe DESPUÉS
 // de obtener el script lock, así que durante esa espera (hasta 30 s) checkClientOp
 // respondía "no sé nada" y el cliente lo contaba como intento fallido, agotando los
@@ -299,20 +318,21 @@ function movementSidHeader_() {
 
 function buildClientOpStatusPayload_(clientOpId) {
   if (!clientOpId) return { ok: true, completed: false, pending: false };
-  if (wasClientOpProcessed_(clientOpId)) return { ok: true, completed: true, pending: false };
+  const phase = initialDownloadPreparationPhase_(clientOpId);
+  if (wasClientOpProcessed_(clientOpId)) return { ok: true, completed: true, pending: false, phase: phase || 'lista' };
   // "pending" gana al último error: si hay un reintento en curso, el error anterior
   // ya no describe el estado actual de la operación.
-  if (isClientOpPending_(clientOpId)) return { ok: true, completed: false, pending: true };
+  if (isClientOpPending_(clientOpId)) return { ok: true, completed: false, pending: true, phase: phase || 'recibida' };
   // Recibida pero todavía esperando el script lock: sigue viva, no es un fallo.
-  if (isClientOpReceived_(clientOpId)) return { ok: true, completed: false, pending: true };
+  if (isClientOpReceived_(clientOpId)) return { ok: true, completed: false, pending: true, phase: phase || 'recibida' };
   const failure = clientOpFailure_(clientOpId);
   if (failure) {
     // retryable: fallos transitorios (lock ocupado) que el cliente debe reintentar
     // con su backoff normal en vez de detener la operación con error terminal.
     const retryable = String(failure).indexOf('LOCK_TIMEOUT') === 0;
-    return { ok: true, completed: false, pending: false, failed: true, retryable, error: failure };
+    return { ok: true, completed: false, pending: false, failed: true, retryable, phase, error: failure };
   }
-  return { ok: true, completed: false, pending: false };
+  return { ok: true, completed: false, pending: false, phase };
 }
 
 // Guarda una lista acotada en DocumentProperties (límite de 9 KB por valor),
@@ -470,6 +490,7 @@ function doPost(e) {
     // "pendiente" mientras esta petición espera su turno, en vez de "no sé nada"
     // (que el cliente contabilizaba como intento fallido).
     rememberReceivedClientOp_(payload.clientOpId || '');
+    if (payload.action === 'prepareInitialDownload') setInitialDownloadPreparationPhase_(payload.clientOpId || '', 'recibida');
     // withScriptLock_ es el único sitio que sabe esperar el lock, con su timeout y su
     // error LOCK_TIMEOUT reintentable. doPost lo reimplementaba a mano, duplicando el
     // literal de 30 s, el mensaje y el manejo de scriptLockHeld_.
@@ -498,6 +519,7 @@ function doPost(e) {
     // Excepción: un timeout de lock NO es un fallo de la operación — si se registrara,
     // el cliente la marcaría como error terminal por una colisión transitoria.
     const message = String(err && err.message || err || '');
+    if (payload && payload.action === 'prepareInitialDownload') setInitialDownloadPreparationPhase_(payload.clientOpId || '', 'error');
     if (message.indexOf('LOCK_TIMEOUT') !== 0) {
       rememberClientOpFailure_(payload && payload.clientOpId || '', message);
     }
@@ -512,6 +534,16 @@ function doPost(e) {
 // Ajustes de la app.
 // Despacho de acciones de doPost. Se ejecuta siempre con el script lock tomado.
 function dispatchPostAction_(payload, pendingId) {
+    if (payload.action === 'prepareInitialDownload') {
+      const sheets = resolveSheets_(payload);
+      setInitialDownloadPreparationPhase_(payload.clientOpId || '', 'preparando movimientos');
+      ensureMovementSidColumnCached_(requireSheet_(sheets.movement));
+      ensureMovementSidColumnCached_(requireSheet_(sheets.future));
+      setInitialDownloadPreparationPhase_(payload.clientOpId || '', 'sincronizando totales');
+      syncInvestmentTotalsSheet_(sheets.investmentTotals, sheets.investment, sheets.movement);
+      setInitialDownloadPreparationPhase_(payload.clientOpId || '', 'lista');
+      return finishPost_(pendingId, payload, { ok: true, prepared: true });
+    }
     if (payload.action === 'addMovement') {
       addMovement_(Object.assign({}, payload.movement || {}, { cuenta: payload.account || payload.movement && payload.movement.cuenta || '' }), payload.sheetName || DEFAULT_MOVEMENT_SHEET);
       // Solo los movimientos de inversión cambian el coste y, con él, la hoja de totales.

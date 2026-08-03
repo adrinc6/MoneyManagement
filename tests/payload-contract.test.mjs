@@ -90,6 +90,24 @@ test("renombrar una categoría actualiza movimientos y estimaciones", () => {
   assert.equal(gs.__spreadsheet.getSheetByName(ledgerName).getRange(2, 5).getValue(), "ETFs");
 });
 
+test("la preparación inicial informa fases y queda confirmada una sola vez", () => {
+  const gs = setup();
+  const clientOpId = "prepare-test";
+  gs.doPost({ postData: { contents: JSON.stringify({
+    token: gs.__token,
+    action: "prepareInitialDownload",
+    clientOpId,
+    movementSheet: MOVEMENT_SHEET,
+    futureMovementSheet: FUTURE_SHEET,
+    investmentSheet: INVESTMENT_SHEET,
+    investmentTotalsSheet: TOTALS_SHEET
+  }) } });
+
+  const status = gs.buildClientOpStatusPayload_(clientOpId);
+  assert.equal(status.completed, true);
+  assert.equal(status.phase, "lista");
+});
+
 test("resolveSheets_ aplica los valores por defecto y respeta los nombres de la petición", () => {
   const gs = setup();
 

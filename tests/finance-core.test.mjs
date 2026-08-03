@@ -129,7 +129,7 @@ test("failQueuedOp detiene la operación sin reenviarla automáticamente", () =>
   app.writeOpQueue([]);
 });
 
-test("fetchDownloadData reintenta los fallos de red y se rinde tras 3 intentos", async () => {
+test("fetchDownloadData deja el reintento de una descarga para una acción explícita", async () => {
   const original = app.fetchAppsScriptData;
   try {
     let calls = 0;
@@ -141,13 +141,13 @@ test("fetchDownloadData reintenta los fallos de red y se rinde tras 3 intentos",
       () => app.fetchDownloadData({ action: "downloadCoreData" }, { label: "datos base" }),
       /no respondió a tiempo/
     );
-    assert.equal(calls, 3, "3 intentos = 2 reintentos");
+    assert.equal(calls, 1, "no reinicia una descarga completa automáticamente");
   } finally {
     app.fetchAppsScriptData = original;
   }
 });
 
-test("fetchDownloadData devuelve el payload en cuanto una llamada responde", async () => {
+test("fetchDownloadData acepta un reintento explícitamente solicitado", async () => {
   const original = app.fetchAppsScriptData;
   try {
     let calls = 0;
@@ -156,7 +156,7 @@ test("fetchDownloadData devuelve el payload en cuanto una llamada responde", asy
       if (calls === 1) throw new Error("Apps Script no respondió a tiempo");
       return { ok: true, banks: [], timeoutMs: options.timeoutMs };
     };
-    const payload = await app.fetchDownloadData({ action: "downloadCoreData" }, { label: "datos base" });
+    const payload = await app.fetchDownloadData({ action: "downloadCoreData" }, { label: "datos base", maxAttempts: 2 });
     assert.equal(calls, 2, "no reintenta más de lo necesario");
     assert.equal(payload.ok, true);
     assert.equal(payload.timeoutMs, 180000, "las descargas usan el timeout largo");
@@ -315,7 +315,7 @@ test("runOpQueue espera confirmación antes de enviar la siguiente operación", 
   }
 });
 
-test("fireAppsScript cae a sendBeacon cuando fetch falla con Load failed", async () => {
+test("fireAppsScript usa sendBeacon antes de fetch y no espera la respuesta", async () => {
   const originalFetch = app.fetch;
   const originalBlob = app.Blob;
   const originalBeacon = app.navigator.sendBeacon;
@@ -332,8 +332,8 @@ test("fireAppsScript cae a sendBeacon cuando fetch falla con Load failed", async
 
     const payload = await app.fireAppsScript({ action: "transferBank", from: "A", to: "B", amount: 5 });
 
-    assert.equal(fetchCalls, 1);
-    assert.equal(beacons.length, 1, "el envío se reintenta por el otro camino de red");
+    assert.equal(fetchCalls, 0);
+    assert.equal(beacons.length, 1, "Beacon es la vía de envío principal");
     assert.equal(beacons[0].url, "https://example.test/exec");
     assert.ok(payload.clientOpId, "devuelve el payload con su clientOpId para poder confirmarlo");
     assert.match(String(beacons[0].blob.parts[0]), /transferBank/);
@@ -345,14 +345,15 @@ test("fireAppsScript cae a sendBeacon cuando fetch falla con Load failed", async
   }
 });
 
-test("fireAppsScript propaga el error si tampoco hay sendBeacon", async () => {
+test("fireAppsScript inicia fetch sin Beacon sin bloquear la confirmación", async () => {
   const originalFetch = app.fetch;
   const originalBeacon = app.navigator.sendBeacon;
   try {
     app.state.config.scriptUrl = "https://example.test/exec";
     app.fetch = async () => { throw new TypeError("Load failed"); };
     app.navigator.sendBeacon = undefined;
-    await assert.rejects(() => app.fireAppsScript({ action: "transferBank" }), /Load failed/);
+    const payload = await app.fireAppsScript({ action: "transferBank" });
+    assert.ok(payload.clientOpId);
   } finally {
     app.fetch = originalFetch;
     app.navigator.sendBeacon = originalBeacon;
