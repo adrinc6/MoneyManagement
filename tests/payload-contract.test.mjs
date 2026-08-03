@@ -113,6 +113,9 @@ test("un lote aplica todas sus operaciones bajo un solo lock", () => {
   assert.equal(response.ok, true);
   assert.equal(response.applied, 3);
   assert.equal(gs.__spreadsheet.getSheetByName(FUTURE_SHEET).getLastRow(), 4, "las tres filas están escritas");
+  assert.equal(gs.__spreadsheet.getSheetByName("Pendientes"), null,
+    "la confirmación no crea ni borra filas auxiliares después de escribir");
+  assert.equal(gs.__spreadsheetState.flushes, 1, "un solo flush confirma la escritura antes de responder");
   // Cada operación conserva su clientOpId, así que reenviar el lote no duplica nada.
   ops.forEach(op => assert.equal(gs.buildClientOpStatusPayload_(op.clientOpId).completed, true));
 

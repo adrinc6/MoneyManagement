@@ -387,7 +387,6 @@ function isClientOpPending_(clientOpId) {
 
 function doPost(e) {
   let payload = {};
-  let pendingId = '';
   try {
     try {
       payload = JSON.parse(e && e.postData && e.postData.contents || '{}');
@@ -408,12 +407,7 @@ function doPost(e) {
       return json_({ ok: true, duplicate: true });
     }
     // Serializa las mutaciones: al borrar una cuenta con movimientos futuros el
-    // cliente encola dos operaciones a la vez (reassignFutureMovementsAccount +
-    // deleteAccount) que llegan en peticiones concurrentes. Sin bloqueo se pisaban
-    // al escribir la hoja "Pendientes" (dejando filas huérfanas que bloqueaban el
-    // reintento para siempre) y la propiedad de operaciones procesadas (perdiendo
-    // la confirmación), y el cliente se quedaba en "Confirmando" en bucle sin que
-    // el cambio llegara a Sheets.
+    // cliente puede encolar varias operaciones que no deben pisarse entre sí.
     // Antes de ponerse a la cola del lock: así checkClientOp puede responder
     // "pendiente" mientras esta petición espera su turno, en vez de "no sé nada"
     // (que el cliente contabilizaba como intento fallido).
@@ -426,19 +420,9 @@ function doPost(e) {
       if (payload.clientOpId && wasClientOpProcessed_(payload.clientOpId)) {
         return json_({ ok: true, duplicate: true });
       }
-      if (payload.clientOpId && isClientOpPending_(payload.clientOpId)) {
-        return json_({ ok: true, pending: true });
-      }
-      pendingId = appendPendingPost_(payload);
-      return finishPost_(pendingId, payload, applyPostAction_(payload));
+      return finishPost_(payload, applyPostAction_(payload));
     });
   } catch (err) {
-    // Si la acción falla a medias, no dejamos la fila en "Pendientes": si no se
-    // limpia aquí, isClientOpPending_ devolvería pending:true para siempre y
-    // el cliente se quedaría "Confirmando" sin reintentar nunca la operación real.
-    if (pendingId) {
-      try { removePendingPost_(pendingId); } catch (cleanupErr) {}
-    }
     // El cliente lee esta respuesta: el motivo y su errorCode le llegan directamente y
     // decide con ellos si reintentar o parar. Ya no hace falta dejarlo apuntado para que
     // lo recoja una consulta posterior.
@@ -650,18 +634,15 @@ function purgeStalePendingRows_(sheet) {
   }
 }
 
-function finishPost_(pendingId, requestPayload, responsePayload) {
-  // Las escrituras de Sheets quedan en búfer hasta el final de la ejecución. Sin este
-  // flush, otra ejecución (la reconciliación con checkClientOp) podía leer la hoja
-  // "Pendientes" todavía con la fila puesta y responder "sigue en curso" sobre algo ya
-  // terminado, dejando la operación dando vueltas.
+function finishPost_(requestPayload, responsePayload) {
+  // Confirma las escrituras antes de responder. La antigua ruta añadía y borraba una
+  // fila en la hoja "Pendientes" y hacía un segundo flush después de que el cambio real
+  // ya fuese visible; esa contabilidad era la causa de confirmaciones muy lentas.
   SpreadsheetApp.flush();
-  removePendingPost_(pendingId);
   const response = responsePayload || requestPayload || { ok: true };
   if (response.ok !== false && requestPayload && requestPayload.action) {
     rememberProcessedClientOp_(requestPayload.clientOpId || '');
   }
-  SpreadsheetApp.flush();
   return json_(response);
 }
 

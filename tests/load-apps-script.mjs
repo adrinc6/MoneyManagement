@@ -208,6 +208,7 @@ export function loadAppsScript({ token = "test-token" } = {}) {
 
   let uuidCounter = 0;
   const lockState = { held: false, acquisitions: 0 };
+  const spreadsheetState = { flushes: 0 };
 
   const context = {
     console: { log: () => {}, error: () => {}, warn: () => {} },
@@ -223,7 +224,7 @@ export function loadAppsScript({ token = "test-token" } = {}) {
     isNaN,
     parseFloat,
     parseInt,
-    SpreadsheetApp: { getActiveSpreadsheet: () => spreadsheet, flush: () => {} },
+    SpreadsheetApp: { getActiveSpreadsheet: () => spreadsheet, flush: () => { spreadsheetState.flushes += 1; } },
     PropertiesService: { getDocumentProperties: makeProps, getScriptProperties: makeProps },
     LockService: {
       getScriptLock: () => ({
@@ -263,6 +264,7 @@ export function loadAppsScript({ token = "test-token" } = {}) {
   context.__spreadsheet = spreadsheet;
   context.__properties = properties;
   context.__lockState = lockState;
+  context.__spreadsheetState = spreadsheetState;
   context.__token = token;
   return context;
 }
