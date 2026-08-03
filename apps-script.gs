@@ -46,11 +46,15 @@ function doGet(e) {
     } else if (action === 'quickStatus') {
       payload = buildQuickStatusPayload_(movementSheet, futureMovementSheet, investmentSheet, bankSheet, dataSheet, investmentTotalsSheet);
     } else if (action === 'downloadData') {
-      payload = buildDataPayload_(sheets, { movements: true, banks: true, movedFutureMovements: [] });
+      payload = buildDataPayload_(sheets, { movements: true, banks: true, estimates: false, movedFutureMovements: [] });
     } else if (action === 'downloadCoreData') {
-      payload = buildDataPayload_(sheets, { banks: true, movedFutureMovements: [] });
+      // La carga inicial no debe quedarse esperando a las hojas de estimaciones,
+      // que pueden crecer mucho. Se descargan después, solo si el usuario usa ese modo.
+      payload = buildDataPayload_(sheets, { banks: true, estimates: false, movedFutureMovements: [] });
     } else if (action === 'downloadInvestments') {
-      payload = buildDataPayload_(sheets);
+      payload = buildDataPayload_(sheets, { estimates: false });
+    } else if (action === 'downloadInvestmentEstimates') {
+      payload = buildInvestmentEstimatesPayload_(sheets);
     } else if (action === 'downloadMovementsPage') {
       payload = buildMovementPagePayload_(
         params.movementKind === 'future' ? futureMovementSheet : movementSheet,
@@ -87,7 +91,7 @@ function doGet(e) {
         // Los precios han cambiado: aquí sí hay que recalcular la hoja de totales, porque
         // los payloads de descarga ya no la sincronizan por su cuenta.
         syncInvestmentTotalsSheet_(investmentTotalsSheet, investmentSheet, movementSheet);
-        const result = buildDataPayload_(sheets);
+        const result = buildDataPayload_(sheets, { estimates: true });
         result.pricesUpdated = true;
         result.priceUpdateResult = priceUpdateResult;
         return result;
@@ -131,17 +135,19 @@ function resolveSheets_(source) {
 // mismo preámbulo y la misma lista de campos recortada de distinta forma. Los flags
 // deciden qué bloques se añaden, y con ellos qué secciones ve el cliente como
 // sincronizadas.
-function buildDataPayload_(sheets, { movements = false, banks = false, movedFutureMovements } = {}) {
+function buildDataPayload_(sheets, { movements = false, banks = false, estimates = false, movedFutureMovements } = {}) {
   const investments = readInvestments_(sheets.investment);
   const payload = {
     ok: true,
     investments,
     investmentTotals: investmentTotalsForRead_(sheets.investmentTotals, sheets.investment, sheets.movement),
-    investmentEstimateRules: readInvestmentEstimateRules_(sheets.investmentEstimateRules),
-    investmentEstimateLedger: readInvestmentEstimateLedger_(sheets.investmentEstimateLedger),
     investmentGoals: readInvestmentGoals_(sheets.objective),
     categories: readAppCategories_(sheets.data, sheets.investmentTotals, sheets.investment, investments)
   };
+  if (estimates) {
+    payload.investmentEstimateRules = readInvestmentEstimateRules_(sheets.investmentEstimateRules);
+    payload.investmentEstimateLedger = readInvestmentEstimateLedger_(sheets.investmentEstimateLedger);
+  }
   if (movements) {
     payload.transactions = readMovements_(sheets.movement);
     payload.futureTransactions = readFutureMovements_(sheets.future);
@@ -149,6 +155,14 @@ function buildDataPayload_(sheets, { movements = false, banks = false, movedFutu
   if (banks) payload.banks = readBanks_(sheets.bank);
   if (movedFutureMovements) payload.movedFutureMovements = movedFutureMovements;
   return payload;
+}
+
+function buildInvestmentEstimatesPayload_(sheets) {
+  return {
+    ok: true,
+    investmentEstimateRules: readInvestmentEstimateRules_(sheets.investmentEstimateRules),
+    investmentEstimateLedger: readInvestmentEstimateLedger_(sheets.investmentEstimateLedger)
+  };
 }
 
 function buildQuickStatusPayload_(movementSheet, futureMovementSheet, investmentSheet, bankSheet, dataSheet, investmentTotalsSheet) {
@@ -561,7 +575,7 @@ function dispatchPostAction_(payload, pendingId) {
       return finishPost_(pendingId, payload, { ok: true, investmentDeleted: true });
     }
     if (payload.action === 'saveInvestmentCategories') {
-      saveInvestmentCategories_(payload.sheetName || DEFAULT_INVESTMENT_SHEET, payload.investmentTypes || [], payload.renames || {}, payload.movementSheet || DEFAULT_MOVEMENT_SHEET, payload.futureMovementSheet || DEFAULT_FUTURE_MOVEMENT_SHEET, payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET);
+      saveInvestmentCategories_(payload.sheetName || DEFAULT_INVESTMENT_SHEET, payload.investmentTypes || [], payload.renames || {}, payload.movementSheet || DEFAULT_MOVEMENT_SHEET, payload.futureMovementSheet || DEFAULT_FUTURE_MOVEMENT_SHEET, payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.investmentEstimateRulesSheet || DEFAULT_INVESTMENT_ESTIMATE_RULES_SHEET, payload.investmentEstimateLedgerSheet || DEFAULT_INVESTMENT_ESTIMATE_LEDGER_SHEET);
       syncInvestmentTotalsSheet_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.sheetName || DEFAULT_INVESTMENT_SHEET, payload.movementSheet || DEFAULT_MOVEMENT_SHEET);
       return finishPost_(pendingId, payload, { ok: true });
     }
@@ -1455,7 +1469,7 @@ function buildEstimatedInvestments_(investmentSheetName, ledgerSheetName) {
       match.total = match.cantidad * price;
     } else {
       const price = parseNumber_(entry.precioUsado) || 0;
-      investments.push({ rowNumber: null, divisa: 'EUR', data: entry.data || '', nombre: entry.nombre || entry.data || 'Estimación', shortName: entry.shortName || '', tipo: entry.tipo || 'Cartera', cantidad: shares, valor: price, total: shares * price, valorAnterior: price, variacion: 0 });
+      investments.push({ rowNumber: null, divisa: 'EUR', data: entry.data || '', nombre: entry.nombre || entry.data || 'Estimación', shortName: entry.shortName || '', tipo: entry.tipo || 'Inversión', cantidad: shares, valor: price, total: shares * price, valorAnterior: price, variacion: 0 });
     }
   });
   return investments;
@@ -2184,9 +2198,6 @@ function percentageChange_(current, previous) {
 }
 
 function emojiForType_(type) {
-  if (type === 'Bolsa') return '📈';
-  if (type === 'Fondos') return '🏦';
-  if (type === 'Cartera') return '💼';
   return '💰';
 }
 
@@ -2438,7 +2449,7 @@ function ensureDataSheet_(sheetName) {
   return sheet;
 }
 
-function saveInvestmentCategories_(investmentSheetName, investmentTypes, renames, movementSheetName, futureMovementSheetName, investmentTotalsSheetName) {
+function saveInvestmentCategories_(investmentSheetName, investmentTypes, renames, movementSheetName, futureMovementSheetName, investmentTotalsSheetName, estimateRulesSheetName, estimateLedgerSheetName) {
   const categories = Array.from(new Set((investmentTypes || []).map(v => String(v || '').trim()).filter(Boolean)));
   if (!categories.length) throw new Error('Faltan categorías de inversión');
 
@@ -2462,6 +2473,8 @@ function saveInvestmentCategories_(investmentSheetName, investmentTypes, renames
 
   updateInvestmentCategoryNamesInMovements_(movementSheetName || DEFAULT_MOVEMENT_SHEET, renames || {});
   updateInvestmentCategoryNamesInMovements_(futureMovementSheetName || DEFAULT_FUTURE_MOVEMENT_SHEET, renames || {});
+  updateInvestmentCategoryNamesInEstimateRules_(estimateRulesSheetName || DEFAULT_INVESTMENT_ESTIMATE_RULES_SHEET, renames || {});
+  updateInvestmentCategoryNamesInEstimateLedger_(estimateLedgerSheetName || DEFAULT_INVESTMENT_ESTIMATE_LEDGER_SHEET, renames || {});
   updateInvestmentCategoryNamesInTotals_(investmentTotalsSheetName || DEFAULT_INVESTMENT_TOTALS_SHEET, renames || {}, categories, investmentSheetName || DEFAULT_INVESTMENT_SHEET);
 }
 
@@ -2536,19 +2549,55 @@ function updateInvestmentCategoryNamesInMovements_(sheetName, renames) {
   if (!entries.length) return;
   const sheet = getSheet_(sheetName);
   if (!sheet || sheet.getLastRow() < 2) return;
-  const width = Math.max(sheet.getLastColumn(), 4);
+  const width = Math.max(sheet.getLastColumn(), 7);
   const range = sheet.getRange(2, 1, sheet.getLastRow() - 1, width);
   const values = range.getValues();
   let changed = false;
   values.forEach(row => {
-    const type = normalizeType_(row[1]);
-    const desc = String(row[3] || '').trim();
+    // Las hojas de movimientos guardan TIPO, CONCEPTO y DESCRIPCIÓN en E:G.
+    const type = normalizeType_(row[4]);
+    const concept = String(row[5] || '').trim();
+    const desc = String(row[6] || '').trim();
     if (type !== 'inversion') return;
-    const match = entries.find(([from]) => normalizeType_(from) === normalizeType_(desc));
-    if (match) {
-      row[3] = match[1];
+    const conceptMatch = entries.find(([from]) => normalizeType_(from) === normalizeType_(concept));
+    const descMatch = entries.find(([from]) => normalizeType_(from) === normalizeType_(desc));
+    if (conceptMatch || descMatch) {
+      if (conceptMatch) row[5] = conceptMatch[1];
+      if (descMatch) row[6] = descMatch[1];
       changed = true;
     }
+  });
+  if (changed) range.setValues(values);
+}
+
+function updateInvestmentCategoryNamesInEstimateRules_(sheetName, renames) {
+  const entries = Object.entries(renames || {}).filter(entry => entry[0] && entry[1]);
+  const sheet = getSheet_(sheetName);
+  if (!entries.length || !sheet || sheet.getLastRow() < 2) return;
+  const col = estimateColumnMap_(sheet);
+  if (!col.movementDescription) return;
+  const range = sheet.getRange(2, col.movementDescription, sheet.getLastRow() - 1, 1);
+  const values = range.getValues();
+  let changed = false;
+  values.forEach(row => {
+    const match = entries.find(([from]) => normalizeType_(from) === normalizeType_(row[0]));
+    if (match) { row[0] = match[1]; changed = true; }
+  });
+  if (changed) range.setValues(values);
+}
+
+function updateInvestmentCategoryNamesInEstimateLedger_(sheetName, renames) {
+  const entries = Object.entries(renames || {}).filter(entry => entry[0] && entry[1]);
+  const sheet = getSheet_(sheetName);
+  if (!entries.length || !sheet || sheet.getLastRow() < 2) return;
+  const col = ledgerColumnMap_(sheet);
+  if (!col.tipo) return;
+  const range = sheet.getRange(2, col.tipo, sheet.getLastRow() - 1, 1);
+  const values = range.getValues();
+  let changed = false;
+  values.forEach(row => {
+    const match = entries.find(([from]) => normalizeType_(from) === normalizeType_(row[0]));
+    if (match) { row[0] = match[1]; changed = true; }
   });
   if (changed) range.setValues(values);
 }

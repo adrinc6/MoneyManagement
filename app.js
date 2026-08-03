@@ -48,7 +48,10 @@ const DEFAULT_CONFIG = {
 
 const STATIC_TYPES = ["Gasto", "Ingreso", "Inversión", "Transferencia"];
 const STATIC_CONCEPTS = ["Comida", "Cuidado personal", "Deporte", "Fiesta", "Inversión", "Ocio", "Otros", "Piso", "Supermercado", "Universidad", "Viajes"];
-const INVESTMENT_TYPES = ["Bolsa", "Fondos", "Cartera"];
+// Las categorías vienen de Sheets (totales, posiciones y movimientos). Este valor solo
+// permite arrancar una hoja completamente vacía; no representa una categoría fija.
+const DEFAULT_INVESTMENT_TYPE = "Inversión";
+const INVESTMENT_TYPES = [];
 const INVESTMENT_CATEGORY_CACHE_KEY = "moneyInvestmentCategoriesDraft";
 const PIE_CHART_COLORS = [
   "#2563eb", // azul
@@ -844,7 +847,7 @@ function refreshData(options = {}) {
   if (!refreshInFlight) return start();
   if (!mustRunOnItsOwn) return refreshInFlight;
   // Encadenada: el catch evita que un fallo previo tumbe esta petición.
-  const chained = refreshInFlight.catch(() => {}).then(() => refreshDataImpl(options)).finally(() => {
+  const chained = refreshInFlight.catch(() => { }).then(() => refreshDataImpl(options)).finally(() => {
     if (refreshInFlight === chained) refreshInFlight = null;
   });
   refreshInFlight = chained;
@@ -948,6 +951,11 @@ async function refreshDataImpl(options = {}) {
         ["transactions", "futureTransactions", "investmentEstimateLedger"].includes(section) && !skipDirty(section))]);
     }
 
+    // Las estimaciones se descargan por separado y solo en ese modo. No forman parte
+    // del arranque normal ni reinician el tiempo de la descarga de datos base.
+    const needsInvestmentEstimates = state.investmentMode === "estimated"
+      && neededSections.some(section => ["investmentEstimateRules", "investmentEstimateLedger"].includes(section));
+
     if (shouldMoveDueFutureMovements) {
       neededSections = force
         ? unique([...neededSections, "transactions", "futureTransactions", "banks"])
@@ -993,8 +1001,7 @@ async function refreshDataImpl(options = {}) {
           investments: payload.investments || [],
           investmentGoals: payload.investmentGoals ?? state.investmentGoals,
           investmentTotals: payload.investmentTotals || state.investmentTotals,
-          investmentEstimateRules: payload.investmentEstimateRules || state.investmentEstimateRules,
-          investmentEstimateLedger: payload.investmentEstimateLedger || state.investmentEstimateLedger
+          categories: payload.categories || state.categories
         };
       } else {
         let core = null;
@@ -1017,8 +1024,6 @@ async function refreshDataImpl(options = {}) {
             banks: core.banks || state.banks,
             investmentGoals: core.investmentGoals ?? state.investmentGoals,
             investmentTotals: core.investmentTotals || state.investmentTotals,
-            investmentEstimateRules: core.investmentEstimateRules || state.investmentEstimateRules,
-            investmentEstimateLedger: core.investmentEstimateLedger || state.investmentEstimateLedger,
             categories: core.categories || state.categories
           };
         }
@@ -1041,6 +1046,17 @@ async function refreshDataImpl(options = {}) {
           if (futureTransactions) freshData.futureTransactions = futureTransactions;
         }
       }
+    }
+
+    if (needsInvestmentEstimates && !updateInvestments) {
+      syncStatusStep(showProgress, "Descargando reglas\ny estimaciones", "");
+      const estimates = await fetchDownloadData({ action: "downloadInvestmentEstimates" }, { label: "estimaciones", showProgress });
+      assertPayloadOk(estimates);
+      freshData = {
+        ...freshData,
+        investmentEstimateRules: estimates.investmentEstimateRules || [],
+        investmentEstimateLedger: estimates.investmentEstimateLedger || []
+      };
     }
 
     const fallbackFutureTransactions = cached?.data?.futureTransactions?.length ? cached.data.futureTransactions : previousFutureTransactions;
@@ -1082,14 +1098,14 @@ async function refreshDataImpl(options = {}) {
     renderCurrentView();
     writeDataCache({ syncedSections });
     const defaultSuccess = updateInvestments
-        ? "Precios actualizados y caché de inversiones renovada."
-        : scope === "movements"
-          ? "Movimientos actualizados por bloques."
-          : scope === "investments"
-            ? "Inversiones actualizadas."
-            : scope === "summary"
-              ? "Resumen actualizado por secciones."
-              : "Datos actualizados por secciones.";
+      ? "Precios actualizados y caché de inversiones renovada."
+      : scope === "movements"
+        ? "Movimientos actualizados por bloques."
+        : scope === "investments"
+          ? "Inversiones actualizadas."
+          : scope === "summary"
+            ? "Resumen actualizado por secciones."
+            : "Datos actualizados por secciones.";
     setNotice(lineMessage(
       options.successMessage || defaultSuccess,
       flushedPending.length ? `Pendientes enviados antes: ${flushedPending.join(", ")}` : ""
@@ -1455,7 +1471,7 @@ function persistDataCache(record) {
         continue;
       }
       // Ni podando cabe: soltamos el caché para no dejar datos corruptos a medias.
-      try { localStorage.removeItem(DATA_CACHE_KEY); } catch (_) {}
+      try { localStorage.removeItem(DATA_CACHE_KEY); } catch (_) { }
       warnCacheQuota(false);
       return;
     }
@@ -2126,18 +2142,11 @@ function queueOps(payloads, { label = "" } = {}) {
 }
 
 const OP_POLL_INTERVAL_MS = 5000;
-const OP_MAX_BACKOFF_MS = 60000;
-// Sin tope, una operación que el servidor nunca confirma se reenvía cada 5 s para
-// siempre: cada reenvío abre una ejecución de Apps Script que se encola detrás del
-// script lock, satura el proyecto y hace que ni el POST ni la confirmación respondan.
-const OP_MAX_ATTEMPTS = 8;
-// Margen antes de contar como fallo una operación enviada de la que aún no hay
-// noticias: cubre la espera del script lock del servidor (30 s) más reintentos.
-const CONFIRM_GRACE_MS = 120000;
-// Envíos sin confirmar simultáneos. El backend serializa todo con el script lock,
-// así que lanzar decenas a la vez solo genera contención (y roza el límite de
-// ejecuciones simultáneas de Apps Script).
-const MAX_UNCONFIRMED_OPS = 3;
+// Cada cambio se POSTea una sola vez. Después solo se consulta su clientOpId cada 5 s
+// durante un minuto: repetir el POST mientras Apps Script espera su lock era la causa
+// de la cola de reintentos y de muchas ejecuciones duplicadas en espera.
+const OP_CONFIRM_TIMEOUT_MS = 60000;
+const MAX_UNCONFIRMED_OPS = 1;
 let opQueuePollerHandle = null;
 const opsInFlight = new Set();
 
@@ -2171,7 +2180,7 @@ async function runOpQueue() {
       // estado, algo no progresa y seguir iterando congelaría la pestaña en bucle.
       const signature = `${op.id}|${op.status}|${op.nextAttemptAt || 0}`;
       if (signature === lastSignature) {
-        failQueuedOp(op.id, "La cola no avanza; se reintentará más tarde.");
+        failQueuedOp(op.id, "La cola no avanza. Reintenta manualmente desde Ajustes › Conexión.");
         break;
       }
       lastSignature = signature;
@@ -2190,33 +2199,22 @@ async function runOpQueue() {
   }
 }
 
-function opBackoffMs(attempts) {
-  return Math.min(OP_POLL_INTERVAL_MS * Math.pow(2, Math.max(0, attempts - 1)), OP_MAX_BACKOFF_MS);
-}
-
 function isOpActionable(op, now = Date.now()) {
   if (!op || op.status === "done" || op.status === "error") return false;
   return !(op.nextAttemptAt && op.nextAttemptAt > now);
 }
 
-// Un intento fallido no vuelve a lanzarse inmediatamente: el retardo crece
-// 5 s → 10 → 20 → 40 → 60 s y, tras OP_MAX_ATTEMPTS, la operación queda en "error"
-// con el motivo a la vista en lugar de reintentarse en bucle.
+// Los reenvíos automáticos saturaban Apps Script cuando una ejecución tardaba en tomar
+// el lock. Un fallo queda visible y solo se vuelve a enviar mediante «Reintentar ahora».
 function failQueuedOp(opId, error) {
   const queue = readOpQueue();
   const target = queue.find(op => op.id === opId);
   if (!target) return;
-  const attempts = Number(target.attempts || 0) + 1;
-  target.attempts = attempts;
+  target.attempts = Number(target.attempts || 0) + 1;
   target.error = String(error || "").trim() || "Error desconocido";
-  if (attempts >= OP_MAX_ATTEMPTS) {
-    target.status = "error";
-    target.nextAttemptAt = 0;
-    logSyncEvent(`Operación detenida tras ${attempts} intentos: ${target.payload?.action || "cambio"}.`, "warn", target.error);
-  } else {
-    target.status = "retry";
-    target.nextAttemptAt = Date.now() + opBackoffMs(attempts);
-  }
+  target.status = "error";
+  target.nextAttemptAt = 0;
+  logSyncEvent(`Operación sin confirmar: ${target.payload?.action || "cambio"}.`, "warn", target.error);
   writeOpQueue(queue);
 }
 
@@ -2267,9 +2265,8 @@ async function sendQueuedOp(opId) {
   setSyncStatus(queueActionStatus(item.payload, item), "");
   try {
     await fireAppsScript(item.payload);
-    // Enviada: se deja madurar antes de confirmar (Apps Script necesita un momento para
-    // registrar la operación) y así el runner pasa a la siguiente en vez de bloquearse
-    // esperando la confirmación de esta.
+    // Enviada: se confirma por sondeo, sin volver a hacer POST. La siguiente operación
+    // espera: el backend usa un lock global y debe recibirlas estrictamente en orden.
     markOpStatus(opId, { status: "checking", error: null, nextAttemptAt: Date.now() + OP_POLL_INTERVAL_MS, lastSentAt: Date.now() });
   } catch (error) {
     markOpStatus(opId, { lastSentAt: Date.now() });
@@ -2301,15 +2298,8 @@ async function checkQueuedOp(opId) {
       completeQueuedOp(item);
       return;
     }
-    // El servidor registró un error real para esta operación: reintentarla sola solo
-    // repetiría el fallo, así que se para y se muestra el motivo.
+    // El servidor registró un error para esta operación: se para y se muestra el motivo.
     if (result?.ok && result.failed) {
-      // Fallo transitorio en el servidor (p. ej. lock ocupado): reintentar con el
-      // backoff normal en vez de detener la operación como error terminal.
-      if (result.retryable) {
-        failQueuedOp(opId, result.error || "Servidor ocupado; se reintentará.");
-        return;
-      }
       markOpStatus(opId, { status: "error", error: result.error || "Apps Script rechazó la operación.", nextAttemptAt: 0 });
       logSyncEvent(`Apps Script devolvió un error: ${item.payload?.action || "cambio"}.`, "warn", result.error || "");
       setSyncStatus("Error al enviar\nRevisa Ajustes › Conexión", "warn");
@@ -2322,17 +2312,21 @@ async function checkQueuedOp(opId) {
       markOpStatus(opId, { status: "checking", error: null, nextAttemptAt: Date.now() + OP_POLL_INTERVAL_MS });
       return;
     }
-    // "Sin noticias" NO es un intento fallido: la petición puede seguir esperando el
-    // script lock del servidor (hasta 30 s) o ir de camino. Contarlo como fallo
-    // agotaba los 8 intentos en pocos minutos y dejaba recurrencias enteras en error.
+    // Sin noticias puede ser una ejecución esperando el lock. Seguimos consultando
+    // durante un minuto, sin reenviar el POST; después se deja para reintento manual.
     const sentAt = Number(item.lastSentAt || 0);
-    if (sentAt && Date.now() - sentAt < CONFIRM_GRACE_MS) {
+    if (sentAt && Date.now() - sentAt < OP_CONFIRM_TIMEOUT_MS) {
       markOpStatus(opId, { status: "checking", error: null, nextAttemptAt: Date.now() + OP_POLL_INTERVAL_MS });
       return;
     }
-    failQueuedOp(opId, "Sin confirmación todavía; se reintentará.");
+    failQueuedOp(opId, "No se confirmó en un minuto. Reintenta manualmente desde Ajustes › Conexión.");
   } catch (error) {
-    failQueuedOp(opId, error.message || error);
+    const sentAt = Number(item.lastSentAt || 0);
+    if (sentAt && Date.now() - sentAt < OP_CONFIRM_TIMEOUT_MS) {
+      markOpStatus(opId, { status: "checking", error: error.message || String(error), nextAttemptAt: Date.now() + OP_POLL_INTERVAL_MS });
+    } else {
+      failQueuedOp(opId, error.message || error);
+    }
   } finally {
     opsInFlight.delete(opId);
     renderPendingOpsBadge();
@@ -3747,7 +3741,7 @@ function addInvestmentRow() {
     setNotice("Cambia a modo real para editar posiciones manuales.", "warn");
     return;
   }
-  state.investments.push({ rowNumber: null, isDraftNew: true, divisa: "EUR", data: "", nombre: "", shortName: "", tipo: investmentTypes()[0] || "Cartera", cantidad: 0, valor: 0, total: 0, valorAnterior: 0, variacion: 0 });
+  state.investments.push({ rowNumber: null, isDraftNew: true, divisa: "EUR", data: "", nombre: "", shortName: "", tipo: defaultInvestmentType(), cantidad: 0, valor: 0, total: 0, valorAnterior: 0, variacion: 0 });
   openInvestmentDetail(state.investments.length - 1);
 }
 
@@ -5042,7 +5036,7 @@ function effectiveInvestmentPositions() {
         data: entry.data,
         nombre: entry.nombre || entry.data || 'Estimación',
         shortName: entry.shortName || entry.nombre || entry.data,
-        tipo: entry.tipo || 'Cartera',
+        tipo: entry.tipo || defaultInvestmentType(),
         cantidad: shares,
         valor: price,
         total: shares * price,
@@ -5084,7 +5078,7 @@ function investmentTotalsByType() {
   });
   if (!investmentEstimateEnabled()) return map;
   activeInvestmentEstimateLedger().forEach(entry => {
-    const type = prettyType(entry.tipo || 'Cartera');
+    const type = prettyType(entry.tipo || defaultInvestmentType());
     const key = normalizeType(type);
     const existing = map.get(key) || {
       tipo: type,
@@ -5219,10 +5213,17 @@ function investmentTypes() {
     .filter(Boolean);
   const current = effectiveInvestmentPositions().map(i => i.tipo).map(prettyType).filter(Boolean);
   const estimateTypes = [...(state.investmentEstimateRules || []), ...(state.investmentEstimateLedger || [])].map(i => prettyType(i.tipo)).filter(Boolean);
-  const base = configured.length || totals.length || current.length || estimateTypes.length ? [] : INVESTMENT_TYPES;
+  const base = configured.length || totals.length || current.length || estimateTypes.length ? INVESTMENT_TYPES : [DEFAULT_INVESTMENT_TYPE];
   return unique([...configured, ...totals, ...current, ...estimateTypes, ...base])
     .map(prettyType)
     .filter(Boolean);
+}
+
+function defaultInvestmentType() {
+  return prettyType(state.categories?.investmentTypes?.[0]
+    || state.investmentTotals?.[0]?.tipo
+    || state.investments?.[0]?.tipo
+    || DEFAULT_INVESTMENT_TYPE);
 }
 
 function renderTable(id, headers, rows) {
@@ -5432,20 +5433,37 @@ async function saveInvestmentCategoriesFromDialog(event) {
     return;
   }
   state.categories = normalizeCategories({ ...state.categories, investmentTypes: nextTypes });
+  const renamedCategory = value => {
+    const match = Object.entries(renames).find(([from]) => normalizeType(from) === normalizeType(value));
+    return match ? match[1] : value;
+  };
   state.investments = state.investments.map(item => {
-    const renamed = Object.entries(renames).find(([from]) => normalizeType(from) === normalizeType(item.tipo));
-    return renamed ? { ...item, tipo: renamed[1] } : item;
+    const tipo = renamedCategory(item.tipo);
+    return tipo === item.tipo ? item : { ...item, tipo };
   });
   state.investmentTotals = (state.investmentTotals || []).map(item => {
-    const renamed = Object.entries(renames).find(([from]) => normalizeType(from) === normalizeType(item.tipo));
-    return renamed ? { ...item, tipo: renamed[1] } : item;
+    const tipo = renamedCategory(item.tipo);
+    return tipo === item.tipo ? item : { ...item, tipo };
   });
   const renameInvestmentMovement = movement => {
-    const renamed = Object.entries(renames).find(([from]) => isInvestment(movement) && normalizeType(from) === normalizeType(movement.descripcion));
-    return renamed ? { ...movement, descripcion: renamed[1] } : movement;
+    if (!isInvestment(movement)) return movement;
+    const concepto = renamedCategory(movement.concepto);
+    const descripcion = renamedCategory(movement.descripcion);
+    return concepto === movement.concepto && descripcion === movement.descripcion
+      ? movement
+      : { ...movement, concepto, descripcion };
   };
   state.transactions = state.transactions.map(renameInvestmentMovement);
   state.futureTransactions = state.futureTransactions.map(renameInvestmentMovement);
+  state.investmentEstimateRules = (state.investmentEstimateRules || []).map(rule => ({
+    ...rule,
+    tipo: renamedCategory(rule.tipo),
+    movementDescription: renamedCategory(rule.movementDescription)
+  }));
+  state.investmentEstimateLedger = (state.investmentEstimateLedger || []).map(entry => ({
+    ...entry,
+    tipo: renamedCategory(entry.tipo)
+  }));
   renderInvestments();
   document.getElementById("investmentCategoriesDialog").close();
   setSyncStatus("Guardando categorías", "");
@@ -5460,7 +5478,11 @@ async function saveInvestmentCategoriesFromDialog(event) {
         investmentTypes: nextTypes,
         renames,
         sheetName: state.config.investmentSheet,
-        investmentTotalsSheet: state.config.investmentTotalsSheet || "Inversión Totales"
+        movementSheet: state.config.movementSheet,
+        futureMovementSheet: state.config.futureMovementSheet || "Movimientos futuros",
+        investmentTotalsSheet: state.config.investmentTotalsSheet || "Inversión Totales",
+        investmentEstimateRulesSheet: state.config.investmentEstimateRulesSheet || "Inversiones Estimación Reglas",
+        investmentEstimateLedgerSheet: state.config.investmentEstimateLedgerSheet || "Inversiones Estimación Movimientos"
       });
       setSyncStatus("Guardando categorías", "");
       setNotice("Categorías aplicadas en caché y enviadas a Sheets.", "ok");
@@ -5743,7 +5765,7 @@ function renderInvestmentEstimateRulesTable() {
     <tr data-estimate-rule-index="${idx}">
       <td><input type="checkbox" data-field="activa" ${rule.activa ? "checked" : ""}></td>
       <td><input class="tiny-input" type="number" min="1" max="31" step="1" data-field="dayOfMonth" value="${escapeAttr(rule.dayOfMonth || '')}" placeholder="—"></td>
-      <td><input data-field="movementDescription" value="${escapeAttr(rule.movementDescription || '')}" placeholder="Bolsa / Cartera / Fondos"></td>
+      <td><input data-field="movementDescription" value="${escapeAttr(rule.movementDescription || '')}" placeholder="Categoría de inversión"></td>
       <td><input data-field="data" value="${escapeAttr(rule.data || '')}" placeholder="Ticker/ISIN"></td>
       <td><input data-field="shortName" value="${escapeAttr(rule.shortName || '')}" placeholder="Short"></td>
       <td><input data-field="nombre" value="${escapeAttr(rule.nombre || '')}" placeholder="Nombre"></td>
@@ -5853,10 +5875,10 @@ function enqueueInvestmentAllocationPrompts(movements = [], options = {}) {
     .map(normalizeTransaction)
     .filter(isInvestmentMovement)
     .map(movement => ({
-    movement,
-    source: options.source || "registro",
-    respectDay: Boolean(options.respectDay)
-  }));
+      movement,
+      source: options.source || "registro",
+      respectDay: Boolean(options.respectDay)
+    }));
   if (!prompts.length) return 0;
   state.pendingInvestmentAllocationPrompts.push(...prompts);
   return prompts.length;
@@ -5948,7 +5970,7 @@ function renderInvestmentAllocationFallbackRow(amount, movement) {
   }
   const table = document.getElementById("investmentAllocationTable");
   if (!table) return;
-  const inferredType = inferredInvestmentTypeFromMovement(movement) || "Cartera";
+  const inferredType = inferredInvestmentTypeFromMovement(movement) || defaultInvestmentType();
   table.innerHTML = `<thead><tr><th>Tipo</th><th>Ticker/ISIN</th><th>Short</th><th>Nombre</th><th>%</th><th>Importe</th><th>Precio</th><th>Shares est.</th><th></th></tr></thead>
     <tbody><tr data-allocation-row data-regla-id="">
       <td><select data-field="tipo"><option value="${escapeAttr(inferredType)}">${escapeHtml(inferredType)}</option></select></td>
@@ -5992,7 +6014,7 @@ function initialInvestmentAllocationRows(movement, prompt = {}) {
   const rules = matchingInvestmentAllocationRules(movement, Boolean(prompt.respectDay));
   const rows = rules.map(rule => allocationRowFromRule(rule, amount)).filter(Boolean);
   if (rows.length) return rows;
-  return [{ id: createSid("alloc"), tipo: inferredInvestmentTypeFromMovement(movement) || investmentTypes()[0] || "Cartera", data: "", nombre: "", shortName: "", percentage: 100, importe: amount, precioUsado: "", reglaId: "", isNew: true }];
+  return [{ id: createSid("alloc"), tipo: inferredInvestmentTypeFromMovement(movement) || defaultInvestmentType(), data: "", nombre: "", shortName: "", percentage: 100, importe: amount, precioUsado: "", reglaId: "", isNew: true }];
 }
 
 function matchingInvestmentAllocationRules(movement, respectDay = false) {
@@ -6025,7 +6047,7 @@ function allocationRowFromRule(rule, movementAmount) {
     : (movementAmount ? amount / movementAmount * 100 : "");
   return {
     id: createSid("alloc"),
-    tipo: match?.tipo || inferredInvestmentTypeFromMovement(state.currentInvestmentAllocationPrompt?.movement) || "Cartera",
+    tipo: match?.tipo || inferredInvestmentTypeFromMovement(state.currentInvestmentAllocationPrompt?.movement) || defaultInvestmentType(),
     data: rule.data || match?.data || "",
     nombre: rule.nombre || match?.nombre || rule.shortName || rule.data || "",
     shortName: rule.shortName || match?.shortName || match?.nombre || rule.data || "",
@@ -6174,7 +6196,7 @@ function addExistingInvestmentAllocationRow() {
 
 function addBlankInvestmentAllocationRow() {
   const movement = state.currentInvestmentAllocationPrompt?.movement;
-  appendInvestmentAllocationRow({ tipo: inferredInvestmentTypeFromMovement(movement) || investmentTypes()[0] || "Cartera", data: "", nombre: "", shortName: "", percentage: "", importe: investmentAllocationRemainingAmount() || "", precioUsado: "", reglaId: "" });
+  appendInvestmentAllocationRow({ tipo: inferredInvestmentTypeFromMovement(movement) || defaultInvestmentType(), data: "", nombre: "", shortName: "", percentage: "", importe: investmentAllocationRemainingAmount() || "", precioUsado: "", reglaId: "" });
 }
 
 function appendInvestmentAllocationRow(row) {

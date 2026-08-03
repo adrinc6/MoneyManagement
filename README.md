@@ -51,7 +51,7 @@ MoneyManagement permite:
 ### Inversiones
 
 - Panel general de inversión y objetivos.
-- Desglose por Bolsa, Fondos y Cartera.
+- Desglose por las categorías de inversión configuradas en la hoja.
 - Edición de posiciones.
 - En edición manual solo se actualiza la cantidad.
 - Detalle por inversión con gráfica y tabla.
@@ -135,7 +135,7 @@ De aquí salen los desplegables del formulario. Si la hoja no está disponible, 
 - Balance mensual: ingresos menos gastos menos inversión.
 - Banco estimado: banco inicial más movimientos y ajustes.
 - Dinero total sin ganancias realizadas: banco estimado más inversión histórica.
-- Resumen por tipo de inversión: Bolsa, Fondos y Cartera.
+- Resumen por las categorías de inversión configuradas en la hoja.
 
 ## Caché y sincronización
 

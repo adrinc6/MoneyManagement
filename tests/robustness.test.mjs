@@ -44,7 +44,7 @@ test("runOpQueue termina aunque una operación no progrese", async () => {
   }
 });
 
-test("un fallo reintentable del servidor no detiene la operación con error terminal", async () => {
+test("un fallo reintentable del servidor queda para reintento manual", async () => {
   const previousFetch = app.fetchAppsScriptData;
   try {
     resetQueue([{ id: "op-lock", status: "checking", attempts: 0, nextAttemptAt: 0, payload: { action: "addMovement", clientOpId: "c-lock" } }]);
@@ -53,8 +53,8 @@ test("un fallo reintentable del servidor no detiene la operación con error term
     await app.checkQueuedOp("op-lock");
 
     const [op] = JSON.parse(app.localStorage.getItem(app.OP_QUEUE_KEY));
-    assert.notEqual(op.status, "error", "un choque de bloqueo transitorio debe reintentarse");
-    assert.equal(op.attempts, 1);
+    assert.equal(op.status, "error", "un choque de bloqueo no debe disparar un nuevo POST automático");
+    assert.equal(op.attempts, 0, "la respuesta del servidor se conserva sin reenviar la operación");
   } finally {
     app.fetchAppsScriptData = previousFetch;
     resetQueue();
@@ -203,7 +203,7 @@ test("estar esperando el servidor no consume intentos dentro de la ventana de gr
   }
 });
 
-test("pasada la ventana de gracia, la falta de noticias sí cuenta como intento", async () => {
+test("pasado un minuto sin noticias, la operación queda para reintento manual", async () => {
   const previousFetch = app.fetchAppsScriptData;
   try {
     resetQueue([{
@@ -215,7 +215,8 @@ test("pasada la ventana de gracia, la falta de noticias sí cuenta como intento"
     await app.checkQueuedOp("op-vieja");
 
     const [op] = JSON.parse(app.localStorage.getItem(app.OP_QUEUE_KEY));
-    assert.equal(op.attempts, 1, "una petición que lleva mucho sin noticias sí se reintenta");
+    assert.equal(op.attempts, 1, "el minuto de confirmación agotado cuenta como envío no confirmado");
+    assert.equal(op.status, "error");
   } finally {
     app.fetchAppsScriptData = previousFetch;
     resetQueue();

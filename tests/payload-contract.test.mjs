@@ -39,20 +39,20 @@ const SECCIONES = [
 
 const seccionesDe = payload => SECCIONES.filter(k => Object.prototype.hasOwnProperty.call(payload, k));
 
-test("la descarga completa trae las nueve secciones", () => {
+test("la descarga completa deja las estimaciones para la petición separada", () => {
   const gs = setup();
   const payload = gs.buildDataPayload_(gs.resolveSheets_({}), { movements: true, banks: true, movedFutureMovements: [] });
 
   assert.equal(payload.ok, true);
-  assert.deepEqual(seccionesDe(payload), SECCIONES);
+  assert.deepEqual(seccionesDe(payload), SECCIONES.filter(s => !["investmentEstimateRules", "investmentEstimateLedger"].includes(s)));
   assert.ok(Object.prototype.hasOwnProperty.call(payload, "movedFutureMovements"));
 });
 
-test("la descarga base trae todo menos los movimientos", () => {
+test("la descarga base trae lo necesario sin movimientos ni estimaciones", () => {
   const gs = setup();
   const payload = gs.buildDataPayload_(gs.resolveSheets_({}), { banks: true, movedFutureMovements: [] });
 
-  assert.deepEqual(seccionesDe(payload), SECCIONES.filter(s => s !== "transactions" && s !== "futureTransactions"));
+  assert.deepEqual(seccionesDe(payload), SECCIONES.filter(s => !["transactions", "futureTransactions", "investmentEstimateRules", "investmentEstimateLedger"].includes(s)));
   assert.deepEqual([...payload.movedFutureMovements], []);
 });
 
@@ -60,11 +60,34 @@ test("la descarga de inversiones no trae movimientos ni bancos", () => {
   const gs = setup();
   const payload = gs.buildDataPayload_(gs.resolveSheets_({}));
 
-  assert.deepEqual(seccionesDe(payload), [
-    "investments", "investmentTotals", "investmentEstimateRules", "investmentEstimateLedger", "investmentGoals", "categories"
-  ]);
+  assert.deepEqual(seccionesDe(payload), ["investments", "investmentTotals", "investmentGoals", "categories"]);
   assert.equal(Object.prototype.hasOwnProperty.call(payload, "movedFutureMovements"), false,
     "sin movedFutureMovements: esta descarga no vence futuros");
+});
+
+test("las estimaciones se obtienen con un payload independiente", () => {
+  const gs = setup();
+  const payload = gs.buildInvestmentEstimatesPayload_(gs.resolveSheets_({}));
+  assert.deepEqual(seccionesDe(payload), ["investmentEstimateRules", "investmentEstimateLedger"]);
+});
+
+test("renombrar una categoría actualiza movimientos y estimaciones", () => {
+  const gs = setup();
+  gs.__spreadsheet.getSheetByName(MOVEMENT_SHEET).getRange(2, 1, 1, MOVEMENT_HEADERS.length).setValues([
+    ["2026-01-01", 2026, 1, 1, "Inversión", "Bolsa", "Bolsa", -100, "Banco", "m-1"]
+  ]);
+  const rulesName = "Reglas prueba";
+  const ledgerName = "Libro prueba";
+  gs.__spreadsheet.addSheet(rulesName, [gs.investmentEstimateRuleHeaders_(), ["r-1", true, "", "Bolsa", "", "", "", "", ""]]);
+  gs.__spreadsheet.addSheet(ledgerName, [gs.investmentEstimateLedgerHeaders_(), ["l-1", true, "2026-01-01", "m-1", "Bolsa", "", "", "", 100, 10, 10, "manual"]]);
+
+  gs.updateInvestmentCategoryNamesInMovements_(MOVEMENT_SHEET, { Bolsa: "ETFs" });
+  gs.updateInvestmentCategoryNamesInEstimateRules_(rulesName, { Bolsa: "ETFs" });
+  gs.updateInvestmentCategoryNamesInEstimateLedger_(ledgerName, { Bolsa: "ETFs" });
+
+  assert.deepEqual(gs.__spreadsheet.getSheetByName(MOVEMENT_SHEET).getRange(2, 6, 1, 2).getValues()[0], ["ETFs", "ETFs"]);
+  assert.equal(gs.__spreadsheet.getSheetByName(rulesName).getRange(2, 4).getValue(), "ETFs");
+  assert.equal(gs.__spreadsheet.getSheetByName(ledgerName).getRange(2, 5).getValue(), "ETFs");
 });
 
 test("resolveSheets_ aplica los valores por defecto y respeta los nombres de la petición", () => {
