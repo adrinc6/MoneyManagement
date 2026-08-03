@@ -138,6 +138,41 @@ test("downloadMovementPages reanuda desde el offset guardado sin pedir páginas 
   }
 });
 
+test("una página sin filas válidas no corta las páginas posteriores", async () => {
+  const previousFetch = app.fetchDownloadData;
+  const offsets = [];
+  try {
+    app.fetchDownloadData = async options => {
+      offsets.push(options.offset);
+      if (options.offset === 0) {
+        return { ok: true, transactions: [], total: 500, nextOffset: 250, hasMore: true };
+      }
+      return { ok: true, transactions: [{ sid: "posterior" }], total: 500, nextOffset: 500, hasMore: false };
+    };
+    const rows = await app.downloadMovementPages("realized", "movimientos", {});
+    assert.deepEqual(offsets, [0, 250]);
+    assert.deepEqual(Array.from(rows, row => row.sid), ["posterior"]);
+  } finally {
+    app.fetchDownloadData = previousFetch;
+  }
+});
+
+test("un fallo repetido reduce solo la página problemática", async () => {
+  const previousFetch = app.fetchAppsScriptData;
+  const limits = [];
+  try {
+    app.fetchAppsScriptData = async options => {
+      limits.push(options.limit);
+      if (limits.length < 4) throw new Error("Apps Script no pudo entregar movimientos reales.");
+      return { ok: true, transactions: [{ sid: "leída" }], total: 1, nextOffset: 1, hasMore: false };
+    };
+    await app.downloadMovementPages("realized", "movimientos", { recoverUntilSuccess: true, timeoutMs: null });
+    assert.deepEqual(limits, [1000, 1000, 1000, 500]);
+  } finally {
+    app.fetchAppsScriptData = previousFetch;
+  }
+});
+
 test("una descarga inicial recupera solo el bloque que falló, sin timeout ni reinicio global", async () => {
   const previousFetch = app.fetchAppsScriptData;
   let calls = 0;
@@ -240,6 +275,30 @@ test("refreshData no solapa descargas pero no descarta acciones del usuario", as
 
     assert.equal(started.length, 2, "la acción del usuario se ejecuta después, no se descarta");
     assert.equal(started[1].updateInvestments, true);
+  } finally {
+    app.refreshDataImpl = previousImpl;
+  }
+});
+
+test("refreshData deduplica dos actualizaciones manuales idénticas", async () => {
+  const previousImpl = app.refreshDataImpl;
+  try {
+    let calls = 0;
+    let release;
+    const pending = new Promise(resolve => { release = resolve; });
+    app.refreshDataImpl = async () => {
+      calls += 1;
+      await pending;
+      return true;
+    };
+
+    const first = app.refreshData({ force: true, manualRefresh: true, showProgress: true, scope: "movements" });
+    const duplicate = app.refreshData({ force: true, manualRefresh: true, showProgress: true, scope: "movements" });
+
+    assert.equal(first, duplicate, "ambas pulsaciones comparten la misma descarga");
+    assert.equal(calls, 1, "no se encola una segunda descarga idéntica");
+    release();
+    await first;
   } finally {
     app.refreshDataImpl = previousImpl;
   }

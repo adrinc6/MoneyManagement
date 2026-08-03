@@ -119,7 +119,11 @@ const CACHE_SECTION_KEYS = ["transactions", "futureTransactions", "investments",
 // En móvil una respuesta JSONP muy grande puede terminar como un error genérico del
 // elemento <script>, aunque Apps Script y el token estén bien. 250 filas mantiene cada
 // bloque ligero y, como se guarda al terminar, no se pierde avance entre páginas.
-const MOVEMENT_PAGE_SIZE = 250;
+// Una página es una ejecución independiente de Apps Script (más las redirecciones
+// de Google). 250 filas multiplicaba el coste fijo de red sin aportar seguridad:
+// 1.000 filas de nueve columnas siguen siendo un JSON pequeño. Si una página
+// concreta falla, downloadMovementPages ya reduce solo ese rango progresivamente.
+const MOVEMENT_PAGE_SIZE = 1000;
 
 const state = {
   config: loadConfig(),
@@ -922,23 +926,47 @@ const UPDATE_TEXT_BY_SCOPE = {
 // acción del usuario (forzar, actualizar precios, notificar) NO puede engancharse:
 // haría un trabajo distinto, así que espera su turno y se ejecuta después.
 let refreshInFlight = null;
+let refreshInFlightKey = "";
+
+function refreshRequestKey(options = {}) {
+  return JSON.stringify({
+    force: Boolean(options.force),
+    updateInvestments: Boolean(options.updateInvestments),
+    scope: options.scope || (options.updateInvestments ? "investments" : "all"),
+    cacheOnly: Boolean(options.cacheOnly),
+    resumeSections: [...(options.resumeSections || [])].sort()
+  });
+}
 
 function refreshData(options = {}) {
   const mustRunOnItsOwn = Boolean(options.force || options.updateInvestments);
+  const requestKey = refreshRequestKey(options);
   const start = () => {
     const run = refreshDataImpl(options).finally(() => {
-      if (refreshInFlight === run) refreshInFlight = null;
+      if (refreshInFlight === run) {
+        refreshInFlight = null;
+        refreshInFlightKey = "";
+      }
     });
     refreshInFlight = run;
+    refreshInFlightKey = requestKey;
     return run;
   };
   if (!refreshInFlight) return start();
+  // Una doble pulsación o dos eventos equivalentes no deben poner otra descarga
+  // idéntica en cola. Además de ensuciar el registro, esa ráfaga aumenta los fallos
+  // intermitentes del endpoint JSONP de Apps Script.
+  if (refreshInFlightKey === requestKey) return refreshInFlight;
   if (!mustRunOnItsOwn) return refreshInFlight;
   // Encadenada: el catch evita que un fallo previo tumbe esta petición.
   const chained = refreshInFlight.catch(() => { }).then(() => refreshDataImpl(options)).finally(() => {
-    if (refreshInFlight === chained) refreshInFlight = null;
+    if (refreshInFlight === chained) {
+      refreshInFlight = null;
+      refreshInFlightKey = "";
+    }
   });
   refreshInFlight = chained;
+  refreshInFlightKey = requestKey;
   return chained;
 }
 
@@ -966,7 +994,10 @@ async function refreshDataImpl(options = {}) {
     timeoutMs: unlimitedDownload ? null : undefined,
     // La primera carga se recupera siempre sobre el bloque que haya fallado, sin
     // reiniciar páginas ya almacenadas ni imponer un timeout global.
-    recoverUntilSuccess: unlimitedDownload
+    recoverUntilSuccess: unlimitedDownload,
+    // Las páginas ya son estrictamente secuenciales: la siguiente no empieza hasta
+    // recibir la anterior. No añadimos una espera fija que penalice cada bloque.
+    pageGapMs: 0
   };
   if (cached) {
     state.cacheMeta = normalizeCacheMeta(cached);
@@ -1328,6 +1359,7 @@ async function downloadMovementPages(kind, label, options = {}) {
   let offset = Math.max(0, Number(options.startOffset || 0));
   let total = null;
   let pagesFetched = 0;
+  let pageLimit = Math.max(25, Math.min(MOVEMENT_PAGE_SIZE, Number(options.pageLimit || MOVEMENT_PAGE_SIZE)));
   const rows = Array.isArray(options.initialRows) ? [...options.initialRows] : [];
   syncStatusStep(options.showProgress, `Descargando ${label}\nCalculando páginas`, "");
   while (true) {
@@ -1336,16 +1368,25 @@ async function downloadMovementPages(kind, label, options = {}) {
       const knownTotalPages = Math.max(1, Math.ceil(total / MOVEMENT_PAGE_SIZE));
       syncStatusStep(options.showProgress, `Descargando ${label}\nPágina ${pageNumber}/${knownTotalPages}`, "");
     }
-    const payload = await fetchDownloadData({
+    const request = {
       action: "downloadMovementsPage",
       movementKind: kind,
       offset,
-      limit: MOVEMENT_PAGE_SIZE
-    }, {
+      limit: pageLimit
+    };
+    const payload = await fetchDownloadData(request, {
       label: `${label} (página ${pageNumber})`,
       showProgress: options.showProgress,
       timeoutMs: options.timeoutMs,
-      recoverUntilSuccess: options.recoverUntilSuccess
+      recoverUntilSuccess: options.recoverUntilSuccess,
+      onRecovery: ({ attempt }) => {
+        // Si una respuesta concreta no llega, se parte únicamente ese rango. Así una
+        // celda anómala o un límite de tamaño no bloquea el resto del historial.
+        if (attempt % 3 !== 0 || pageLimit <= 25) return "";
+        pageLimit = Math.max(25, Math.floor(pageLimit / 2));
+        request.limit = pageLimit;
+        return `Reduciendo esta página a ${pageLimit} filas`;
+      }
     });
     assertPayloadOk(payload);
     const pageRows = kind === "future" ? (payload.futureTransactions || []) : (payload.transactions || []);
@@ -1355,12 +1396,21 @@ async function downloadMovementPages(kind, label, options = {}) {
     const previousOffset = offset;
     offset = Number.isFinite(Number(payload.nextOffset)) ? Number(payload.nextOffset) : offset + pageRows.length;
     syncStatusStep(options.showProgress, `Descargando ${label}\nPágina ${pageNumber}/${totalPages} · ${Math.min(rows.length, total)}/${total}`, "");
-    const completed = !payload.hasMore || !pageRows.length;
+    // Puede haber una página formada solo por filas antiguas/incompletas. No es el
+    // final: el backend indica explícitamente si quedan filas después de ella.
+    const completed = !payload.hasMore;
     options.onPage?.({ rows: [...rows], nextOffset: offset, total, completed });
     if (completed) break;
     pagesFetched += 1;
     if (offset <= previousOffset) throw new Error(`La paginación de ${label} no avanza (offset repetido).`);
     if (pagesFetched >= MOVEMENT_MAX_PAGES) throw new Error(`Descarga de ${label} interrumpida: demasiadas páginas (${MOVEMENT_MAX_PAGES}).`);
+    // Una vez obtenida una página reducida, el siguiente rango vuelve gradualmente
+    // al tamaño normal. No castiga toda la descarga por una zona problemática.
+    pageLimit = Math.min(MOVEMENT_PAGE_SIZE, pageLimit * 2);
+    const pageGapMs = Number(options.pageGapMs || 0);
+    if (Number.isFinite(pageGapMs) && pageGapMs > 0) {
+      await new Promise(resolve => window.setTimeout(resolve, pageGapMs));
+    }
   }
   return rows;
 }
@@ -2781,7 +2831,7 @@ function waitForDownloadRecovery(attempt) {
 // Una descarga inicial no se abandona por un error transitorio. Solo se repite el
 // bloque que estaba en curso; las páginas anteriores siguen en caché y nunca se
 // reinicia la descarga completa.
-async function fetchDownloadData(options = {}, { label = "datos", showProgress = false, timeoutMs = DOWNLOAD_TIMEOUT_MS, recoverUntilSuccess = false } = {}) {
+async function fetchDownloadData(options = {}, { label = "datos", showProgress = false, timeoutMs = DOWNLOAD_TIMEOUT_MS, recoverUntilSuccess = false, onRecovery = null } = {}) {
   let recoveryAttempt = 0;
   while (true) {
     try {
@@ -2792,10 +2842,17 @@ async function fetchDownloadData(options = {}, { label = "datos", showProgress =
         throw error;
       }
       recoveryAttempt += 1;
+      const recoveryDetail = typeof onRecovery === "function"
+        ? String(onRecovery({ attempt: recoveryAttempt, error }) || "")
+        : "";
       if (recoveryAttempt === 1 || recoveryAttempt % 6 === 0) {
-        logSyncEvent(`Conexión irregular al descargar ${label}; continúo desde esta misma página.`, "warn", error.message || String(error));
+        logSyncEvent(`Reconectando al descargar ${label}; se conserva el progreso.`, "", `Intento ${recoveryAttempt}`);
       }
-      syncStatusStep(showProgress, `Descargando ${label}\nReconectando sin reiniciar`, "warn");
+      syncStatusStep(showProgress, lineMessage(
+        `Descargando ${label}`,
+        `Reconectando sin reiniciar (intento ${recoveryAttempt})`,
+        recoveryDetail
+      ), "warn");
       await waitForDownloadRecovery(recoveryAttempt);
     }
   }
@@ -2816,9 +2873,11 @@ function jsonp(url, { timeoutMs = JSONP_TIMEOUT_MS, confirmationCheck = false, r
     window[cb] = data => { cleanup(); resolve(data); };
     script.onerror = () => {
       cleanup();
-      reject(new Error(confirmationCheck
+      const error = new Error(confirmationCheck
         ? "No se pudo comprobar todavía la confirmación."
-        : `Apps Script no pudo entregar ${requestLabel}. Se conserva lo ya descargado; vuelve a pulsar Actualizar para reanudar ese bloque.`));
+        : `La conexión con Apps Script se interrumpió al recibir ${requestLabel}.`);
+      error.code = "APPS_SCRIPT_TRANSPORT";
+      reject(error);
     };
     // Una descarga inicial puede pedir explícitamente no tener límite temporal: la
     // caché todavía no existe y se prefiere esperar a Apps Script antes que reiniciar

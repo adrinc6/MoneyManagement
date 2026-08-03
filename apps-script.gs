@@ -135,12 +135,13 @@ function resolveSheets_(source) {
 // sincronizadas.
 function buildDataPayload_(sheets, { movements = false, banks = false, estimates = false, movedFutureMovements } = {}) {
   const investments = readInvestments_(sheets.investment);
+  const investmentTotals = investmentTotalsForRead_(sheets.investmentTotals, sheets.investment, sheets.movement);
   const payload = {
     ok: true,
     investments,
-    investmentTotals: investmentTotalsForRead_(sheets.investmentTotals, sheets.investment, sheets.movement),
+    investmentTotals,
     investmentGoals: readInvestmentGoals_(sheets.objective),
-    categories: readAppCategories_(sheets.data, sheets.investmentTotals, sheets.investment, investments)
+    categories: readAppCategories_(sheets.data, sheets.investmentTotals, sheets.investment, investments, investmentTotals)
   };
   if (estimates) {
     payload.investmentEstimateRules = readInvestmentEstimateRules_(sheets.investmentEstimateRules);
@@ -939,7 +940,7 @@ function readMovementsPage_(sheetName, offset, limit, optional) {
   const total = Math.max(0, sheet.getLastRow() - 1);
   const safeOffset = Math.max(0, Math.min(Number(offset || 0), total));
   const requestedLimit = Number(limit || 250);
-  const safeLimit = requestedLimit >= Number.MAX_SAFE_INTEGER ? Math.max(1, total) : Math.max(1, Math.min(requestedLimit, 250));
+  const safeLimit = requestedLimit >= Number.MAX_SAFE_INTEGER ? Math.max(1, total) : Math.max(1, Math.min(requestedLimit, 1000));
   if (!total || safeOffset >= total) {
     return { rows: [], total, offset: safeOffset, limit: safeLimit, nextOffset: safeOffset, hasMore: false };
   }
@@ -1216,11 +1217,14 @@ function readInvestments_(sheetName) {
   if (!sheet) return [];
   const range = sheet.getDataRange();
   const values = range.getValues();
-  const displayValues = range.getDisplayValues();
   const col = investmentColumnMap_(sheet);
+  // Solo la variación necesita el texto mostrado para distinguir correctamente un
+  // porcentaje. Antes getDisplayValues() duplicaba la lectura de toda la hoja.
+  const displayVariations = col.variacion && range.getNumRows() > 1
+    ? sheet.getRange(2, col.variacion, range.getNumRows() - 1, 1).getDisplayValues()
+    : [];
   return values.slice(1)
     .map((row, index) => {
-      const displayRow = displayValues[index + 1] || [];
       const cantidad = parseNumber_(row[col.cantidad - 1]);
       const valor = parseNumber_(row[col.valor - 1]);
       let total = parseNumber_(col.total ? row[col.total - 1] : NaN);
@@ -1236,7 +1240,7 @@ function readInvestments_(sheetName) {
         valor,
         total,
         valorAnterior: parseNumber_(col.valorAnterior ? row[col.valorAnterior - 1] : NaN),
-        variacion: normalizeInvestmentPercent_(col.variacion ? row[col.variacion - 1] : NaN, col.variacion ? displayRow[col.variacion - 1] : '')
+        variacion: normalizeInvestmentPercent_(col.variacion ? row[col.variacion - 1] : NaN, displayVariations[index] ? displayVariations[index][0] : '')
       };
     })
     .filter(row => row.data && row.nombre && isInvestmentPositionType_(row.tipo) && Number.isFinite(row.total) && row.total >= 0);
@@ -1558,7 +1562,8 @@ function readInvestmentGoals_(sheetName) {
   const sheet = getSheet_(sheetName);
   const goals = { expenseMonthly: 0, investmentMonthly: 0, monthly: 0, yearly: 0, total: 0 };
   if (!sheet) return goals;
-  const values = sheet.getDataRange().getDisplayValues();
+  const lastRow = sheet.getLastRow();
+  const values = lastRow ? sheet.getRange(1, 1, lastRow, 2).getDisplayValues() : [];
   values.slice(1).forEach(row => {
     const key = normalizeGoalKey_(row[0]);
     const value = parseNumber_(row[1]);
@@ -1571,7 +1576,8 @@ function readInvestmentGoals_(sheetName) {
 
 function readBanks_(sheetName) {
   const sheet = requireSheet_(sheetName);
-  const values = sheet.getDataRange().getDisplayValues();
+  const lastRow = sheet.getLastRow();
+  const values = lastRow ? sheet.getRange(1, 1, lastRow, 2).getDisplayValues() : [];
   return values.slice(1)
     .map((row, index) => ({
       rowNumber: index + 2,
@@ -2318,8 +2324,8 @@ function saveInvestmentGoals_(goals, sheetName) {
 // `knownInvestments` evita releer la hoja de inversiones cuando el llamante ya la tiene:
 // readInvestments_ hace getValues() Y getDisplayValues(), o sea dos lecturas completas de
 // la hoja cada vez que se llama.
-function readInvestmentCategoriesForTotals_(totalsSheetName, investmentSheetName, knownInvestments) {
-  const totals = readInvestmentTotals_(totalsSheetName || DEFAULT_INVESTMENT_TOTALS_SHEET)
+function readInvestmentCategoriesForTotals_(totalsSheetName, investmentSheetName, knownInvestments, knownTotals) {
+  const totals = (knownTotals || readInvestmentTotals_(totalsSheetName || DEFAULT_INVESTMENT_TOTALS_SHEET))
     .sort(function(a, b) { return Number(a.order || 0) - Number(b.order || 0); })
     .map(function(item) { return String(item.tipo || '').trim(); })
     .filter(Boolean);
@@ -2329,9 +2335,9 @@ function readInvestmentCategoriesForTotals_(totalsSheetName, investmentSheetName
   return Array.from(new Set([].concat(totals, investments).filter(Boolean)));
 }
 
-function readAppCategories_(dataSheetName, totalsSheetName, investmentSheetName, knownInvestments) {
+function readAppCategories_(dataSheetName, totalsSheetName, investmentSheetName, knownInvestments, knownTotals) {
   const categories = readCategories_(dataSheetName || 'Datos');
-  categories.investmentTypes = readInvestmentCategoriesForTotals_(totalsSheetName || DEFAULT_INVESTMENT_TOTALS_SHEET, investmentSheetName || DEFAULT_INVESTMENT_SHEET, knownInvestments);
+  categories.investmentTypes = readInvestmentCategoriesForTotals_(totalsSheetName || DEFAULT_INVESTMENT_TOTALS_SHEET, investmentSheetName || DEFAULT_INVESTMENT_SHEET, knownInvestments, knownTotals);
   return categories;
 }
 
@@ -2514,7 +2520,8 @@ function adjustInvestmentCostFromMovement_(sheets, movementSheetName, movement, 
 
 function readCategories_(sheetName) {
   const sheet = ensureDataSheet_(sheetName || 'Datos');
-  const values = sheet.getDataRange().getDisplayValues();
+  const lastRow = sheet.getLastRow();
+  const values = lastRow ? sheet.getRange(1, 1, lastRow, 2).getDisplayValues() : [];
   return {
     types: values.slice(1).map(row => row[0]).filter(Boolean),
     concepts: values.slice(1).map(row => row[1]).filter(Boolean),
@@ -2744,7 +2751,16 @@ function normalizeGoalKey_(value) {
 // Única forma de construir la respuesta. Con callback envuelve en JSONP (lo que pide
 // doGet desde el <script>); sin él, JSON a secas (doPost).
 function json_(payload, callback) {
-  const body = JSON.stringify(payload);
+  // JSONP se ejecuta como JavaScript dentro de un <script>. Caracteres que son
+  // perfectamente válidos dentro de una celda (separadores Unicode de línea o
+  // secuencias HTML pegadas desde una nota) pueden hacer que navegadores móviles
+  // antiguos rechacen el script entero. Se escapan siempre, no solo movimientos.
+  const body = JSON.stringify(payload)
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e')
+    .replace(/&/g, '\\u0026')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
   return ContentService
     .createTextOutput(callback ? `${callback}(${body});` : body)
     .setMimeType(callback ? ContentService.MimeType.JAVASCRIPT : ContentService.MimeType.JSON);

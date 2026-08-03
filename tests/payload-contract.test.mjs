@@ -65,6 +65,16 @@ test("la descarga de inversiones no trae movimientos ni bancos", () => {
     "sin movedFutureMovements: esta descarga no vence futuros");
 });
 
+test("la respuesta JSONP escapa caracteres que pueden romper el script del móvil", () => {
+  const gs = setup();
+  const output = gs.json_({ ok: true, descripcion: "<nota>&\u2028\u2029" }, "callbackPrueba");
+  assert.match(output.text, /^callbackPrueba\(\{/);
+  assert.match(output.text, /\\u003cnota\\u003e/);
+  assert.match(output.text, /\\u0026/);
+  assert.match(output.text, /\\u2028/);
+  assert.match(output.text, /\\u2029/);
+});
+
 test("las estimaciones se obtienen con un payload independiente", () => {
   const gs = setup();
   const payload = gs.buildInvestmentEstimatesPayload_(gs.resolveSheets_({}));
