@@ -486,3 +486,23 @@ test("no se lanzan más peticiones simultáneas de las permitidas", async () => 
     app.fetch = previousFetch;
   }
 });
+
+test("un backend desactualizado se detecta y no se reintenta", async () => {
+  // Sin capa de compatibilidad, una acción desconocida solo puede ser que el Apps Script
+  // desplegado sea más antiguo que la app: repetir 40 veces no lo arregla.
+  const previousFetch = app.fetchAppsScriptData;
+  let calls = 0;
+  try {
+    app.fetchAppsScriptData = async () => {
+      calls += 1;
+      return { ok: false, error: "Acción no reconocida: batchOps", errorCode: "UNKNOWN_ACTION" };
+    };
+    await assert.rejects(
+      () => app.fetchDownloadData({ action: "downloadCoreData" }, { recoverUntilSuccess: true }),
+      /más antiguo que la app/
+    );
+    assert.equal(calls, 1);
+  } finally {
+    app.fetchAppsScriptData = previousFetch;
+  }
+});

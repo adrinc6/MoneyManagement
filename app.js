@@ -1455,7 +1455,8 @@ const ERROR_CODE_MESSAGES = {
   TIMEOUT: "Apps Script no respondió a tiempo.",
   NETWORK: "No se pudo contactar con Apps Script.",
   MALFORMED: "Apps Script devolvió una respuesta ilegible.",
-  CONFIG: "El despliegue de Apps Script no es accesible. Revisa que esté publicado con acceso para cualquiera."
+  CONFIG: "El despliegue de Apps Script no es accesible. Revisa que esté publicado con acceso para cualquiera.",
+  UNKNOWN_ACTION: "El Apps Script desplegado es más antiguo que la app. Vuelve a pegar apps-script.gs y despliega una versión nueva."
 };
 
 function assertPayloadOk(payload) {
@@ -2998,7 +2999,7 @@ const POST_CONTENT_TYPE = "text/plain;charset=utf-8";
 // vivía FUERA del bucle: un LOCK_TIMEOUT —el caso más reintentable que hay— abortaba la
 // actualización entera, mientras que un fallo de transporte sin información reintentaba
 // para siempre. Estaba justo del revés.
-const PERMANENT_ERROR_CODES = new Set(["AUTH", "SHEET_NOT_FOUND", "VALIDATION", "NOT_FOUND", "CONFIG"]);
+const PERMANENT_ERROR_CODES = new Set(["AUTH", "SHEET_NOT_FOUND", "VALIDATION", "NOT_FOUND", "CONFIG", "UNKNOWN_ACTION"]);
 
 function isPermanentError(error) {
   return PERMANENT_ERROR_CODES.has(String(error?.errorCode || ""));

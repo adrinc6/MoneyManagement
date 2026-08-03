@@ -93,7 +93,7 @@ function doGet(e) {
       });
       payload = { ok: true, notificationsSent: notificationResult.sent, duplicate: notificationResult.duplicate, pricesUpdated: false, investmentMode: investmentMode };
     } else {
-      payload = { ok: false, error: 'Unknown action' };
+      payload = unknownActionPayload_(action);
     }
   } catch (err) {
     payload = errorPayload_(err);
@@ -585,7 +585,7 @@ function applyPostAction_(payload) {
       const changed = reassignFutureMovementsAccount_(payload.futureMovementSheet || DEFAULT_FUTURE_MOVEMENT_SHEET, payload.oldName || '', payload.newName || '');
       return { ok: true, changed };
     }
-    return { ok: false, error: 'Unknown action' };
+    return unknownActionPayload_(payload.action);
 }
 
 function requireToken_(token) {
@@ -2827,6 +2827,13 @@ function errorCode_(err) {
   if (/Ya existe una cuenta/i.test(message)) return 'CONFLICT';
   if (/quota|límite|limit/i.test(message)) return 'QUOTA';
   return 'UNKNOWN';
+}
+
+// Sin capa de compatibilidad, una acción desconocida solo puede significar que el
+// Apps Script desplegado es más antiguo que la app. Reintentar no lo arregla, así que
+// lleva código propio para que el cliente pare y diga qué hacer.
+function unknownActionPayload_(action) {
+  return { ok: false, error: 'Acción no reconocida: ' + String(action || '(vacía)'), errorCode: 'UNKNOWN_ACTION' };
 }
 
 function errorPayload_(err) {
