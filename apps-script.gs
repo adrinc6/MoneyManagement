@@ -68,7 +68,6 @@ function doGet(e) {
         applyInvestmentCostChanges_(sheets, movedFutureMovements.map(function(movement) {
           return { movement: movement, sign: 1 };
         }), movementSheet);
-        syncInvestmentTotalsSheet_(investmentTotalsSheet, investmentSheet, movementSheet);
       }
       payload = {
         ok: true,
@@ -82,7 +81,6 @@ function doGet(e) {
         applyInvestmentCostChanges_(sheets, movedFutureMovements.map(function(movement) {
           return { movement: movement, sign: 1 };
         }), movementSheet);
-        syncInvestmentTotalsSheet_(investmentTotalsSheet, investmentSheet, movementSheet);
       }
       payload = buildDataPayload_(sheets, { movements: true, banks: true, movedFutureMovements });
     } else if (action === 'updateInvestmentPrices') {
@@ -551,7 +549,6 @@ function dispatchPostAction_(payload, pendingId) {
       // periódicas llegan de una en una, sería ese coste multiplicado por cada fecha.
       if (isInvestmentMovement_(payload.movement)) {
         adjustInvestmentCostFromMovement_(resolveSheets_(payload), payload.sheetName || DEFAULT_MOVEMENT_SHEET, payload.movement, 1);
-        syncInvestmentTotalsSheet_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.investmentSheet || DEFAULT_INVESTMENT_SHEET, payload.sheetName || DEFAULT_MOVEMENT_SHEET);
       }
       if (payload.account) {
         // El ajuste de saldo es una suma, no es idempotente: si el registro del
@@ -571,26 +568,25 @@ function dispatchPostAction_(payload, pendingId) {
       return finishPost_(pendingId, payload, { ok: true });
     }
     if (payload.action === 'updateMovement') {
-      if (payload.previousMovement) adjustInvestmentCostFromMovement_(resolveSheets_(payload), payload.sheetName || DEFAULT_MOVEMENT_SHEET, payload.previousMovement, -1);
       updateMovement_(payload.movement, payload.sheetName || DEFAULT_MOVEMENT_SHEET, payload.previousMovement || null);
-      adjustInvestmentCostFromMovement_(resolveSheets_(payload), payload.sheetName || DEFAULT_MOVEMENT_SHEET, payload.movement, 1);
-      syncInvestmentTotalsSheet_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.investmentSheet || DEFAULT_INVESTMENT_SHEET, payload.sheetName || DEFAULT_MOVEMENT_SHEET);
+      applyInvestmentCostChanges_(resolveSheets_(payload), [
+        { movement: payload.previousMovement, sign: -1 },
+        { movement: payload.movement, sign: 1 }
+      ], payload.sheetName || DEFAULT_MOVEMENT_SHEET);
       return finishPost_(pendingId, payload, { ok: true });
     }
     if (payload.action === 'deleteMovement') {
-      if (payload.movement) adjustInvestmentCostFromMovement_(resolveSheets_(payload), payload.sheetName || DEFAULT_MOVEMENT_SHEET, payload.movement, -1);
       deleteMovement_(payload.rowNumber, payload.sheetName || DEFAULT_MOVEMENT_SHEET, payload.movement || null);
-      syncInvestmentTotalsSheet_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.investmentSheet || DEFAULT_INVESTMENT_SHEET, payload.sheetName || DEFAULT_MOVEMENT_SHEET);
+      adjustInvestmentCostFromMovement_(resolveSheets_(payload), payload.sheetName || DEFAULT_MOVEMENT_SHEET, payload.movement, -1);
       return finishPost_(pendingId, payload, { ok: true });
     }
     if (payload.action === 'deleteMovementsBatch') {
+      deleteMovementsBatch_(payload.movements || [], payload.sheetName || DEFAULT_MOVEMENT_SHEET);
       applyInvestmentCostChanges_(
         resolveSheets_(payload),
         (payload.movements || []).map(function(item) { return { movement: item && (item.movement || item), sign: -1 }; }),
         payload.sheetName || DEFAULT_MOVEMENT_SHEET
       );
-      deleteMovementsBatch_(payload.movements || [], payload.sheetName || DEFAULT_MOVEMENT_SHEET);
-      syncInvestmentTotalsSheet_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.investmentSheet || DEFAULT_INVESTMENT_SHEET, payload.sheetName || DEFAULT_MOVEMENT_SHEET);
       return finishPost_(pendingId, payload, { ok: true });
     }
     if (payload.action === 'updateInvestment') {
@@ -777,7 +773,10 @@ function ensureMovementSidColumnCached_(sheet) {
   if (!sheet) return 0;
   const key = String(sheet.getSheetId());
   if (!(key in movementSidColumnCache_)) {
-    movementSidColumnCache_[key] = ensureMovementSidColumn_(sheet);
+    // En el caso normal la columna ya existe: localizarla por cabecera evita leer
+    // toda la hoja cada vez que se añade, edita o borra un movimiento.
+    const existingSidColumn = movementSidColumn_(sheet);
+    movementSidColumnCache_[key] = existingSidColumn || ensureMovementSidColumn_(sheet);
   }
   return movementSidColumnCache_[key];
 }
@@ -1586,7 +1585,15 @@ function readBanks_(sheetName) {
 
 function saveBanks_(banks, sheetName) {
   const sheet = requireSheet_(sheetName);
-
+  const lastRow = sheet.getLastRow();
+  const rows = lastRow >= 2 ? sheet.getRange(2, 1, lastRow - 1, 2).getValues() : [];
+  const rowByAccount = {};
+  rows.forEach(function(row, index) {
+    const account = String(row[0] || '').trim();
+    if (account) rowByAccount[normalizeType_(account)] = index;
+  });
+  const appendRows = [];
+  const changedRows = [];
   banks.forEach(item => {
     if (!item || !item.cuenta) return;
     const amount = parseNumber_(item.dinero);
@@ -1594,40 +1601,82 @@ function saveBanks_(banks, sheetName) {
     // El rowNumber del cliente puede estar desfasado si la hoja cambió: se verifica
     // que esa fila sea de la misma cuenta antes de escribir encima; si no, se busca
     // por nombre para no machacar una fila ajena.
-    let rowNumber = Number(item.rowNumber || 0);
-    if (rowNumber >= 2 && rowNumber <= sheet.getLastRow()) {
-      const currentAccount = String(sheet.getRange(rowNumber, 1).getValue() || '').trim();
-      if (currentAccount !== String(item.cuenta).trim()) rowNumber = 0;
-    } else {
-      rowNumber = 0;
+    let rowIndex = Number(item.rowNumber || 0) - 2;
+    if (rowIndex < 0 || rowIndex >= rows.length || String(rows[rowIndex][0] || '').trim() !== String(item.cuenta).trim()) {
+      rowIndex = rowByAccount[normalizeType_(item.cuenta)];
     }
-    if (!rowNumber) rowNumber = Number(findBankRow_(sheet, item.cuenta) || 0);
-    const values = [[sanitizeCell_(item.cuenta), amount]];
-    if (rowNumber >= 2 && rowNumber <= sheet.getMaxRows()) {
-      setRangeValuesSafe_(sheet.getRange(rowNumber, 1, 1, 2), values);
+    if (Number.isInteger(rowIndex) && rowIndex >= 0) {
+      const next = [sanitizeCell_(item.cuenta), amount];
+      if (String(rows[rowIndex][0] || '') !== String(next[0]) || Number(rows[rowIndex][1]) !== amount) {
+        rows[rowIndex] = next;
+        changedRows.push(rowIndex);
+      }
     } else {
-      appendRowSafe_(sheet, values[0]);
+      appendRows.push([sanitizeCell_(item.cuenta), amount]);
     }
   });
+  writeBankRowUpdates_(sheet, rows, changedRows);
+  if (appendRows.length) setRangeValuesSafe_(sheet.getRange(lastRow + 1, 1, appendRows.length, 2), appendRows);
+}
+
+function writeBankRowUpdates_(sheet, rows, indexes) {
+  const ordered = Array.from(new Set(indexes || [])).sort(function(a, b) { return a - b; });
+  for (let start = 0; start < ordered.length;) {
+    let end = start;
+    while (end + 1 < ordered.length && ordered[end + 1] === ordered[end] + 1) end += 1;
+    const first = ordered[start];
+    const count = end - start + 1;
+    setRangeValuesSafe_(sheet.getRange(first + 2, 1, count, 2), rows.slice(first, first + count));
+    start = end + 1;
+  }
 }
 
 function transferBank_(sheetName, from, to, amount) {
   const transferAmount = Math.abs(Number(amount || 0));
   if (!from || !to || from === to || !Number.isFinite(transferAmount) || transferAmount <= 0) throw new Error('Invalid transfer');
-  adjustBank_(sheetName, from, -transferAmount);
-  adjustBank_(sheetName, to, transferAmount);
+  adjustBankBalances_(sheetName, [{ account: from, delta: -transferAmount }, { account: to, delta: transferAmount }]);
 }
 
 function adjustBank_(sheetName, account, delta) {
   if (!account || !Number.isFinite(delta) || delta === 0) return;
+  adjustBankBalances_(sheetName, [{ account: account, delta: delta }]);
+}
+
+function adjustBankBalances_(sheetName, changes) {
+  const pending = (changes || []).filter(function(change) {
+    return change && change.account && Number.isFinite(Number(change.delta)) && Number(change.delta) !== 0;
+  });
+  if (!pending.length) return;
   const sheet = requireSheet_(sheetName);
-  const row = findBankRow_(sheet, account);
-  if (!row) throw new Error(`Bank account not found: ${account}`);
-  const current = parseNumber_(sheet.getRange(row, 2).getValue());
-  // Escritura protegida: es la ÚNICA que hace una transferencia ya vencida, así que
-  // una regla de validación en la columna de importes (p. ej. "mayor que 0") la
-  // dejaba fallando para siempre.
-  setCellValueSafe_(sheet.getRange(row, 2), (Number.isFinite(current) ? current : 0) + delta);
+  const rowCount = sheet.getLastRow() - 1;
+  if (rowCount <= 0) throw new Error('Bank account not found');
+  const rows = sheet.getRange(2, 1, rowCount, 2).getValues();
+  const rowByAccount = {};
+  rows.forEach(function(row, index) {
+    const account = String(row[0] || '').trim();
+    if (account) rowByAccount[normalizeType_(account)] = index;
+  });
+  const changedRows = [];
+  pending.forEach(function(change) {
+    const rowIndex = rowByAccount[normalizeType_(change.account)];
+    if (!Number.isInteger(rowIndex)) throw new Error(`Bank account not found: ${change.account}`);
+    const current = parseNumber_(rows[rowIndex][1]);
+    rows[rowIndex][1] = (Number.isFinite(current) ? current : 0) + Number(change.delta);
+    changedRows.push(rowIndex);
+  });
+  writeBankAmountUpdates_(sheet, rows, changedRows);
+}
+
+function writeBankAmountUpdates_(sheet, rows, indexes) {
+  const ordered = Array.from(new Set(indexes || [])).sort(function(a, b) { return a - b; });
+  for (let start = 0; start < ordered.length;) {
+    let end = start;
+    while (end + 1 < ordered.length && ordered[end + 1] === ordered[end] + 1) end += 1;
+    const first = ordered[start];
+    const count = end - start + 1;
+    setRangeValuesSafe_(sheet.getRange(first + 2, 2, count, 1), rows.slice(first, first + count).map(function(row) { return [row[1]]; }));
+    start = end + 1;
+  }
 }
 
 function findBankRow_(sheet, account) {
@@ -2430,21 +2479,25 @@ function applyInvestmentCostChanges_(sheets, changes, movementSheetName) {
   const list = (changes || []).filter(function(change) { return change && change.movement; });
   if (!list.length) return;
 
-  const categories = readInvestmentCategoriesForTotals_(sheets.investmentTotals, sheets.investment);
+  let sheet = getSheet_(sheets.investmentTotals);
+  // Solo inicializa los totales una vez. Si se acaba de modificar el movimiento,
+  // la sincronización completa ya incorpora ese estado y no se aplica el delta por
+  // segunda vez. En el uso normal se lee y escribe únicamente TIPO/COSTE.
+  if (!sheet || sheet.getLastRow() < 2) {
+    syncInvestmentTotalsSheet_(sheets.investmentTotals, sheets.investment, sheets.movement);
+    return;
+  }
+  const values = sheet.getRange(2, 1, sheet.getLastRow() - 1, 2).getValues();
+  const categories = values.map(function(row) { return String(row[0] || '').trim(); }).filter(Boolean);
   const entries = [];
   list.forEach(function(change) {
     const category = movementInvestmentCategory_(change.movement, categories);
     if (!category) return;
     const amount = Math.abs(parseNumber_(change.movement.importe ?? change.movement.amount));
     if (!Number.isFinite(amount) || amount <= 0) return;
-    entries.push({ category: category, delta: change.sign * amount });
+    entries.push({ category: category, delta: Number(change.sign || 0) * amount });
   });
   if (!entries.length) return;
-
-  syncInvestmentTotalsSheet_(sheets.investmentTotals, sheets.investment, sheets.movement);
-  const sheet = getSheet_(sheets.investmentTotals);
-  if (!sheet || sheet.getLastRow() < 2) return;
-  const values = sheet.getRange(2, 1, sheet.getLastRow() - 1, 2).getValues();
   let touched = false;
   entries.forEach(function(entry) {
     const row = values.find(function(candidate) { return normalizeType_(candidate[0]) === normalizeType_(entry.category); });

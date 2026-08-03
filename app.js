@@ -1817,7 +1817,7 @@ function opStatusText(op) {
   const attempts = Number(op.attempts || 0);
   if (op.status === "error") return "Error (no se reintenta solo)";
   if (op.status === "sending") return "Enviando";
-  if (op.status === "checking") return "Confirmando";
+  if (op.status === "checking") return op.confirmationDelayed ? "Confirmando en segundo plano" : "Confirmando";
   if (attempts) return `Pendiente (reintento ${attempts + 1} en ${Math.max(1, Math.round((Number(op.nextAttemptAt || 0) - Date.now()) / 1000))} s)`;
   return "Pendiente (auto cada 5 s)";
 }
@@ -2127,10 +2127,6 @@ function withClientOpId(payload = {}) {
   return { ...payload, clientOpId: createSid("op") };
 }
 
-function sleep(ms) {
-  return new Promise(resolve => window.setTimeout(resolve, ms));
-}
-
 async function recoverInterruptedSendingOps() {
   const queue = readOpQueue();
   const sending = queue.filter(op => op.status === "sending");
@@ -2150,7 +2146,7 @@ async function recoverInterruptedSendingOps() {
           writeOpQueue(readOpQueue().filter(item => item.id !== op.id));
         }
       } catch (error) {
-        logSyncEvent("No se pudo comprobar un envío interrumpido; se reintentará.", "warn", error.message || String(error));
+        logSyncEvent("No se pudo comprobar un envío interrumpido; seguirá verificándose sin reenviarlo.", "warn", error.message || String(error));
       }
     }
   }
@@ -2158,14 +2154,15 @@ async function recoverInterruptedSendingOps() {
   let changed = false;
   refreshedQueue.forEach(op => {
     if (op.status !== "sending") return;
-    op.status = "retry";
-    op.nextAttemptAt = 0;
-    op.error = op.error || "Envío interrumpido al cerrar la app; se reintentará automáticamente.";
+    op.status = "checking";
+    op.nextAttemptAt = Date.now() + OP_POLL_INTERVAL_MS;
+    op.lastSentAt = Number(op.lastSentAt || Date.now());
+    op.error = null;
     changed = true;
   });
   if (changed) {
     writeOpQueue(refreshedQueue);
-    logSyncEvent("Envíos interrumpidos marcados para reintento automático.", "warn");
+    logSyncEvent("Envíos interrumpidos retenidos para confirmar sin reenviarlos.", "warn");
   }
 }
 
@@ -2218,10 +2215,9 @@ function queueOps(payloads, { label = "" } = {}) {
 }
 
 const OP_POLL_INTERVAL_MS = 5000;
-// Cada cambio se POSTea una sola vez. Después solo se consulta su clientOpId cada 5 s
-// durante un minuto: repetir el POST mientras Apps Script espera su lock era la causa
-// de la cola de reintentos y de muchas ejecuciones duplicadas en espera.
-const OP_CONFIRM_TIMEOUT_MS = 60000;
+// Cada cambio se POSTea una sola vez. Tras un minuto sin respuesta, el estado pasa a
+// ser discreto pero continúa verificándose: nunca se reenvía una operación aceptada.
+const OP_CONFIRM_DELAY_NOTICE_MS = 60000;
 const MAX_UNCONFIRMED_OPS = 1;
 let opQueuePollerHandle = null;
 const opsInFlight = new Set();
@@ -2388,21 +2384,25 @@ async function checkQueuedOp(opId) {
       markOpStatus(opId, { status: "checking", error: null, nextAttemptAt: Date.now() + OP_POLL_INTERVAL_MS });
       return;
     }
-    // Sin noticias puede ser una ejecución esperando el lock. Seguimos consultando
-    // durante un minuto, sin reenviar el POST; después se deja para reintento manual.
+    // Sin noticias puede ser una ejecución esperando el lock o una consulta JSONP
+    // puntual fallida. Se sigue consultando sin reenviar el POST ni mostrar ese fallo
+    // técnico como si el cambio hubiese sido rechazado.
     const sentAt = Number(item.lastSentAt || 0);
-    if (sentAt && Date.now() - sentAt < OP_CONFIRM_TIMEOUT_MS) {
-      markOpStatus(opId, { status: "checking", error: null, nextAttemptAt: Date.now() + OP_POLL_INTERVAL_MS });
-      return;
-    }
-    failQueuedOp(opId, "No se confirmó en un minuto. Reintenta manualmente desde Ajustes › Conexión.");
+    markOpStatus(opId, {
+      status: "checking",
+      error: null,
+      confirmationDelayed: Boolean(sentAt && Date.now() - sentAt >= OP_CONFIRM_DELAY_NOTICE_MS),
+      nextAttemptAt: Date.now() + OP_POLL_INTERVAL_MS
+    });
   } catch (error) {
     const sentAt = Number(item.lastSentAt || 0);
-    if (sentAt && Date.now() - sentAt < OP_CONFIRM_TIMEOUT_MS) {
-      markOpStatus(opId, { status: "checking", error: error.message || String(error), nextAttemptAt: Date.now() + OP_POLL_INTERVAL_MS });
-    } else {
-      failQueuedOp(opId, error.message || error);
-    }
+    logSyncEvent("No se pudo comprobar todavía una operación enviada; seguirá verificándose.", "warn", error.message || String(error));
+    markOpStatus(opId, {
+      status: "checking",
+      error: null,
+      confirmationDelayed: Boolean(sentAt && Date.now() - sentAt >= OP_CONFIRM_DELAY_NOTICE_MS),
+      nextAttemptAt: Date.now() + OP_POLL_INTERVAL_MS
+    });
   } finally {
     opsInFlight.delete(opId);
     renderPendingOpsBadge();
@@ -2632,7 +2632,7 @@ async function fetchAppsScriptData(options = {}) {
   if (options.movementKind) params.set("movementKind", options.movementKind);
   if (Number.isFinite(Number(options.offset))) params.set("offset", String(Number(options.offset)));
   if (Number.isFinite(Number(options.limit))) params.set("limit", String(Number(options.limit)));
-  return jsonp(appsScriptGetUrl(params), { timeoutMs: options.timeoutMs });
+  return jsonp(appsScriptGetUrl(params), { timeoutMs: options.timeoutMs, confirmationCheck: action === "checkClientOp" });
 }
 
 function assertAppsScriptDeploymentUrl() {
@@ -2676,7 +2676,7 @@ async function fetchDownloadData(options = {}, { label = "datos", showProgress =
 
 const JSONP_TIMEOUT_MS = 20000;
 
-function jsonp(url, { timeoutMs = JSONP_TIMEOUT_MS } = {}) {
+function jsonp(url, { timeoutMs = JSONP_TIMEOUT_MS, confirmationCheck = false } = {}) {
   return new Promise((resolve, reject) => {
     const cb = `moneyJsonp_${Date.now()}_${Math.random().toString(36).slice(2)}`;
     const script = document.createElement("script");
@@ -2690,7 +2690,9 @@ function jsonp(url, { timeoutMs = JSONP_TIMEOUT_MS } = {}) {
     window[cb] = data => { cleanup(); resolve(data); };
     script.onerror = () => {
       cleanup();
-      reject(new Error("No se pudo leer Apps Script. Comprueba en Ajustes que la URL termina en /exec y que el despliegue permite acceder desde el móvil."));
+      reject(new Error(confirmationCheck
+        ? "No se pudo comprobar todavía la confirmación."
+        : "No se pudo leer Apps Script. Comprueba en Ajustes que la URL termina en /exec y que el despliegue permite acceder desde el móvil."));
     };
     // Una descarga inicial puede pedir explícitamente no tener límite temporal: la
     // caché todavía no existe y se prefiere esperar a Apps Script antes que reiniciar
@@ -2698,7 +2700,7 @@ function jsonp(url, { timeoutMs = JSONP_TIMEOUT_MS } = {}) {
     if (Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0) {
       timer = window.setTimeout(() => {
         cleanup();
-        reject(new Error("Apps Script no respondió a tiempo"));
+        reject(new Error(confirmationCheck ? "La confirmación todavía no respondió." : "Apps Script no respondió a tiempo"));
       }, Number(timeoutMs));
     }
     script.src = `${url}${sep}callback=${cb}`;

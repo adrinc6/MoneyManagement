@@ -203,7 +203,7 @@ test("estar esperando el servidor no consume intentos dentro de la ventana de gr
   }
 });
 
-test("pasado un minuto sin noticias, la operación queda para reintento manual", async () => {
+test("pasado un minuto sin noticias, la operación sigue confirmándose sin reenviar", async () => {
   const previousFetch = app.fetchAppsScriptData;
   try {
     resetQueue([{
@@ -215,8 +215,10 @@ test("pasado un minuto sin noticias, la operación queda para reintento manual",
     await app.checkQueuedOp("op-vieja");
 
     const [op] = JSON.parse(app.localStorage.getItem(app.OP_QUEUE_KEY));
-    assert.equal(op.attempts, 1, "el minuto de confirmación agotado cuenta como envío no confirmado");
-    assert.equal(op.status, "error");
+    assert.equal(op.attempts, 0, "no convierte una comprobación tardía en un nuevo envío");
+    assert.equal(op.status, "checking");
+    assert.equal(op.confirmationDelayed, true);
+    assert.equal(op.error, null, "el fallo de comprobación no se muestra como fallo del movimiento");
   } finally {
     app.fetchAppsScriptData = previousFetch;
     resetQueue();

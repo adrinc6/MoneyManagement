@@ -101,8 +101,8 @@ test("buildUndo invierte una transferencia y descarta lo no reversible", () => {
   assert.equal(app.buildUndo({ action: "renameAccount" }), null);
 });
 
-test("la confirmación automática tiene un límite de un minuto", () => {
-  assert.equal(app.OP_CONFIRM_TIMEOUT_MS, 60000);
+test("la confirmación pasa a discreta tras un minuto sin reenviar", () => {
+  assert.equal(app.OP_CONFIRM_DELAY_NOTICE_MS, 60000);
 });
 
 test("isOpActionable respeta el backoff y descarta las operaciones detenidas", () => {

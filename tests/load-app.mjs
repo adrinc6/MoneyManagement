@@ -79,7 +79,7 @@ export function loadApp() {
     "globalThis.state = state;"
     + "globalThis.MAX_RECURRENCE_OCCURRENCES = MAX_RECURRENCE_OCCURRENCES;"
     + "globalThis.OP_QUEUE_KEY = OP_QUEUE_KEY;"
-    + "globalThis.OP_CONFIRM_TIMEOUT_MS = OP_CONFIRM_TIMEOUT_MS;"
+    + "globalThis.OP_CONFIRM_DELAY_NOTICE_MS = OP_CONFIRM_DELAY_NOTICE_MS;"
     + "globalThis.MOVEMENT_MAX_PAGES = MOVEMENT_MAX_PAGES;",
     context,
     { filename: "app.js:expose" }
