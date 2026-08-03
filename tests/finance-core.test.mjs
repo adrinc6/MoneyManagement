@@ -176,6 +176,17 @@ test("las descargas esperan hasta cinco minutos y medio antes de declarar timeou
   }
 });
 
+test("la descarga inicial puede solicitar una espera sin timeout", async () => {
+  const original = app.fetchAppsScriptData;
+  try {
+    app.fetchAppsScriptData = async options => ({ ok: true, timeoutMs: options.timeoutMs });
+    const payload = await app.fetchDownloadData({ action: "downloadCoreData" }, { label: "datos base", timeoutMs: null });
+    assert.equal(payload.timeoutMs, null);
+  } finally {
+    app.fetchAppsScriptData = original;
+  }
+});
+
 test("fetchDownloadData no reintenta un payload con ok:false", async () => {
   const original = app.fetchAppsScriptData;
   try {

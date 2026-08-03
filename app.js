@@ -905,6 +905,13 @@ async function refreshDataImpl(options = {}) {
   syncStatusStep(showProgress, refreshStartStatus({ scope, updateInvestments }), "");
 
   const cached = readDataCache();
+  // La primera descarga construye la caché desde cero: no debe abortarse porque
+  // haya tardado mucho. Los siguientes refrescos sí mantienen un límite de red.
+  const initialDownload = !cached && scope === "all" && !updateInvestments;
+  const downloadRequestOptions = {
+    showProgress,
+    timeoutMs: initialDownload ? null : undefined
+  };
   if (cached) {
     state.cacheMeta = normalizeCacheMeta(cached);
     applyDataSnapshot(cached.data);
@@ -1051,7 +1058,7 @@ async function refreshDataImpl(options = {}) {
 
       if (updateInvestments || (onlyInvestments && !needsMovements)) {
         syncStatusStep(showProgress, investmentRequestStatus({ updateInvestments }), "");
-        const payload = await fetchDownloadData({ updateInvestments, scope: "investments" }, { label: "inversiones", showProgress });
+        const payload = await fetchDownloadData({ updateInvestments, scope: "investments" }, { label: "inversiones", ...downloadRequestOptions });
         assertPayloadOk(payload);
         freshData = {
           ...freshData,
@@ -1072,7 +1079,7 @@ async function refreshDataImpl(options = {}) {
         if (needsCore || moveDueNow) {
           const coreAction = moveDueNow ? "moveDueFutureMovements" : "downloadCoreData";
           syncStatusStep(showProgress, moveDueNow ? "Moviendo futuros vencidos\nDescargando datos base" : "Descargando datos base", "");
-          core = await fetchDownloadData({ action: coreAction, skipFutureSids: moveSkipSids }, { label: "datos base", showProgress });
+          core = await fetchDownloadData({ action: coreAction, skipFutureSids: moveSkipSids }, { label: "datos base", ...downloadRequestOptions });
           assertPayloadOk(core);
           movedFutureMovements = core.movedFutureMovements || [];
           freshData = {
@@ -1095,12 +1102,12 @@ async function refreshDataImpl(options = {}) {
         if (needsMovements || movementReconciliationNeeded) {
           syncStatusStep(showProgress, movementReconciliationNeeded ? "Reconciliando movimientos" : "Descargando movimientos", "");
           if (neededSections.includes("transactions") || movementReconciliationNeeded) {
-            const transactions = await downloadMovementPages("realized", "movimientos", { showProgress });
+            const transactions = await downloadMovementPages("realized", "movimientos", downloadRequestOptions);
             freshData.transactions = transactions;
             commitDownloadedBlock({ transactions });
           }
           if (neededSections.includes("futureTransactions") || movementReconciliationNeeded) {
-            const futureTransactions = await downloadMovementPages("future", "movimientos futuros", { showProgress });
+            const futureTransactions = await downloadMovementPages("future", "movimientos futuros", downloadRequestOptions);
             freshData.futureTransactions = futureTransactions;
             commitDownloadedBlock({ futureTransactions });
           }
@@ -1110,7 +1117,7 @@ async function refreshDataImpl(options = {}) {
 
     if (needsInvestmentEstimates && !updateInvestments) {
       syncStatusStep(showProgress, "Descargando reglas\ny estimaciones", "");
-      const estimates = await fetchDownloadData({ action: "downloadInvestmentEstimates" }, { label: "estimaciones", showProgress });
+      const estimates = await fetchDownloadData({ action: "downloadInvestmentEstimates" }, { label: "estimaciones", ...downloadRequestOptions });
       assertPayloadOk(estimates);
       freshData = {
         ...freshData,
@@ -1266,7 +1273,7 @@ async function downloadMovementPages(kind, label, options = {}) {
       movementKind: kind,
       offset,
       limit: MOVEMENT_PAGE_SIZE
-    }, { label: `${label} (página ${pageNumber})`, showProgress: options.showProgress });
+    }, { label: `${label} (página ${pageNumber})`, showProgress: options.showProgress, timeoutMs: options.timeoutMs });
     assertPayloadOk(payload);
     const pageRows = kind === "future" ? (payload.futureTransactions || []) : (payload.transactions || []);
     rows.push(...pageRows);
@@ -2637,9 +2644,9 @@ const DOWNLOAD_TIMEOUT_MS = 330000;
 
 // Una descarga representa un bloque concreto. No hay reintentos automáticos: si la
 // red falla, se conserva lo descargado y el usuario puede reanudar solo ese bloque.
-async function fetchDownloadData(options = {}, { label = "datos", showProgress = false } = {}) {
+async function fetchDownloadData(options = {}, { label = "datos", showProgress = false, timeoutMs = DOWNLOAD_TIMEOUT_MS } = {}) {
   try {
-    return await fetchAppsScriptData({ ...options, timeoutMs: DOWNLOAD_TIMEOUT_MS });
+    return await fetchAppsScriptData({ ...options, timeoutMs });
   } catch (error) {
     logSyncEvent(`Falló la descarga de ${label}; no se reiniciará automáticamente.`, "warn", error.message || String(error));
     throw error;
@@ -2661,13 +2668,15 @@ function jsonp(url, { timeoutMs = JSONP_TIMEOUT_MS } = {}) {
     };
     window[cb] = data => { cleanup(); resolve(data); };
     script.onerror = () => { cleanup(); reject(new Error("no se pudo leer Apps Script")); };
-    // Sin este timeout una respuesta que nunca llega (red que cuelga, Apps Script
-    // atascado) dejaría la promesa viva para siempre y filtraría el <script>/callback,
-    // colgando la confirmación de operaciones y la UI en "Confirmando…".
-    timer = window.setTimeout(() => {
-      cleanup();
-      reject(new Error("Apps Script no respondió a tiempo"));
-    }, timeoutMs);
+    // Una descarga inicial puede pedir explícitamente no tener límite temporal: la
+    // caché todavía no existe y se prefiere esperar a Apps Script antes que reiniciar
+    // el trabajo. El resto de llamadas conserva su límite normal.
+    if (Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0) {
+      timer = window.setTimeout(() => {
+        cleanup();
+        reject(new Error("Apps Script no respondió a tiempo"));
+      }, Number(timeoutMs));
+    }
     script.src = `${url}${sep}callback=${cb}`;
     document.body.appendChild(script);
   });
