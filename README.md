@@ -147,6 +147,10 @@ La app guarda en `localStorage`:
 
 Cuando entras, usa la caché si está disponible. Si la caché sigue vigente, la pantalla carga rápido y luego se actualiza solo si hace falta. Al guardar movimientos, bancos o inversiones, la copia local se actualiza también para que la interfaz no dependa de recargar toda la hoja.
 
+Una descarga que se corta (un corte de red, cerrar la app) deja anotado en la caché qué secciones faltaban y por qué página iba; el siguiente arranque la retoma por ahí en vez de empezar de cero o quedarse con datos parciales.
+
+Al guardar, solo se vuelven a serializar las secciones que han cambiado, y durante una descarga paginada la escritura en `localStorage` se espacia: guardar en cada página reescribía el histórico entero, de forma síncrona, tantas veces como páginas hubiera.
+
 ## Apps Script
 
 El archivo `apps-script.gs` actúa como puente con Google Sheets:

@@ -883,6 +883,14 @@ function clearMovementDownloadProgress(section) {
 
 // Guarda cada página correcta inmediatamente. Si Google corta una petición posterior,
 // el siguiente toque en «Reanudar» empieza en el offset persistido, no desde la página 1.
+// Guardar en cada página reescribe el histórico entero en localStorage: con N páginas es
+// un JSON.stringify + setItem síncrono de tamaño creciente, N veces, en el hilo principal.
+// Se limita la frecuencia. Lo peor que puede pasar si el proceso se corta entre dos
+// guardados es repetir las páginas de esos pocos segundos; el cierre de la sección
+// siempre escribe, así que nada queda a medias de forma permanente.
+const PAGE_CACHE_WRITE_INTERVAL_MS = 2000;
+let lastPageCacheWriteAt = 0;
+
 function commitDownloadedMovementPage(section, progress, freshData) {
   const rows = Array.isArray(progress?.rows) ? progress.rows : [];
   freshData[section] = rows;
@@ -891,6 +899,9 @@ function commitDownloadedMovementPage(section, progress, freshData) {
     nextOffset: Number(progress.nextOffset || 0),
     total: Number(progress.total || 0)
   });
+  const now = Date.now();
+  if (!progress.completed && now - lastPageCacheWriteAt < PAGE_CACHE_WRITE_INTERVAL_MS) return;
+  lastPageCacheWriteAt = now;
   writeDataCache({ syncedSections: [section] });
 }
 
@@ -1282,28 +1293,33 @@ async function refreshDataImpl(options = {}) {
         const movementReconciliationNeeded = moveDueNow && !movedFutureMovements.length;
         if (needsMovements || movementReconciliationNeeded) {
           syncStatusStep(showProgress, movementReconciliationNeeded ? "Reconciliando movimientos" : "Descargando movimientos", "");
+          // Movimientos y futuros son hojas distintas y sus páginas no dependen unas de
+          // otras: se descargan a la vez. La puerta de appsScriptRequest mantiene el tope
+          // de peticiones simultáneas, así que esto aprovecha la latencia sin añadir
+          // ejecuciones de más contra Apps Script.
+          const movementDownloads = [];
           if (neededSections.includes("transactions") || movementReconciliationNeeded) {
-            const transactions = await downloadMovementPages("realized", "movimientos", {
+            movementDownloads.push(downloadMovementPages("realized", "movimientos", {
               ...downloadRequestOptions,
               ...movementDownloadResume("transactions", cached),
               onPage: progress => commitDownloadedMovementPage("transactions", progress, freshData)
-            });
-            // El offset se limpia antes de commitear para que una sola escritura de caché
-            // deje la sección completa y sin rastro de progreso a medias.
-            clearMovementDownloadProgress("transactions");
-            freshData.transactions = transactions;
-            commitDownloadedBlock({ transactions });
+            }).then(transactions => ({ section: "transactions", rows: transactions })));
           }
           if (neededSections.includes("futureTransactions") || movementReconciliationNeeded) {
-            const futureTransactions = await downloadMovementPages("future", "movimientos futuros", {
+            movementDownloads.push(downloadMovementPages("future", "movimientos futuros", {
               ...downloadRequestOptions,
               ...movementDownloadResume("futureTransactions", cached),
               onPage: progress => commitDownloadedMovementPage("futureTransactions", progress, freshData)
-            });
-            clearMovementDownloadProgress("futureTransactions");
-            freshData.futureTransactions = futureTransactions;
-            commitDownloadedBlock({ futureTransactions });
+            }).then(rows => ({ section: "futureTransactions", rows })));
           }
+          // Se commitean al terminar todas, en el hilo principal y de una en una: el
+          // progreso se limpia antes de guardar para que una sola escritura de caché deje
+          // la sección completa y sin rastro de descarga a medias.
+          (await Promise.all(movementDownloads)).forEach(({ section, rows }) => {
+            clearMovementDownloadProgress(section);
+            freshData[section] = rows;
+            commitDownloadedBlock({ [section]: rows });
+          });
         }
       }
     }
@@ -1490,7 +1506,7 @@ async function downloadMovementPages(kind, label, options = {}) {
       }
     });
     const pageRows = kind === "future" ? (payload.futureTransactions || []) : (payload.transactions || []);
-    rows.push(...pageRows);
+    rows.push(...expandMovementRows(pageRows, payload.columns));
     total = Number.isFinite(Number(payload.total)) ? Number(payload.total) : rows.length;
     const totalPages = Math.max(1, Math.ceil(total / MOVEMENT_PAGE_SIZE));
     const previousOffset = offset;
@@ -1513,6 +1529,20 @@ async function downloadMovementPages(kind, label, options = {}) {
     }
   }
   return rows;
+}
+
+// Los movimientos llegan como filas más una lista de columnas, no como objetos con ocho
+// claves repetidas en cada uno: para un histórico grande es del orden de tres veces menos
+// que descargar y parsear. Aquí se reconstruyen los objetos con los que trabaja el resto
+// de la app, guiándose por las columnas que declara la respuesta.
+function expandMovementRows(rows, columns) {
+  if (!Array.isArray(columns) || !columns.length) return rows;
+  return rows.map(row => {
+    if (!Array.isArray(row)) return row;
+    const movement = {};
+    columns.forEach((key, index) => { movement[key] = row[index]; });
+    return movement;
+  });
 }
 
 function setRefreshLoading(loading) {
@@ -1680,16 +1710,41 @@ function dataCacheConfigKey() {
   return JSON.stringify({ scriptUrl, appToken, movementSheet, futureMovementSheet, investmentSheet, investmentTotalsSheet, investmentEstimateRulesSheet, investmentEstimateLedgerSheet, bankSheet, objectiveSheet, dataSheet });
 }
 
+// La caché es lo más pesado que hay en localStorage (todo el histórico). Leerla obliga a
+// un JSON.parse completo y síncrono, y writeDataCache la leía en CADA escritura — o sea,
+// una vez por página descargada. Se recuerda el último registro para no volver a
+// parsearlo; otra pestaña que escriba invalida el recuerdo por el evento storage.
+let lastPersistedCache = null;
+
+window.addEventListener("storage", event => {
+  if (event.key === DATA_CACHE_KEY) lastPersistedCache = null;
+});
+
 function readDataCache() {
+  const configKey = dataCacheConfigKey();
+  if (lastPersistedCache) return lastPersistedCache.configKey === configKey ? lastPersistedCache : null;
   try {
     const cached = JSON.parse(localStorage.getItem(DATA_CACHE_KEY) || "null");
-    if (!cached || cached.configKey !== dataCacheConfigKey() || !cached.data) return null;
+    if (!cached || cached.configKey !== configKey || !cached.data) return null;
     const meta = normalizeCacheMeta(cached);
-    return { ...cached, meta, savedAt: meta.savedAt || cached.savedAt || 0 };
+    lastPersistedCache = { ...cached, meta, savedAt: meta.savedAt || cached.savedAt || 0 };
+    return lastPersistedCache;
   } catch {
     return null;
   }
 }
+
+const CACHE_SECTION_SERIALIZERS = {
+  transactions: () => state.transactions.map(serializeTransaction),
+  futureTransactions: () => state.futureTransactions.map(serializeTransaction),
+  investments: () => state.investments,
+  investmentTotals: () => state.investmentTotals,
+  investmentEstimateRules: () => state.investmentEstimateRules,
+  investmentEstimateLedger: () => state.investmentEstimateLedger,
+  banks: () => state.banks,
+  investmentGoals: () => state.investmentGoals,
+  categories: () => state.categories
+};
 
 function writeDataCache(options = {}) {
   try {
@@ -1703,25 +1758,14 @@ function writeDataCache(options = {}) {
     const meta = normalizeCacheMeta({ meta: state.cacheMeta, savedAt: Date.now() });
     meta.savedAt = Date.now();
     state.cacheMeta = meta;
-    const currentData = {
-      transactions: state.transactions.map(serializeTransaction),
-      futureTransactions: state.futureTransactions.map(serializeTransaction),
-      investments: state.investments,
-      investmentTotals: state.investmentTotals,
-      investmentEstimateRules: state.investmentEstimateRules,
-      investmentEstimateLedger: state.investmentEstimateLedger,
-      banks: state.banks,
-      investmentGoals: state.investmentGoals,
-      categories: state.categories
-    };
-    const data = { ...currentData };
-    if (previousCache?.data && touchedSections.size) {
-      CACHE_SECTION_KEYS.forEach(section => {
-        if (!touchedSections.has(section) && Object.prototype.hasOwnProperty.call(previousCache.data, section)) {
-          data[section] = previousCache.data[section];
-        }
-      });
-    }
+    // Solo se vuelve a serializar lo que ha cambiado; el resto se arrastra tal cual desde
+    // el último registro. Antes se reserializaban las nueve secciones en cada escritura,
+    // incluido el histórico completo de movimientos, aunque solo se tocara una cuenta.
+    const data = { ...(previousCache?.data || {}) };
+    const sectionsToWrite = touchedSections.size && previousCache?.data ? [...touchedSections] : CACHE_SECTION_KEYS;
+    sectionsToWrite.forEach(section => {
+      if (CACHE_SECTION_SERIALIZERS[section]) data[section] = CACHE_SECTION_SERIALIZERS[section]();
+    });
     persistDataCache({
       configKey: dataCacheConfigKey(),
       savedAt: meta.savedAt,
@@ -1759,6 +1803,8 @@ function persistDataCache(record) {
   for (let attempt = 0; attempt < pruneOrder.length + 1; attempt++) {
     try {
       localStorage.setItem(DATA_CACHE_KEY, JSON.stringify(payload));
+      // Lo escrito es ya la verdad en memoria: readDataCache lo devuelve sin releer.
+      lastPersistedCache = { ...payload, meta: normalizeCacheMeta(payload), savedAt: payload.savedAt || 0 };
       if (pruned) warnCacheQuota(true);
       return;
     } catch (error) {
@@ -1772,6 +1818,7 @@ function persistDataCache(record) {
         continue;
       }
       // Ni podando cabe: soltamos el caché para no dejar datos corruptos a medias.
+      lastPersistedCache = null;
       try { localStorage.removeItem(DATA_CACHE_KEY); } catch (_) { }
       warnCacheQuota(false);
       return;
@@ -1804,6 +1851,7 @@ function warnCacheQuota(recovered) {
 }
 
 function clearDataCache() {
+  lastPersistedCache = null;
   localStorage.removeItem(DATA_CACHE_KEY);
 }
 
@@ -1870,12 +1918,15 @@ function estimateLocalStorageSize() {
 }
 
 function renderSyncSettingsPanel() {
+  // Este panel solo se ve en Ajustes, pero lo repintaban writeDataCache y logSyncEvent —
+  // o sea, en cada página descargada y en cada evento de un bucle de reintentos. Fuera de
+  // Ajustes no hay nada que mostrar, y al entrar se repinta igualmente.
+  if (activeViewId() !== "ajustes") return;
   const summaryEl = document.getElementById("syncStatusSummary");
   const sectionsEl = document.getElementById("cacheSectionsTable");
   const logsEl = document.getElementById("syncLogsTable");
   if (!summaryEl && !sectionsEl && !logsEl) return;
-  const cached = readDataCache();
-  const meta = normalizeCacheMeta(cached || { meta: state.cacheMeta });
+  const meta = normalizeCacheMeta({ meta: state.cacheMeta });
   const queue = readOpQueue();
   const pending = queue.filter(op => op.status !== "done").length;
   if (summaryEl) {
@@ -2973,7 +3024,31 @@ function waitForDownloadRecovery(attempt) {
 // Access-Control-Allow-Origin: *, así que la respuesta se puede leer de verdad — al
 // contrario que con JSONP, donde un <script> que falla solo decía "error" sin código ni
 // cuerpo y era imposible distinguir un corte real de un servidor ocupado.
-async function appsScriptRequest(url, { timeoutMs = REQUEST_TIMEOUT_MS, requestLabel = "los datos solicitados", method = "GET", body = null } = {}) {
+// Google atiende cada petición con una ejecución del script, y demasiadas a la vez es
+// justo de donde salen los errores transitorios. Dos en vuelo aprovecha la latencia de
+// red sin llegar a competir consigo misma.
+const MAX_CONCURRENT_REQUESTS = 2;
+let requestsInFlight = 0;
+const requestWaiters = [];
+
+async function withAppsScriptSlot(run) {
+  if (requestsInFlight >= MAX_CONCURRENT_REQUESTS) {
+    await new Promise(resolve => requestWaiters.push(resolve));
+  }
+  requestsInFlight += 1;
+  try {
+    return await run();
+  } finally {
+    requestsInFlight -= 1;
+    requestWaiters.shift()?.();
+  }
+}
+
+function appsScriptRequest(url, options = {}) {
+  return withAppsScriptSlot(() => sendAppsScriptRequest(url, options));
+}
+
+async function sendAppsScriptRequest(url, { timeoutMs = REQUEST_TIMEOUT_MS, requestLabel = "los datos solicitados", method = "GET", body = null } = {}) {
   const controller = new AbortController();
   // Una descarga inicial puede pedir explícitamente no tener límite: la caché todavía no
   // existe y se prefiere esperar a Apps Script antes que reiniciar el trabajo.

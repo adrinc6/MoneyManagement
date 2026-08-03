@@ -437,3 +437,52 @@ test("terminar una descarga deja la caché sin nada pendiente", () => {
   assert.equal(app.normalizeCacheMeta({ meta: app.state.cacheMeta }).resume, undefined,
     "sin nada pendiente no queda rastro de reanudación en la caché");
 });
+
+test("las filas compactas se reconstruyen usando las columnas que declara la respuesta", async () => {
+  // El cliente no conoce posiciones fijas: se guía por payload.columns, así que añadir
+  // una columna en el backend no descoloca los importes.
+  const previousFetch = app.fetchDownloadData;
+  try {
+    app.fetchDownloadData = async () => ({
+      ok: true,
+      columns: ["sid", "rowNumber", "fecha", "tipo", "concepto", "descripcion", "importe", "cuenta"],
+      transactions: [["mov-1", 2, "2026-03-04", "Gasto", "Comida", "Menú", -12.5, "Santander"]],
+      total: 1,
+      nextOffset: 1,
+      hasMore: false
+    });
+
+    const rows = await app.downloadMovementPages("realized", "movimientos", {});
+
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].sid, "mov-1");
+    assert.equal(rows[0].importe, -12.5);
+    assert.equal(rows[0].cuenta, "Santander");
+    assert.equal(app.normalizeTransaction(rows[0]).amount, -12.5, "y el normalizador los entiende");
+  } finally {
+    app.fetchDownloadData = previousFetch;
+  }
+});
+
+test("no se lanzan más peticiones simultáneas de las permitidas", async () => {
+  // Ejecuciones simultáneas del mismo script es de donde salen los errores transitorios
+  // de Apps Script.
+  const previousFetch = app.fetch;
+  try {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    app.fetch = async () => {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise(resolve => globalThis.setTimeout(resolve, 0));
+      inFlight--;
+      return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true }) };
+    };
+
+    await Promise.all(Array.from({ length: 8 }, () => app.appsScriptRequest("https://example.test/exec", {})));
+
+    assert.ok(maxInFlight <= 2, `nunca más de 2 a la vez (llegó a ${maxInFlight})`);
+  } finally {
+    app.fetch = previousFetch;
+  }
+});

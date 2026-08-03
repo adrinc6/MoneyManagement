@@ -39,19 +39,12 @@ const SECCIONES = [
 
 const seccionesDe = payload => SECCIONES.filter(k => Object.prototype.hasOwnProperty.call(payload, k));
 
-test("la descarga completa deja las estimaciones para la petición separada", () => {
-  const gs = setup();
-  const payload = gs.buildDataPayload_(gs.resolveSheets_({}), { movements: true, banks: true, movedFutureMovements: [] });
-
-  assert.equal(payload.ok, true);
-  assert.deepEqual(seccionesDe(payload), SECCIONES.filter(s => !["investmentEstimateRules", "investmentEstimateLedger"].includes(s)));
-  assert.ok(Object.prototype.hasOwnProperty.call(payload, "movedFutureMovements"));
-});
-
 test("la descarga base trae lo necesario sin movimientos ni estimaciones", () => {
+  // Los movimientos van por su propia acción paginada; las estimaciones, por la suya.
   const gs = setup();
   const payload = gs.buildDataPayload_(gs.resolveSheets_({}), { banks: true, movedFutureMovements: [] });
 
+  assert.equal(payload.ok, true);
   assert.deepEqual(seccionesDe(payload), SECCIONES.filter(s => !["transactions", "futureTransactions", "investmentEstimateRules", "investmentEstimateLedger"].includes(s)));
   assert.deepEqual([...payload.movedFutureMovements], []);
 });
@@ -153,4 +146,34 @@ test("resolveSheets_ aplica los valores por defecto y respeta los nombres de la 
 
   assert.equal(gs.resolveSheets_({ movementSheet: "Otra" }).movement, "Otra");
   assert.equal(gs.resolveSheets_({ bankSheet: "Mis cuentas" }).bank, "Mis cuentas");
+});
+
+test("los movimientos viajan como filas compactas con sus columnas declaradas", () => {
+  // Objetos con ocho claves por movimiento eran del orden de tres veces más payload que
+  // descargar y parsear en el móvil.
+  const gs = setup();
+  gs.__spreadsheet.getSheetByName(MOVEMENT_SHEET).getRange(2, 1, 1, MOVEMENT_HEADERS.length).setValues([
+    ["2026-03-04", 2026, 3, 4, "Gasto", "Comida", "Menú", -12.5, "Santander", "mov-1"]
+  ]);
+
+  const payload = gs.buildMovementPagePayload_(MOVEMENT_SHEET, "transactions", 0, 100);
+
+  assert.deepEqual([...payload.columns], ["sid", "rowNumber", "fecha", "tipo", "concepto", "descripcion", "importe", "cuenta"]);
+  assert.equal(payload.transactions.length, 1);
+  assert.ok(Array.isArray(payload.transactions[0]), "cada movimiento es una fila, no un objeto");
+  assert.deepEqual([...payload.transactions[0]], ["mov-1", 2, "2026-03-04", "Gasto", "Comida", "Menú", -12.5, "Santander"]);
+});
+
+test("una fila compacta y el objeto interno describen el mismo movimiento", () => {
+  const gs = setup();
+  gs.__spreadsheet.getSheetByName(MOVEMENT_SHEET).getRange(2, 1, 1, MOVEMENT_HEADERS.length).setValues([
+    ["2026-03-04", 2026, 3, 4, "Inversión", "Bolsa", "ETF", -100, "Santander", "mov-2"]
+  ]);
+
+  const [movement] = gs.readMovements_(MOVEMENT_SHEET);
+
+  assert.equal(movement.sid, "mov-2");
+  assert.equal(movement.tipo, "Inversión");
+  assert.equal(movement.importe, -100);
+  assert.equal(movement.cuenta, "Santander");
 });
