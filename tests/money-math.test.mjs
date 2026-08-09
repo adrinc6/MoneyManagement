@@ -152,3 +152,46 @@ test("expandRecurrenceDates no itera sin fin con un rango absurdo", () => {
   assert.equal(result.truncated, true);
   assert.ok(result.dates.length <= app.MAX_RECURRENCE_OCCURRENCES);
 });
+
+test("buildRegistrarSummaryCards usa el presupuesto y los futuros del mes actual", () => {
+  const previous = {
+    transactions: app.state.transactions,
+    futureTransactions: app.state.futureTransactions,
+    investmentGoals: app.state.investmentGoals,
+    banks: app.state.banks
+  };
+  const currentMonth = app.currentMonthKey();
+  const [year, month] = currentMonth.split("-").map(Number);
+  const otherMonth = new Date(year, month, 1);
+  try {
+    app.state.transactions = [
+      { fecha: new Date(year, month - 1, 5), tipo: "Gasto", importe: -120 },
+      { fecha: new Date(year, month - 1, 6), tipo: "Inversión", importe: -40 }
+    ].map(app.normalizeTransaction);
+    app.state.futureTransactions = [
+      { fecha: new Date(year, month - 1, 10), tipo: "Gasto", importe: -109.4 },
+      { fecha: new Date(year, month - 1, 11), tipo: "Inversión", importe: -208.4 },
+      { fecha: new Date(year, month - 1, 12), tipo: "Ingreso", importe: 500 },
+      { fecha: otherMonth, tipo: "Gasto", importe: -999 }
+    ].map(app.normalizeTransaction);
+    app.state.investmentGoals = { expenseMonthly: 300 };
+    app.state.banks = [];
+
+    const cards = app.buildRegistrarSummaryCards();
+    assert.deepEqual(Array.from(cards, card => card.label), [
+      "Dinero total bancos", "Dinero invertido", "Uso personal", "Invertido mes",
+      "Gastos mes", "Gastos/Inv futuros mes"
+    ]);
+    assert.equal(cards[2].value, app.money(180));
+    assert.equal(cards[4].value, app.money(120));
+    assert.equal(cards[5].value, "109/208 €");
+
+    app.state.investmentGoals = { expenseMonthly: 0 };
+    assert.equal(app.buildRegistrarSummaryCards()[2].value, "Sin objetivo");
+  } finally {
+    app.state.transactions = previous.transactions;
+    app.state.futureTransactions = previous.futureTransactions;
+    app.state.investmentGoals = previous.investmentGoals;
+    app.state.banks = previous.banks;
+  }
+});

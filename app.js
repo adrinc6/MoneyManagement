@@ -3350,33 +3350,36 @@ function renderAll() {
   refreshIcons();
 }
 
-function getPersonalCardTotal() {
-  const group = (state.accountGroups || []).find(g => /personal/i.test(g.name || ""));
-  if (!group) return null;
-  return sum(state.banks.filter(bank => group.accountNames.includes(bank.cuenta)).map(bank => bank.dinero));
-}
-
 function renderRegistrarSummaryCompact() {
   const el = document.getElementById("registrarSummary");
   if (!el) return;
-  const summary = calculateSummary(getSelectedSummaryMonth());
-  const selectedMonth = getSelectedSummaryMonth();
-  const investedCurrentMonth = Math.abs(sum(state.transactions.filter(t => isInvestment(t) && monthKey(t.date) === selectedMonth).map(t => t.amount)));
-  const personalTotal = getPersonalCardTotal();
-  const cards = [
-    { label: "Dinero total bancos", value: money(summary.bank) },
-    { label: "Dinero invertido", value: money(summary.investedTotal) },
-    { label: "Uso personal", value: personalTotal === null ? "-€" : money(personalTotal) },
-    { label: "Invertido mes actual", value: money(investedCurrentMonth) },
-    { label: "Ingresos mes actual", value: money(summary.income) },
-    { label: "Gastos mes actual", value: money(summary.expenses) }
-  ];
+  const cards = buildRegistrarSummaryCards();
   el.innerHTML = cards.map(card => `
     <article class="mini-stat-card">
       <strong>${escapeHtml(card.value)}</strong>
       <span>${escapeHtml(card.label)}</span>
     </article>
   `).join("");
+}
+
+function buildRegistrarSummaryCards() {
+  const currentMonth = currentMonthKey();
+  const summary = calculateSummary(currentMonth);
+  const expenseGoal = safeNumber(state.investmentGoals?.expenseMonthly);
+  const personalAvailable = expenseGoal > 0 ? expenseGoal - summary.expenses : null;
+  const futureMonth = state.futureTransactions.filter(t => monthKey(t.date) === currentMonth);
+  const futureExpenses = Math.abs(sum(futureMonth.filter(isMonthlyExpense).map(t => t.amount)));
+  const futureInvestments = Math.abs(sum(futureMonth.filter(isInvestment).map(t => t.amount)));
+  const futureTotals = `${formatNumber(futureExpenses, 0)}/${formatNumber(futureInvestments, 0)} €`;
+
+  return [
+    { label: "Dinero total bancos", value: money(summary.bank) },
+    { label: "Dinero invertido", value: money(summary.investedTotal) },
+    { label: "Uso personal", value: personalAvailable === null ? "Sin objetivo" : money(personalAvailable) },
+    { label: "Invertido mes", value: money(summary.investedMonth) },
+    { label: "Gastos mes", value: money(summary.expenses) },
+    { label: "Gastos/Inv futuros mes", value: futureTotals }
+  ];
 }
 
 function renderMonthSituationDialog(summary) {
@@ -7101,6 +7104,12 @@ function normalizePercentPoints(value) {
 
 function formatDate(date) { return date ? `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}` : ""; }
 function money(value, decimals = 2) { return new Intl.NumberFormat("es-ES", { style: "currency", currency: "EUR", maximumFractionDigits: decimals, minimumFractionDigits: 0 }).format(Number(value) || 0); }
+function formatNumber(value, decimals = 2) {
+  return new Intl.NumberFormat("es-ES", {
+    maximumFractionDigits: decimals,
+    minimumFractionDigits: 0
+  }).format(Number(value) || 0);
+}
 function pct(value, digits = 1) {
   return `${pctNoSymbol(value, digits)} %`;
 }
