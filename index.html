@@ -18,7 +18,7 @@
        app.js degrada (sin iconos ni gráficas) en vez de romperse. -->
   <script defer crossorigin="anonymous" src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
   <script defer crossorigin="anonymous" src="https://unpkg.com/lucide@1.24.0/dist/umd/lucide.min.js"></script>
-  <link rel="stylesheet" href="styles.css?v=20260803-v41" />
+  <link rel="stylesheet" href="styles.css?v=20260803-v42" />
 </head>
 <body>
   <main class="app">
@@ -106,7 +106,6 @@
         <div class="panel-header">
           <div>
             <h2>Dinero</h2>
-            <p>Cuentas agrupadas.</p>
           </div>
           <button class="btn mini-add-btn" id="addAccountGroupBtn" type="button"><i data-lucide="plus"></i></button>
         </div>
@@ -359,6 +358,21 @@
     </form>
   </dialog>
 
+  <dialog id="emergencyFundDialog">
+    <div class="dialog-head">
+      <h2>Fondo de emergencia</h2>
+      <button class="icon-btn" id="closeEmergencyFundBtn" type="button" aria-label="Cerrar"><i data-lucide="x"></i></button>
+    </div>
+    <div id="emergencyFundDetail" class="panel-body form-grid">
+      <div class="wide" id="emergencyFundSummary"></div>
+      <button class="btn wide" id="emergencyFundEditBtn" type="button"><i data-lucide="list-checks"></i> Seleccionar grupos</button>
+    </div>
+    <form id="emergencyFundForm" class="panel-body form-grid hidden">
+      <div class="wide" id="emergencyFundChecklist"></div>
+      <button class="btn primary wide" type="submit"><i data-lucide="save"></i> Guardar</button>
+    </form>
+  </dialog>
+
   <dialog id="accountManageDialog">
     <div class="dialog-head">
       <h2 id="accountManageTitle">Cuenta</h2>
@@ -596,6 +610,6 @@
 
   <!-- El registro del service worker y la recarga por actualización viven en app.js,
        junto al resto del arranque, para no tener el ciclo de vida repartido en dos sitios. -->
-  <script defer src="app.js?v=20260803-v41"></script>
+  <script defer src="app.js?v=20260803-v42"></script>
 </body>
 </html>

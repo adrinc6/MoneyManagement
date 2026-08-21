@@ -634,8 +634,32 @@ input[readonly] {
 .money-row strong {
   font-size: 0.85rem;
 }
+/* Jerarquía del panel Dinero por ancho: Total (todo) > Bancos y Fondo (80%) > agrupaciones (60%).
+   Van después de .money-action, que fija width: 100%, para ganarle por orden de aparición. */
+.money-row-total {
+  width: 100%;
+  background: var(--soft);
+  padding: 12px;
+}
+.money-row-total span {
+  font-size: 0.85rem;
+}
+.money-row-total strong {
+  font-size: 1rem;
+}
+.money-row-main {
+  width: 80%;
+  margin: 0 auto;
+}
+.emergency-fund-total {
+  display: grid;
+  gap: 2px;
+}
+.emergency-fund-total small {
+  font-size: 0.72rem;
+}
 .money-row-group {
-  width: 75%;
+  width: 60%;
   margin: 0 auto;
   background: var(--panel);
   border: 1px solid var(--line);

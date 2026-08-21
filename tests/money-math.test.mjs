@@ -179,7 +179,7 @@ test("buildRegistrarSummaryCards usa el presupuesto y los futuros del mes actual
 
     const cards = app.buildRegistrarSummaryCards();
     assert.deepEqual(Array.from(cards, card => card.label), [
-      "Dinero total bancos", "Dinero invertido", "Uso personal", "Invertido mes",
+      "Total bancos", "Fondo de emergencia", "Uso personal", "Invertido mes",
       "Gastos mes", "Gastos/Inv futuros mes"
     ]);
     assert.equal(cards[2].value, app.money(180));
