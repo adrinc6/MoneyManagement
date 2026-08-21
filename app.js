@@ -130,6 +130,7 @@ const INVESTMENT_ESTIMATE_MODE_KEY = "moneyInvestmentEstimateMode";
 const EVOLUTION_RANGE_KEY = "moneyEvolutionRange";
 const ACCOUNT_GROUPS_KEY = "moneyAccountGroups";
 const EMERGENCY_FUND_KEY = "moneyEmergencyFund";
+const INVESTMENT_COMPOSITION_KEY = "moneyInvestmentComposition";
 const FUTURE_MOVEMENT_ACCOUNT_SKIP_KEY = "moneyFutureMovementAccountSkip";
 const FULL_MONTH_NAMES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
 
@@ -190,10 +191,12 @@ const state = {
   evolutionRange: loadEvolutionRange(),
   accountGroups: loadAccountGroups(),
   emergencyFund: loadEmergencyFund(),
+  investmentComposition: loadInvestmentComposition(),
   cacheMeta: defaultCacheMeta(),
   investmentNotificationsSending: false,
   pendingInvestmentAllocationPrompts: [],
   currentInvestmentAllocationPrompt: null,
+  currentCompositionGroup: "",
   pendingInvestmentSummaryPopup: null,
   futureMovementAccountPromptDismissed: false
 };
@@ -246,6 +249,14 @@ function wireUi() {
   document.getElementById("investmentPanelSwitch")?.addEventListener("click", setInvestmentPanelFromClick);
   document.getElementById("settingsPanelSwitch")?.addEventListener("click", setSettingsPanelFromClick);
   document.getElementById("editInvestmentGoalsBtn")?.addEventListener("click", editInvestmentGoals);
+  document.getElementById("editInvestmentCompositionBtn")?.addEventListener("click", openInvestmentCompositionDialog);
+  document.getElementById("closeInvestmentCompositionBtn")?.addEventListener("click", () => document.getElementById("investmentCompositionDialog")?.close());
+  document.getElementById("saveInvestmentCompositionBtn")?.addEventListener("click", saveInvestmentCompositionFromDialog);
+  document.getElementById("closeCompositionGroupBtn")?.addEventListener("click", () => document.getElementById("investmentCompositionGroupDialog")?.close());
+  document.getElementById("compositionGroupEditBtn")?.addEventListener("click", showCompositionGroupEditor);
+  document.getElementById("compositionGroupBackBtn")?.addEventListener("click", showCompositionGroupDetail);
+  document.getElementById("compositionGroupForm")?.addEventListener("submit", saveCompositionGroupFromDialog);
+  document.getElementById("compositionTotalInput")?.addEventListener("input", saveCompositionTotalFromInput);
   document.getElementById("evolutionStartMonth")?.addEventListener("change", saveEvolutionRangeAndRender);
   document.getElementById("evolutionEndMonth")?.addEventListener("change", saveEvolutionRangeAndRender);
   document.getElementById("evolutionSnapshotDay")?.addEventListener("change", saveEvolutionRangeAndRender);
@@ -4293,6 +4304,7 @@ function renderInvestmentEditTable() {
 function fitInvestmentTables() {
   fitInvestmentTableColumns("investmentEditTable", 0);
   fitInvestmentTableColumns("investmentBreakdownTable", 0);
+  fitCompositionTable("compositionTable");
 }
 
 function fitInvestmentTableColumns(tableId, flexibleColumnIndex = 0) {
@@ -5334,6 +5346,528 @@ function renderInvestmentGoals(summary) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Objetivos de composición
+//
+// Dos niveles: cómo quieres repartir la cartera entre grupos y, dentro de cada grupo, entre
+// sus posiciones. El dinero objetivo se fija UNA sola vez, arriba: el objetivo de un grupo
+// es su peso por ese total, y el de una posición su peso por el objetivo de su grupo. Así no
+// hay dos cifras de dinero que puedan contradecirse.
+//
+// Los pesos se guardan como TEXTO. Quien escribe "1/9" quiere volver a ver "1/9" cuando
+// reabra el editor, no "11,11". Vacío y cero son cosas distintas: vacío es "este grupo no
+// entra en el reparto" y cero es "no quiero tener nada aquí".
+// ---------------------------------------------------------------------------
+
+function loadInvestmentComposition() {
+  try {
+    return normalizeInvestmentComposition(JSON.parse(localStorage.getItem(INVESTMENT_COMPOSITION_KEY) || "{}"));
+  } catch {
+    return normalizeInvestmentComposition({});
+  }
+}
+
+function writeInvestmentComposition() {
+  state.investmentComposition = normalizeInvestmentComposition(state.investmentComposition);
+  safeSetItem(INVESTMENT_COMPOSITION_KEY, JSON.stringify(state.investmentComposition));
+}
+
+function compositionWeightText(value) {
+  if (value === null || value === undefined) return "";
+  return String(value).trim();
+}
+
+function normalizeInvestmentComposition(value) {
+  const source = value && typeof value === "object" ? value : {};
+  const groups = {};
+  Object.entries(source.groups || {}).forEach(([key, weight]) => {
+    const name = prettyType(key);
+    const text = compositionWeightText(weight);
+    if (name && text !== "") groups[name] = text;
+  });
+  const positions = {};
+  Object.entries(source.positions || {}).forEach(([key, entries]) => {
+    const name = prettyType(key);
+    if (!name || !entries || typeof entries !== "object") return;
+    const byPosition = {};
+    Object.entries(entries).forEach(([positionKey, weight]) => {
+      const id = normalizeType(positionKey);
+      const text = compositionWeightText(weight);
+      if (id && text !== "") byPosition[id] = text;
+    });
+    if (Object.keys(byPosition).length) positions[name] = byPosition;
+  });
+  return { total: compositionWeightText(source.total), groups, positions };
+}
+
+// Acepta lo que uno escribiría a mano: "20", "20 %", "1/9", "0,5". El vacío y lo ilegible son
+// casos distintos y hay que poder distinguirlos: null es "no cuenta", NaN es "está mal escrito".
+function parseCompositionWeight(value) {
+  const text = compositionWeightText(value).replace(/%\s*$/, "").trim();
+  if (text === "") return null;
+  const fraction = text.match(/^([^/]+)\/([^/]+)$/);
+  if (fraction) {
+    const numerator = parseNumber(fraction[1]);
+    const denominator = parseNumber(fraction[2]);
+    if (!Number.isFinite(numerator) || !Number.isFinite(denominator) || denominator === 0) return NaN;
+    const result = numerator / denominator;
+    return result >= 0 ? result : NaN;
+  }
+  const parsed = parseNumber(text);
+  if (!Number.isFinite(parsed) || parsed < 0) return NaN;
+  return parsed;
+}
+
+function nearlyEquals(value, target) { return Math.abs(Number(value) - target) < 0.005; }
+
+// Identidad de una posición dentro de su grupo. El ticker/ISIN es lo estable; el efectivo no
+// tiene, y ahí el nombre es lo único que hay.
+function compositionPositionKey(item) {
+  const data = String(item?.data || "").trim();
+  const usable = data && data !== "---" ? data : String(item?.nombre || "").trim();
+  return normalizeType(usable);
+}
+
+// La base de un grupo es lo invertido cuando lo hay: es el dinero que has puesto de verdad. Si
+// esa columna está a cero (una categoría que nunca pasó por un movimiento de inversión), lo
+// único que queda es el valor de mercado.
+function compositionBaseForGroup(type, summary) {
+  const invested = safeNumber(summary?.investedByType?.[type]);
+  if (invested > 0) return invested;
+  return safeNumber(summary?.valueByType?.[type]);
+}
+
+// El reparto, y sirve igual para los dos niveles: arriba se le pasan los grupos y el objetivo
+// total, y dentro de un grupo sus posiciones y el objetivo de ese grupo.
+//
+// Los pesos se normalizan siempre por su suma, así que "60 y 40" y "3/5 y 2/5" dan lo mismo y
+// la vista siempre suma 100 %.
+function computeCompositionPlan({ entries = [], total = "" } = {}) {
+  const rows = entries.map(entry => ({
+    key: entry.key,
+    label: entry.label,
+    weight: safeNumber(entry.weight),
+    current: safeNumber(entry.current)
+  }));
+  const rawSum = sum(rows.map(row => row.weight));
+  const currentTotal = roundMoney(sum(rows.map(row => row.current)));
+  rows.forEach(row => { row.share = rawSum > 0 ? row.weight / rawSum : 0; });
+  // El total más pequeño que cuadra la composición sin vender nada: el que deja al grupo que
+  // va más sobrado justo en su peso. Los demás se arreglan aportando.
+  const minimumTotal = roundMoney(rows.reduce(
+    (acc, row) => row.share > 0 ? Math.max(acc, row.current / row.share) : acc,
+    currentTotal
+  ));
+  const requested = parseNumber(total);
+  const automatic = !Number.isFinite(requested) || requested < 0;
+  const effectiveTotal = automatic ? minimumTotal : roundMoney(requested);
+  rows.forEach(row => {
+    row.target = roundMoney(effectiveTotal * row.share);
+    row.missing = roundMoney(Math.max(row.target - row.current, 0));
+    row.excess = roundMoney(Math.max(row.current - row.target, 0));
+  });
+  return {
+    rows,
+    rawSum,
+    currentTotal,
+    minimumTotal,
+    total: effectiveTotal,
+    automatic,
+    missingTotal: roundMoney(sum(rows.map(row => row.missing))),
+    excessTotal: roundMoney(sum(rows.map(row => row.excess))),
+    // Un 60/40 suma 100 y nueve novenos suman 1: las dos formas de escribirlo son deliberadas.
+    // Cualquier otra suma suele ser un peso a medio poner, y eso sí merece un aviso.
+    weightsWarning: rows.length > 0 && rawSum > 0 && !nearlyEquals(rawSum, 100) && !nearlyEquals(rawSum, 1)
+  };
+}
+
+// Los pesos se guardan por nombre de grupo, y un nombre puede volver con otras mayúsculas o
+// acentos desde la hoja. La búsqueda va normalizada para que no se pierda el peso por eso.
+function compositionGroupWeightText(type) {
+  const weights = state.investmentComposition?.groups || {};
+  const key = Object.keys(weights).find(name => normalizeType(name) === normalizeType(type));
+  return key ? compositionWeightText(weights[key]) : "";
+}
+
+function compositionPositionWeights(type) {
+  const groups = state.investmentComposition?.positions || {};
+  const key = Object.keys(groups).find(name => normalizeType(name) === normalizeType(type));
+  return key ? groups[key] : {};
+}
+
+function compositionPositionsForGroup(type) {
+  return effectiveInvestmentPositions().filter(item => normalizeType(item.tipo) === normalizeType(type));
+}
+
+function compositionPositionLabel(item) {
+  return item.shortName || item.data || item.nombre || "Sin nombre";
+}
+
+// Filas del nivel cartera. Un grupo sin peso no sale en la vista ni entra en el reparto: su
+// dinero tampoco cuenta para el total, que es lo que significa dejarlo vacío.
+function compositionGroupEntries(summary) {
+  return investmentTypes().map(type => ({
+    key: type,
+    label: type,
+    weight: parseCompositionWeight(compositionGroupWeightText(type)),
+    current: compositionBaseForGroup(type, summary)
+  })).filter(entry => Number.isFinite(entry.weight));
+}
+
+function compositionPositionEntries(type) {
+  const weights = compositionPositionWeights(type);
+  return compositionPositionsForGroup(type).map(item => {
+    const key = compositionPositionKey(item);
+    return {
+      key,
+      label: compositionPositionLabel(item),
+      weight: parseCompositionWeight(weights[key]),
+      current: currentInvestmentTotal(item)
+    };
+  }).filter(entry => Number.isFinite(entry.weight));
+}
+
+function compositionCarteraPlan(summary) {
+  return computeCompositionPlan({
+    entries: compositionGroupEntries(summary),
+    total: state.investmentComposition?.total
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Vista: tarjeta "Objetivos composición"
+// ---------------------------------------------------------------------------
+
+function renderInvestmentComposition(summary) {
+  const panel = document.getElementById("investmentCompositionPanel");
+  if (!panel) return;
+  const plan = compositionCarteraPlan(summary);
+  const input = document.getElementById("compositionTotalInput");
+  // No se pisa el campo mientras se está escribiendo en él.
+  if (input && document.activeElement !== input) input.value = compositionWeightText(state.investmentComposition?.total);
+  document.getElementById("compositionTotalSummary").innerHTML = compositionSummaryHtml(plan);
+  document.getElementById("compositionTrack").innerHTML = plan.rows
+    .map((row, idx) => `<span style="width:${(row.share * 100).toFixed(4)}%;background:${chartColor(PIE_CHART_COLORS, idx)}"></span>`)
+    .join("");
+  renderCompositionGroupsTable(plan);
+  const note = document.getElementById("compositionNote");
+  if (note) {
+    note.innerHTML = plan.weightsWarning
+      ? `<span class="goal-overrun">Los pesos suman ${formatNumber(plan.rawSum)}. Se reparten proporcionalmente hasta el 100 %.</span>`
+      : "";
+  }
+}
+
+function compositionSummaryHtml(plan) {
+  if (!plan.rows.length) return emptyBlock("Sin composición objetivo. Pulsa el lápiz y reparte tus grupos.");
+  const lead = plan.automatic
+    ? `<small class="muted">Sin objetivo total: se calcula el mínimo para llegar al reparto sin vender nada.</small>`
+    : "";
+  const excess = plan.excessTotal > 0
+    ? `<small class="goal-overrun">Te sobran ${money(plan.excessTotal)} en grupos que ya pasan de su peso.</small>`
+    : "";
+  return `
+    ${lead}
+    <div class="goal-metrics composition-metrics">
+      <div><strong>${money(plan.currentTotal)}</strong><span>Actual</span></div>
+      <div><strong>${money(plan.total)}</strong><span>Objetivo</span></div>
+      <div class="remaining"><strong>${money(plan.missingTotal)}</strong><span>Falta</span></div>
+    </div>
+    ${excess}`;
+}
+
+function renderCompositionGroupsTable(plan) {
+  const table = document.getElementById("compositionTable");
+  if (!table) return;
+  if (!plan.rows.length) {
+    table.innerHTML = "";
+    return;
+  }
+  const rows = plan.rows.map((row, idx) => `
+    <tr class="clickable-row" data-composition-group="${escapeAttr(row.key)}">
+      <td class="text-clip col-type">${colorDot(chartColor(PIE_CHART_COLORS, idx))} ${escapeHtml(row.label)}</td>
+      <td class="amount">${pct(row.share)}</td>
+      <td class="amount">${money(row.current)}</td>
+      <td class="amount">${money(row.target)}</td>
+      <td class="amount">${compositionDiffCell(row)}</td>
+    </tr>`).join("");
+  table.innerHTML = `<colgroup><col><col><col><col><col></colgroup><thead><tr><th class="col-type">Grupo</th><th class="amount">%</th><th class="amount">Actual</th><th class="amount">Objetivo</th><th class="amount">Falta</th></tr></thead><tbody>${rows}</tbody>`;
+  table.querySelectorAll("[data-composition-group]").forEach(row => {
+    row.addEventListener("click", () => openCompositionGroupDialog(row.dataset.compositionGroup));
+  });
+  fitCompositionTable("compositionTable");
+}
+
+
+// La tabla de composición tiene que caber en la pantalla: nada de scroll lateral. Se mide el
+// ancho real de cada columna de números, la primera se queda con lo que sobra y, si aun así no
+// entra, se encoge la letra por pasos antes de recortar nada.
+function fitCompositionTable(tableId) {
+  const table = document.getElementById(tableId);
+  if (!table || !table.offsetParent) return;
+  const cols = [...table.querySelectorAll("colgroup col")];
+  if (!cols.length) return;
+  const available = Math.floor(table.parentElement?.clientWidth || table.offsetWidth || 0);
+  if (!available) return;
+  const sizes = ["", "composition-compact", "composition-tiny"];
+  let widths = [];
+  for (const size of sizes) {
+    sizes.filter(Boolean).forEach(name => table.classList.toggle(name, name === size));
+    widths = measureCompositionColumns(table, cols.length);
+    if (sum(widths) <= available) break;
+  }
+  const fixed = widths.slice(1);
+  const first = Math.max(available - sum(fixed), 48);
+  cols.forEach((col, index) => {
+    col.style.width = `${index === 0 ? first : widths[index]}px`;
+  });
+  table.style.tableLayout = "fixed";
+  table.style.width = "100%";
+}
+
+// Con la tabla en `auto` y forzada a 1px, cada celda se queda en su ancho mínimo: como el
+// contenido no parte línea, ese mínimo es justo el texto entero.
+function measureCompositionColumns(table, columnCount) {
+  table.style.tableLayout = "auto";
+  // `min-width: 100%` es lo que impide que la tabla se encoja hasta su contenido, que es
+  // justo lo que hay que medir aquí.
+  table.style.minWidth = "0";
+  table.style.width = "1px";
+  [...table.querySelectorAll("colgroup col")].forEach(col => { col.style.width = ""; });
+  const widths = Array(columnCount).fill(0);
+  [...table.querySelectorAll("tr")].forEach(row => {
+    let index = 0;
+    [...row.children].forEach(cell => {
+      const span = Math.max(1, Number(cell.colSpan) || 1);
+      if (span === 1 && index < columnCount) {
+        widths[index] = Math.max(widths[index], Math.ceil(cell.getBoundingClientRect().width) + 1);
+      }
+      index += span;
+    });
+  });
+  table.style.width = "100%";
+  table.style.minWidth = "";
+  return widths;
+}
+
+function compositionDiffCell(row) {
+  if (row.excess > 0) return `<span class="amount negative">-${money(row.excess)}</span>`;
+  return `<span class="amount">${money(row.missing)}</span>`;
+}
+
+function saveCompositionTotalFromInput() {
+  const input = document.getElementById("compositionTotalInput");
+  if (!input) return;
+  state.investmentComposition = normalizeInvestmentComposition({ ...state.investmentComposition, total: input.value });
+  scheduleCompositionTotalRender();
+}
+
+// El estado se actualiza en la misma tecla, pero recalcular el resumen recorre el histórico
+// entero: hacerlo en cada pulsación se nota en un móvil con muchos movimientos.
+const scheduleCompositionTotalRender = debounce(() => {
+  writeInvestmentComposition();
+  renderInvestmentComposition(calculateSummary(getSelectedSummaryMonth()));
+}, 150);
+
+// ---------------------------------------------------------------------------
+// Editores de pesos. El de grupos y el de posiciones son la misma tabla con otras filas.
+// ---------------------------------------------------------------------------
+
+function compositionEditorTableHtml(rows, firstHeader) {
+  const body = rows.map(row => `
+    <tr data-composition-editor-row data-key="${escapeAttr(row.key)}">
+      <td class="text-clip">${escapeHtml(row.label)}</td>
+      <td><input class="tiny-input" type="text" inputmode="decimal" data-field="weight" value="${escapeAttr(row.weight)}" placeholder="—" aria-label="Peso de ${escapeAttr(row.label)}"></td>
+      <td class="amount" data-composition-share>—</td>
+      <td class="amount">${money(row.current)}</td>
+    </tr>`).join("");
+  return `<colgroup><col><col><col><col></colgroup><thead><tr><th class="col-type">${escapeHtml(firstHeader)}</th><th>Peso</th><th class="amount">%</th><th class="amount">Actual</th></tr></thead><tbody>${body || `<tr><td class="empty" colspan="4">No hay nada que repartir todavía.</td></tr>`}</tbody>`;
+}
+
+function readCompositionEditorRows(tableId) {
+  return Array.from(document.querySelectorAll(`#${tableId} tbody tr[data-composition-editor-row]`)).map(tr => ({
+    key: tr.dataset.key || "",
+    weight: compositionWeightText(tr.querySelector('[data-field="weight"]')?.value)
+  }));
+}
+
+// El % de cada fila se recalcula mientras escribes: es la única forma de que "1/9" signifique
+// algo a simple vista.
+function updateCompositionEditorTotals(tableId, statusId) {
+  const rows = readCompositionEditorRows(tableId);
+  const parsed = rows.map(row => parseCompositionWeight(row.weight));
+  const rawSum = sum(parsed.filter(weight => Number.isFinite(weight)));
+  document.querySelectorAll(`#${tableId} tbody tr[data-composition-editor-row]`).forEach((tr, idx) => {
+    const weight = parsed[idx];
+    tr.classList.toggle("composition-invalid", Number.isNaN(weight));
+    const cell = tr.querySelector("[data-composition-share]");
+    if (!cell) return;
+    if (weight === null) cell.textContent = "—";
+    else if (Number.isNaN(weight)) cell.textContent = "?";
+    else cell.textContent = pct(rawSum > 0 ? weight / rawSum : 0);
+  });
+  const status = document.getElementById(statusId);
+  if (!status) return;
+  const balanced = nearlyEquals(rawSum, 100) || nearlyEquals(rawSum, 1);
+  const invalid = parsed.some(weight => Number.isNaN(weight));
+  status.textContent = invalid
+    ? "Hay algún peso que no se entiende. Vale un número, un porcentaje o una fracción como 1/9."
+    : balanced
+      ? "✓ Reparto completo: 100 %"
+      : `! Los pesos suman ${formatNumber(rawSum)} · se reparten proporcionalmente hasta el 100 %`;
+  status.classList.toggle("balanced", balanced && !invalid);
+  status.classList.toggle("unbalanced", !balanced || invalid);
+}
+
+function wireCompositionEditorInputs(tableId, statusId) {
+  document.querySelectorAll(`#${tableId} [data-field="weight"]`).forEach(input => {
+    input.addEventListener("input", () => updateCompositionEditorTotals(tableId, statusId));
+  });
+  updateCompositionEditorTotals(tableId, statusId);
+}
+
+// Editor del nivel cartera: aquí sí salen TODOS los grupos, también los que ahora no cuentan.
+// Si no, un grupo vacío no habría manera de volver a meterlo en el reparto.
+function openInvestmentCompositionDialog() {
+  const summary = calculateSummary(getSelectedSummaryMonth());
+  const rows = investmentTypes().map(type => ({
+    key: type,
+    label: type,
+    weight: compositionGroupWeightText(type),
+    current: compositionBaseForGroup(type, summary)
+  }));
+  document.getElementById("investmentCompositionTable").innerHTML = compositionEditorTableHtml(rows, "Grupo");
+  wireCompositionEditorInputs("investmentCompositionTable", "investmentCompositionStatus");
+  const dialog = document.getElementById("investmentCompositionDialog");
+  if (!dialog.open) dialog.showModal();
+  fitCompositionTable("investmentCompositionTable");
+  refreshIcons();
+}
+
+function saveInvestmentCompositionFromDialog() {
+  const groups = {};
+  readCompositionEditorRows("investmentCompositionTable").forEach(row => {
+    if (row.key && row.weight !== "") groups[row.key] = row.weight;
+  });
+  state.investmentComposition = normalizeInvestmentComposition({ ...state.investmentComposition, groups });
+  writeInvestmentComposition();
+  document.getElementById("investmentCompositionDialog")?.close();
+  renderCurrentView();
+  setNotice("Composición objetivo guardada.", "ok");
+}
+
+// ---------------------------------------------------------------------------
+// Composición dentro de un grupo
+// ---------------------------------------------------------------------------
+
+function openCompositionGroupDialog(type) {
+  state.currentCompositionGroup = prettyType(type);
+  // Primero se abre y luego se pinta: con el diálogo cerrado no hay anchos que medir y la
+  // tabla se quedaría sin ajustar.
+  const dialog = document.getElementById("investmentCompositionGroupDialog");
+  if (!dialog.open) dialog.showModal();
+  showCompositionGroupDetail();
+}
+
+function compositionGroupContext() {
+  const type = state.currentCompositionGroup;
+  const summary = calculateSummary(getSelectedSummaryMonth());
+  const cartera = compositionCarteraPlan(summary);
+  const row = cartera.rows.find(item => normalizeType(item.key) === normalizeType(type));
+  return { type, summary, cartera, row };
+}
+
+function showCompositionGroupDetail() {
+  const { type, summary, row } = compositionGroupContext();
+  const groupTarget = row ? row.target : 0;
+  const plan = computeCompositionPlan({ entries: compositionPositionEntries(type), total: String(groupTarget) });
+  document.getElementById("compositionGroupTitle").textContent = type || "Grupo";
+  document.getElementById("compositionGroupHead").innerHTML = `
+    <div class="goal-metrics composition-metrics">
+      <div><strong>${row ? pct(row.share) : "—"}</strong><span>Peso</span></div>
+      <div><strong>${money(groupTarget)}</strong><span>Objetivo del grupo</span></div>
+      <div class="remaining"><strong>${money(plan.missingTotal)}</strong><span>Falta</span></div>
+    </div>
+    ${compositionGroupBaseNote(type, summary, plan)}`;
+  const table = document.getElementById("compositionGroupTable");
+  if (plan.rows.length) {
+    table.innerHTML = `<colgroup><col><col><col><col><col></colgroup><thead><tr><th class="col-type">Posición</th><th class="amount">%</th><th class="amount">Actual</th><th class="amount">Objetivo</th><th class="amount">Falta</th></tr></thead><tbody>${plan.rows.map(item => `
+      <tr>
+        <td class="text-clip col-type">${escapeHtml(item.label)}</td>
+        <td class="amount">${pct(item.share)}</td>
+        <td class="amount">${money(item.current)}</td>
+        <td class="amount">${money(item.target)}</td>
+        <td class="amount">${compositionDiffCell(item)}</td>
+      </tr>`).join("")}</tbody>`;
+  } else {
+    table.innerHTML = `<tbody><tr><td class="empty" colspan="5">Sin composición dentro del grupo. Pulsa "Editar pesos".</td></tr></tbody>`;
+  }
+  const note = document.getElementById("compositionGroupNote");
+  note.innerHTML = plan.weightsWarning
+    ? `<span class="goal-overrun">Los pesos suman ${formatNumber(plan.rawSum)}. Se reparten proporcionalmente hasta el 100 %.</span>`
+    : "";
+  document.getElementById("compositionGroupDetail").classList.remove("hidden");
+  document.getElementById("compositionGroupForm").classList.add("hidden");
+  fitCompositionTable("compositionGroupTable");
+  refreshIcons();
+}
+
+// El grupo se mide con lo invertido y sus posiciones con su valor de mercado, que es lo único
+// que hay por posición. Cuando las dos cifras no coinciden se dice, en vez de dejar que el
+// descuadre aparezca sin explicación.
+function compositionGroupBaseNote(type, summary, plan) {
+  const invested = safeNumber(summary?.investedByType?.[type]);
+  if (invested <= 0) return "";
+  const value = roundMoney(plan.currentTotal);
+  if (nearlyEquals(roundMoney(invested), value)) return "";
+  return `<small class="muted">El grupo tiene ${money(invested)} invertidos y ${money(value)} de valor. Dentro se compara contra el valor, que es el único dato por posición.</small>`;
+}
+
+function showCompositionGroupEditor() {
+  const { type } = compositionGroupContext();
+  const weights = compositionPositionWeights(type);
+  const rows = compositionPositionsForGroup(type).map(item => {
+    const key = compositionPositionKey(item);
+    return { key, label: compositionPositionLabel(item), weight: compositionWeightText(weights[key]), current: currentInvestmentTotal(item) };
+  });
+  document.getElementById("compositionGroupEditorTable").innerHTML = compositionEditorTableHtml(rows, "Posición");
+  wireCompositionEditorInputs("compositionGroupEditorTable", "compositionGroupStatus");
+  document.getElementById("compositionGroupDetail").classList.add("hidden");
+  document.getElementById("compositionGroupForm").classList.remove("hidden");
+  fitCompositionTable("compositionGroupEditorTable");
+  refreshIcons();
+}
+
+function saveCompositionGroupFromDialog(event) {
+  event.preventDefault();
+  const type = state.currentCompositionGroup;
+  if (!type) return;
+  const entries = {};
+  readCompositionEditorRows("compositionGroupEditorTable").forEach(row => {
+    if (row.key && row.weight !== "") entries[row.key] = row.weight;
+  });
+  const positions = { ...(state.investmentComposition?.positions || {}) };
+  const existingKey = Object.keys(positions).find(name => normalizeType(name) === normalizeType(type));
+  if (existingKey) delete positions[existingKey];
+  if (Object.keys(entries).length) positions[prettyType(type)] = entries;
+  state.investmentComposition = normalizeInvestmentComposition({ ...state.investmentComposition, positions });
+  writeInvestmentComposition();
+  showCompositionGroupDetail();
+  renderCurrentView();
+  setNotice(`Composición de ${type} guardada.`, "ok");
+}
+
+// Renombrar una categoría no debe tirar su peso: la composición guarda nombres, no ids.
+function renameInvestmentTypeInComposition(renamedCategory) {
+  const current = state.investmentComposition || normalizeInvestmentComposition({});
+  const groups = {};
+  Object.entries(current.groups || {}).forEach(([name, weight]) => { groups[renamedCategory(name)] = weight; });
+  const positions = {};
+  Object.entries(current.positions || {}).forEach(([name, entries]) => { positions[renamedCategory(name)] = entries; });
+  state.investmentComposition = normalizeInvestmentComposition({ ...current, groups, positions });
+  writeInvestmentComposition();
+}
+
 function applyBankDelta(account, amount) {
   const bank = state.banks.find(b => b.cuenta === account);
   if (bank) bank.dinero += Number(amount) || 0;
@@ -6074,6 +6608,7 @@ async function saveInvestmentCategoriesFromDialog(event) {
   state.transactions = state.transactions.map(renameInvestmentMovement);
   state.futureTransactions = state.futureTransactions.map(renameInvestmentMovement);
   renameInvestmentTypeInEmergencyFund(renamedCategory);
+  renameInvestmentTypeInComposition(renamedCategory);
   state.investmentEstimateRules = (state.investmentEstimateRules || []).map(rule => ({
     ...rule,
     tipo: renamedCategory(rule.tipo),
@@ -6125,7 +6660,7 @@ function renderInvestmentBreakdownTable(summary) {
     const dailyPct = dailyPrevious ? (current - dailyPrevious) / dailyPrevious : 0;
     return `<tr class="clickable-row" data-investment-type="${escapeAttr(type)}"><td class="text-clip col-type">${escapeHtml(type)}</td><td class="amount col-money">${money(invested)}</td><td class="amount col-money">${money(current)}</td><td class="amount col-money">${amountCell(current - invested)}</td><td class="amount col-pct">${pctCell(gainPct(current, invested))}</td><td class="amount col-pct">${pctCell(dailyPct)}</td></tr>`;
   }).join("");
-  document.getElementById("investmentBreakdownTable").innerHTML = `<colgroup><col class="col-type"><col class="col-money"><col class="col-money"><col class="col-money"><col class="col-pct"><col class="col-pct"></colgroup><thead><tr><th class="col-type"></th><th class="col-money">Cost</th><th class="col-money">Value</th><th class="col-money">Gain</th><th class="col-pct">%Gain</th><th class="col-pct">%d</th></tr></thead><tbody>${rows}</tbody>`;
+  document.getElementById("investmentBreakdownTable").innerHTML = `<colgroup><col><col class="col-money"><col class="col-money"><col class="col-money"><col class="col-pct"><col class="col-pct"></colgroup><thead><tr><th class="col-type"></th><th class="col-money">Cost</th><th class="col-money">Value</th><th class="col-money">Gain</th><th class="col-pct">%Gain</th><th class="col-pct">%d</th></tr></thead><tbody>${rows}</tbody>`;
   document.querySelectorAll("#investmentBreakdownTable [data-investment-type]").forEach(row => row.addEventListener("click", () => openInvestmentOverview(row.dataset.investmentType)));
 }
 
@@ -6314,6 +6849,7 @@ function renderInvestments() {
   document.getElementById("editInvestmentGoalsBtn").classList.toggle("hidden", !showingGoals);
   document.getElementById("openInvestmentOverviewBtn").classList.toggle("hidden", showingGoals || showingEvolution);
   document.getElementById("investmentGoals").classList.toggle("hidden", !showingGoals);
+  document.getElementById("investmentCompositionPanel")?.classList.toggle("hidden", !showingGoals);
   document.getElementById("investmentEvolution")?.classList.toggle("hidden", !showingEvolution);
   document.querySelectorAll("[data-investment-panel]").forEach(btn => {
     btn.classList.toggle("active", btn.dataset.investmentPanel === panel);
@@ -6335,6 +6871,7 @@ function renderInvestments() {
   `;
   if (document.getElementById("investmentOverviewDialog").open) renderInvestmentBreakdownCharts(summary);
   renderInvestmentGoals(summary);
+  renderInvestmentComposition(summary);
   if (showingEvolution) renderInvestmentEvolution();
   else {
     renderInvestmentBreakdownTable(summary);
@@ -6342,7 +6879,8 @@ function renderInvestments() {
     fitInvestmentTables();
   }
   const hideLowerSections = showingGoals || showingEvolution;
-  document.querySelectorAll("#inversiones > article.panel").forEach(el => {
+  // La tarjeta de composición es justo la excepción: vive arriba y solo se ve en Objetivos.
+  document.querySelectorAll("#inversiones > article.panel:not(#investmentCompositionPanel)").forEach(el => {
     el.classList.toggle("hidden", hideLowerSections);
   });
   document.getElementById("addInvestmentRowBtn")?.classList.toggle("hidden", investmentEstimateEnabled());
