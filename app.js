@@ -129,6 +129,7 @@ const THEME_KEY = "moneyTheme";
 const INVESTMENT_ESTIMATE_MODE_KEY = "moneyInvestmentEstimateMode";
 const EVOLUTION_RANGE_KEY = "moneyEvolutionRange";
 const ACCOUNT_GROUPS_KEY = "moneyAccountGroups";
+const EMERGENCY_FUND_KEY = "moneyEmergencyFund";
 const FUTURE_MOVEMENT_ACCOUNT_SKIP_KEY = "moneyFutureMovementAccountSkip";
 const FULL_MONTH_NAMES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
 
@@ -188,6 +189,7 @@ const state = {
   investmentGoals: loadInvestmentGoals(),
   evolutionRange: loadEvolutionRange(),
   accountGroups: loadAccountGroups(),
+  emergencyFund: loadEmergencyFund(),
   cacheMeta: defaultCacheMeta(),
   investmentNotificationsSending: false,
   pendingInvestmentAllocationPrompts: [],
@@ -298,6 +300,9 @@ function wireUi() {
   document.getElementById("closeAccountGroupBtn")?.addEventListener("click", () => document.getElementById("accountGroupDialog").close());
   document.getElementById("accountGroupForm")?.addEventListener("submit", submitAccountGroup);
   document.getElementById("accountGroupDeleteBtn")?.addEventListener("click", deleteAccountGroup);
+  document.getElementById("closeEmergencyFundBtn")?.addEventListener("click", () => document.getElementById("emergencyFundDialog").close());
+  document.getElementById("emergencyFundEditBtn")?.addEventListener("click", showEmergencyFundEditor);
+  document.getElementById("emergencyFundForm")?.addEventListener("submit", submitEmergencyFund);
   document.getElementById("movementTableControlSort")?.addEventListener("click", event => {
     const btn = event.target.closest("[data-table-sort]");
     if (!btn) return;
@@ -3373,8 +3378,8 @@ function buildRegistrarSummaryCards() {
   const futureTotals = `${formatNumber(futureExpenses, 0)}/${formatNumber(futureInvestments, 0)} €`;
 
   return [
-    { label: "Dinero total bancos", value: money(summary.bank) },
-    { label: "Dinero invertido", value: money(summary.investedTotal) },
+    { label: "Total bancos", value: money(summary.bank) },
+    { label: "Fondo de emergencia", value: money(emergencyFundTotals(summary).value) },
     { label: "Uso personal", value: personalAvailable === null ? "Sin objetivo" : money(personalAvailable) },
     { label: "Invertido mes", value: money(summary.investedMonth) },
     { label: "Gastos mes", value: money(summary.expenses) },
@@ -3400,6 +3405,7 @@ function renderMonthSituationDialog(summary) {
 
 function renderMoneySummary(summary) {
   const groups = state.accountGroups || [];
+  const fund = emergencyFundTotals(summary);
   const groupRows = groups.map(group => {
     const total = sum(state.banks.filter(bank => group.accountNames.includes(bank.cuenta)).map(bank => bank.dinero));
     return `<button class="money-row money-row-group money-action" data-account-group-id="${escapeAttr(group.id)}" type="button">
@@ -3409,11 +3415,19 @@ function renderMoneySummary(summary) {
   }).join("");
   document.getElementById("moneySummary").innerHTML = `
     <div class="money-list">
-      <button class="money-row money-action" id="openAllAccountsBtn" type="button">
-        <span>Total Bancos</span>
+      <div class="money-row money-row-total">
+        <span>Total</span>
+        <strong>${money(summary.bank + fund.value)}</strong>
+      </div>
+      <button class="money-row money-row-main money-action" id="openAllAccountsBtn" type="button">
+        <span>Bancos</span>
         <strong>${money(summary.bank)}</strong>
       </button>
       ${groupRows}
+      <button class="money-row money-row-main money-action" id="openEmergencyFundBtn" type="button">
+        <span>Fondo de emergencia</span>
+        <strong>${money(fund.value)}</strong>
+      </button>
     </div>
   `;
   document.getElementById("investedSummary").innerHTML = `
@@ -3426,6 +3440,7 @@ function renderMoneySummary(summary) {
 
   document.getElementById("openInvestedMoneyBtn")?.addEventListener("click", () => openMoneyDetail("invested"));
   document.getElementById("openAllAccountsBtn")?.addEventListener("click", () => openMoneyDetail("bank"));
+  document.getElementById("openEmergencyFundBtn")?.addEventListener("click", openEmergencyFundDialog);
   document.querySelectorAll("[data-account-group-id]").forEach(btn => {
     btn.addEventListener("click", () => openAccountGroupDialog(btn.dataset.accountGroupId));
   });
@@ -3486,6 +3501,73 @@ function deleteAccountGroup() {
   dialog.close();
   renderSummary();
   setNotice("Tarjeta eliminada.", "ok");
+}
+
+// El fondo de emergencia es una vista sobre los tipos de inversión ya existentes: no crea
+// posiciones ni cuestas propias, solo suma las categorías marcadas. Se compara con
+// normalizeType para que un cambio de mayúsculas o acentos en la categoría no vacíe el fondo,
+// y se filtra contra investmentTypes() para descartar categorías ya borradas.
+function emergencyFundTotals(summary) {
+  const selected = state.emergencyFund?.types || [];
+  const types = investmentTypes().filter(type => selected.some(sel => normalizeType(sel) === normalizeType(type)));
+  const invested = sum(types.map(type => summary.investedByType[type] || 0));
+  const value = sum(types.map(type => summary.valueByType[type] || 0));
+  return { types, invested, value, gain: value - invested, gainPct: gainPct(value, invested) };
+}
+
+function openEmergencyFundDialog() {
+  const summary = calculateSummary(getSelectedSummaryMonth());
+  const fund = emergencyFundTotals(summary);
+  const tone = fund.gain >= 0 ? "positive" : "negative";
+  const cards = fund.types.map(type => investmentSummaryCard(
+    type,
+    summary.investedByType[type] || 0,
+    summary.valueByType[type] || 0
+  )).join("");
+  document.getElementById("emergencyFundSummary").innerHTML = `
+    <div class="money-item emergency-fund-total">
+      <span>Con ganancias realizadas</span>
+      <strong>${money(fund.value)}</strong>
+      <small class="${tone}">Invertido: ${money(fund.invested)} · Ganancias: ${money(fund.gain)} · ${pct(fund.gainPct)}</small>
+    </div>
+    ${cards ? `<div class="money-grid investment-money-grid">${cards}</div>` : emptyBlock("Todavía no has elegido qué grupos de inversión forman el fondo.")}
+  `;
+  showEmergencyFundDetail();
+  const dialog = document.getElementById("emergencyFundDialog");
+  if (!dialog.open) dialog.showModal();
+  refreshIcons();
+}
+
+function showEmergencyFundDetail() {
+  document.getElementById("emergencyFundDetail").classList.remove("hidden");
+  document.getElementById("emergencyFundForm").classList.add("hidden");
+}
+
+function showEmergencyFundEditor() {
+  const selected = new Set((state.emergencyFund?.types || []).map(normalizeType));
+  const types = investmentTypes();
+  document.getElementById("emergencyFundChecklist").innerHTML = types.length
+    ? `<div class="account-group-checklist">${types.map(type => `
+        <label>
+          <input type="checkbox" value="${escapeAttr(type)}" ${selected.has(normalizeType(type)) ? "checked" : ""}>
+          <span>${escapeHtml(type)}</span>
+        </label>
+      `).join("")}</div>`
+    : emptyBlock("No hay grupos de inversión todavía.");
+  document.getElementById("emergencyFundDetail").classList.add("hidden");
+  document.getElementById("emergencyFundForm").classList.remove("hidden");
+  refreshIcons();
+}
+
+function submitEmergencyFund(event) {
+  event.preventDefault();
+  const types = [...document.querySelectorAll("#emergencyFundChecklist input[type=checkbox]:checked")].map(input => input.value);
+  state.emergencyFund = { types };
+  writeEmergencyFund();
+  renderSummary();
+  renderRegistrarSummaryCompact();
+  openEmergencyFundDialog();
+  setNotice("Fondo de emergencia guardado.", "ok");
 }
 
 function investmentSummaryCard(label, invested, current, extraClass = "") {
@@ -5991,6 +6073,7 @@ async function saveInvestmentCategoriesFromDialog(event) {
   };
   state.transactions = state.transactions.map(renameInvestmentMovement);
   state.futureTransactions = state.futureTransactions.map(renameInvestmentMovement);
+  renameInvestmentTypeInEmergencyFund(renamedCategory);
   state.investmentEstimateRules = (state.investmentEstimateRules || []).map(rule => ({
     ...rule,
     tipo: renamedCategory(rule.tipo),
@@ -6837,6 +6920,27 @@ function loadAccountGroups() {
 
 function writeAccountGroups() {
   safeSetItem(ACCOUNT_GROUPS_KEY, JSON.stringify(state.accountGroups || []));
+}
+
+function loadEmergencyFund() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(EMERGENCY_FUND_KEY) || "{}");
+    const types = Array.isArray(saved?.types) ? saved.types : [];
+    return { types: unique(types.map(type => prettyType(String(type))).filter(Boolean)) };
+  } catch {
+    return { types: [] };
+  }
+}
+
+function writeEmergencyFund() {
+  safeSetItem(EMERGENCY_FUND_KEY, JSON.stringify(state.emergencyFund || { types: [] }));
+}
+
+// Renombrar una categoría no debe vaciar el fondo en silencio: el fondo guarda nombres, no ids.
+function renameInvestmentTypeInEmergencyFund(renamedCategory) {
+  const types = state.emergencyFund?.types || [];
+  state.emergencyFund = { types: unique(types.map(type => renamedCategory(type))) };
+  writeEmergencyFund();
 }
 
 function renameAccountInGroups(oldName, newName) {
