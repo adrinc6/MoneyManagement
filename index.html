@@ -18,7 +18,7 @@
        app.js degrada (sin iconos ni gráficas) en vez de romperse. -->
   <script defer crossorigin="anonymous" src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
   <script defer crossorigin="anonymous" src="https://unpkg.com/lucide@1.24.0/dist/umd/lucide.min.js"></script>
-  <link rel="stylesheet" href="styles.css?v=20260803-v42" />
+  <link rel="stylesheet" href="styles.css?v=20260821-v43" />
 </head>
 <body>
   <main class="app">
@@ -150,6 +150,23 @@
     </section>
 
     <section id="inversiones" class="view">
+      <article class="panel composition-panel hidden" id="investmentCompositionPanel">
+        <div class="panel-header">
+          <div>
+            <h2>Objetivos composición</h2>
+            <p>Cómo quieres tener repartida la cartera.</p>
+          </div>
+          <button class="icon-btn minimal-icon" id="editInvestmentCompositionBtn" type="button" aria-label="Editar composición"><i data-lucide="edit-3"></i></button>
+        </div>
+        <div class="panel-body composition-body">
+          <label class="composition-total"><span>Objetivo total</span><input id="compositionTotalInput" type="number" step="0.01" inputmode="decimal" placeholder="Mínimo" /></label>
+          <div class="composition-summary" id="compositionTotalSummary"></div>
+          <div class="goal-track composition-track" id="compositionTrack"></div>
+          <div class="table-wrap"><table id="compositionTable"></table></div>
+          <div class="composition-note" id="compositionNote"></div>
+        </div>
+      </article>
+
       <article class="total-panel investment-total-card">
         <div class="investment-summary-head">
           <div class="investment-summary-title">
@@ -571,6 +588,46 @@
   </dialog>
 
 
+
+  <dialog id="investmentCompositionDialog" class="wide-dialog">
+    <div class="dialog-head">
+      <h2>Composición objetivo</h2>
+      <button class="icon-btn" id="closeInvestmentCompositionBtn" type="button" aria-label="Cerrar"><i data-lucide="x"></i></button>
+    </div>
+    <div class="panel-body composition-editor-body">
+      <p class="dialog-help">Deja el peso vacío para que ese grupo no cuente. Vale un número, un porcentaje o una fracción como 1/9.</p>
+      <div class="composition-check"><strong id="investmentCompositionStatus"></strong></div>
+      <div class="table-wrap composition-editor-wrap"><table id="investmentCompositionTable"></table></div>
+      <div class="section-toolbar composition-editor-toolbar">
+        <button class="btn primary" id="saveInvestmentCompositionBtn" type="button"><i data-lucide="save"></i> Guardar composición</button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="investmentCompositionGroupDialog" class="wide-dialog">
+    <div class="dialog-head">
+      <h2 id="compositionGroupTitle">Grupo</h2>
+      <button class="icon-btn" id="closeCompositionGroupBtn" type="button" aria-label="Cerrar"><i data-lucide="x"></i></button>
+    </div>
+    <div id="compositionGroupDetail" class="panel-body composition-editor-body">
+      <div id="compositionGroupHead"></div>
+      <div class="table-wrap composition-editor-wrap"><table id="compositionGroupTable"></table></div>
+      <div class="composition-note" id="compositionGroupNote"></div>
+      <div class="section-toolbar composition-editor-toolbar">
+        <button class="btn" id="compositionGroupEditBtn" type="button"><i data-lucide="edit-3"></i> Editar pesos</button>
+      </div>
+    </div>
+    <form id="compositionGroupForm" class="panel-body composition-editor-body hidden">
+      <p class="dialog-help">Reparto dentro del grupo. Deja el peso vacío para que esa posición no cuente.</p>
+      <div class="composition-check"><strong id="compositionGroupStatus"></strong></div>
+      <div class="table-wrap composition-editor-wrap"><table id="compositionGroupEditorTable"></table></div>
+      <div class="section-toolbar composition-editor-toolbar">
+        <button class="btn" id="compositionGroupBackBtn" type="button"><i data-lucide="arrow-left"></i> Volver</button>
+        <button class="btn primary" type="submit"><i data-lucide="save"></i> Guardar pesos</button>
+      </div>
+    </form>
+  </dialog>
+
   <dialog id="investmentEstimateRulesDialog" class="wide-dialog">
     <div class="dialog-head">
       <h2>Reglas de estimación</h2>
@@ -610,6 +667,6 @@
 
   <!-- El registro del service worker y la recarga por actualización viven en app.js,
        junto al resto del arranque, para no tener el ciclo de vida repartido en dos sitios. -->
-  <script defer src="app.js?v=20260803-v42"></script>
+  <script defer src="app.js?v=20260821-v43"></script>
 </body>
 </html>

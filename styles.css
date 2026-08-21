@@ -1930,7 +1930,11 @@ TABLAS DE INVERSIONES: ajuste mínimo sin scroll horizontal
    - Detalle/Tipo absorben el recorte primero.
    ========================================================= */
 .table-wrap:has(#investmentEditTable),
-.table-wrap:has(#investmentBreakdownTable) {
+.table-wrap:has(#investmentBreakdownTable),
+.table-wrap:has(#compositionTable),
+.table-wrap:has(#compositionGroupTable),
+.table-wrap:has(#investmentCompositionTable),
+.table-wrap:has(#compositionGroupEditorTable) {
   overflow-x: hidden;
 }
 
@@ -2557,4 +2561,124 @@ TABLAS DE INVERSIONES: ajuste mínimo sin scroll horizontal
   color: var(--bad);
   border-color: var(--bad);
   background: var(--bad-soft);
+}
+
+/* Objetivos de composición */
+
+.composition-body {
+  display: grid;
+  gap: 12px;
+}
+
+.composition-total {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.composition-total span {
+  font-size: 0.815rem;
+  color: var(--muted);
+}
+
+.composition-total input {
+  width: 140px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.composition-summary {
+  display: grid;
+  gap: 8px;
+}
+
+.composition-summary small {
+  display: block;
+}
+
+.composition-metrics {
+  margin: 0;
+}
+
+.composition-metrics strong,
+.composition-metrics span {
+  display: block;
+}
+
+/* Solo se pinta cuando hay reparto: una barra vacía a media tarjeta se ve como un fallo. */
+.composition-track:empty {
+  display: none;
+}
+
+.composition-track span {
+  display: block;
+  min-width: 1px;
+}
+
+.composition-note:empty {
+  display: none;
+}
+
+.composition-note {
+  font-size: 0.795rem;
+}
+
+.composition-editor-body {
+  display: grid;
+  gap: 12px;
+}
+
+.composition-check {
+  display: flex;
+  justify-content: flex-end;
+  min-height: 24px;
+}
+
+.composition-check strong {
+  font-size: 0.815rem;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.composition-check .balanced {
+  color: var(--good);
+}
+
+.composition-check .unbalanced {
+  color: var(--bad);
+}
+
+.composition-editor-wrap .tiny-input {
+  width: 72px;
+  text-align: right;
+}
+
+.composition-editor-wrap tr.composition-invalid .tiny-input {
+  border-color: var(--bad);
+  color: var(--bad);
+}
+
+.composition-editor-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+table.composition-compact {
+  font-size: 0.715rem;
+}
+
+table.composition-compact th,
+table.composition-compact td {
+  padding: 8px 4px;
+}
+
+table.composition-tiny {
+  font-size: 0.655rem;
+}
+
+table.composition-tiny th,
+table.composition-tiny td {
+  padding: 7px 3px;
 }
