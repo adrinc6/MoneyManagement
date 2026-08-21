@@ -55,7 +55,7 @@ MoneyManagement permite:
 - Edición de posiciones.
 - En edición manual solo se actualiza la cantidad.
 - Detalle por inversión con gráfica y tabla.
-- En `Objetivos`, una tarjeta de composición con el reparto que quieres tener.
+- En `Objetivos`, la tarjeta `Composición` con el reparto que quieres tener.
 
 #### Objetivos de composición
 
@@ -63,8 +63,9 @@ Dice cómo quieres tener repartida la cartera y cuánto te falta meter en cada s
 llegar a ese reparto. Tiene dos niveles: los grupos de inversión y, al pulsar en un grupo,
 las posiciones que hay dentro.
 
-- El peso de cada grupo se edita con el lápiz de la tarjeta. Vale un número, un porcentaje
-  o una fracción (`1/9`); los pesos se normalizan hasta el 100 %.
+- El peso de cada grupo se edita con el lápiz de la tarjeta, en dos columnas: numerador
+  (`Num`) y denominador (`Den`). El denominador es 100 si lo dejas vacío, así que escribir
+  `20` es un 20 %, y `1` sobre `9` es un noveno. Los pesos se normalizan hasta el 100 %.
 - Un peso **vacío** deja ese grupo fuera del reparto: no sale en la tarjeta y su dinero no
   cuenta para el total. Un **0** sí cuenta, y significa "no quiero tener nada aquí".
 - El dinero objetivo se fija una sola vez, arriba. Si un grupo es el 20 % de 18.000 €, su

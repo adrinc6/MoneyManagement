@@ -31,6 +31,32 @@ test("parseCompositionWeight distingue vacío, número, porcentaje y fracción",
   assert.ok(Number.isNaN(app.parseCompositionWeight("-5")), "un peso negativo no significa nada");
 });
 
+test("compositionWeightParts parte el peso en las dos columnas del editor", () => {
+  const app = loadApp();
+  assert.deepEqual(plain(app.compositionWeightParts("")), { numerator: "", denominator: "" }, "vacío es vacío en las dos");
+  assert.deepEqual(plain(app.compositionWeightParts(null)), { numerator: "", denominator: "" });
+  assert.deepEqual(plain(app.compositionWeightParts("1/9")), { numerator: "1", denominator: "9" });
+  assert.deepEqual(plain(app.compositionWeightParts("20")), { numerator: "20", denominator: "100" }, "un número suelto es sobre 100");
+  assert.deepEqual(plain(app.compositionWeightParts("20 %")), { numerator: "20", denominator: "100" });
+  assert.deepEqual(plain(app.compositionWeightParts(" 11,5 ")), { numerator: "11,5", denominator: "100" });
+});
+
+test("compositionWeightFromParts recompone lo que se escribe en las dos columnas", () => {
+  const app = loadApp();
+  assert.equal(app.compositionWeightFromParts("", ""), "", "sin numerador no hay peso: ese grupo no cuenta");
+  assert.equal(app.compositionWeightFromParts("", "9"), "", "un denominador solo tampoco es un peso");
+  assert.equal(app.compositionWeightFromParts("20", ""), "20/100", "el denominador por defecto es 100");
+  assert.equal(app.compositionWeightFromParts("1", "9"), "1/9");
+  assert.equal(app.compositionWeightFromParts("0", ""), "0/100", "el cero sigue contando");
+  assert.equal(app.parseCompositionWeight(app.compositionWeightFromParts("20", "")), 0.2);
+});
+
+test("normalizeInvestmentComposition migra los pesos antiguos a fracción", () => {
+  const app = loadApp();
+  const composition = app.normalizeInvestmentComposition({ groups: { Bolsa: "60", Fondos: "1/9" } });
+  assert.deepEqual(plain(composition.groups), { Bolsa: "60/100", Fondos: "1/9" });
+});
+
 test("con un total objetivo reparte por peso y dice lo que falta en cada grupo", () => {
   const app = loadApp();
   const plan = app.computeCompositionPlan({
@@ -151,8 +177,8 @@ test("loadInvestmentComposition tolera datos corruptos o con otra forma", () => 
   assert.deepEqual(plain(app.loadInvestmentComposition()), { total: "", groups: {}, positions: {} });
   app.__store.set(COMPOSITION_KEY, JSON.stringify({ groups: { Bolsa: "60", "": "10", Cripto: "" }, positions: { Bolsa: { IWDA: "70", EMIM: "" } }, total: 18000 }));
   const loaded = app.loadInvestmentComposition();
-  assert.deepEqual(plain(loaded.groups), { Bolsa: "60" }, "los pesos vacíos no se guardan: no cuentan");
-  assert.deepEqual(plain(loaded.positions), { Bolsa: { iwda: "70" } });
+  assert.deepEqual(plain(loaded.groups), { Bolsa: "60/100" }, "los pesos vacíos no se guardan: no cuentan");
+  assert.deepEqual(plain(loaded.positions), { Bolsa: { iwda: "70/100" } });
   assert.equal(loaded.total, "18000");
 });
 
@@ -171,7 +197,7 @@ test("renombrar una categoría se lleva su peso y el de sus posiciones", () => {
     positions: { Bolsa: { iwda: "70" } }
   });
   app.renameInvestmentTypeInComposition(value => (value === "Bolsa" ? "Renta variable" : value));
-  assert.deepEqual(plain(app.state.investmentComposition.groups), { "Renta variable": "60", Fondos: "40" });
-  assert.deepEqual(plain(app.state.investmentComposition.positions), { "Renta variable": { iwda: "70" } });
-  assert.equal(JSON.parse(app.__store.get(COMPOSITION_KEY)).groups["Renta variable"], "60");
+  assert.deepEqual(plain(app.state.investmentComposition.groups), { "Renta variable": "60/100", Fondos: "40/100" });
+  assert.deepEqual(plain(app.state.investmentComposition.positions), { "Renta variable": { iwda: "70/100" } });
+  assert.equal(JSON.parse(app.__store.get(COMPOSITION_KEY)).groups["Renta variable"], "60/100");
 });

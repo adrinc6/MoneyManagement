@@ -131,6 +131,8 @@ const EVOLUTION_RANGE_KEY = "moneyEvolutionRange";
 const ACCOUNT_GROUPS_KEY = "moneyAccountGroups";
 const EMERGENCY_FUND_KEY = "moneyEmergencyFund";
 const INVESTMENT_COMPOSITION_KEY = "moneyInvestmentComposition";
+// El denominador que se supone cuando solo se escribe el numerador: así el peso es un %.
+const COMPOSITION_DEFAULT_DENOMINATOR = "100";
 const FUTURE_MOVEMENT_ACCOUNT_SKIP_KEY = "moneyFutureMovementAccountSkip";
 const FULL_MONTH_NAMES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
 
@@ -5354,9 +5356,10 @@ function renderInvestmentGoals(summary) {
 // es su peso por ese total, y el de una posición su peso por el objetivo de su grupo. Así no
 // hay dos cifras de dinero que puedan contradecirse.
 //
-// Los pesos se guardan como TEXTO. Quien escribe "1/9" quiere volver a ver "1/9" cuando
-// reabra el editor, no "11,11". Vacío y cero son cosas distintas: vacío es "este grupo no
-// entra en el reparto" y cero es "no quiero tener nada aquí".
+// Un peso es siempre una fracción, y se guarda como TEXTO: quien escribe 1/9 quiere volver a
+// ver 1/9 cuando reabra el editor, no "11,11". El denominador por defecto es 100, que es lo que
+// hace que escribir un 20 a secas signifique un 20 %. Vacío y cero son cosas distintas: vacío es
+// "este grupo no entra en el reparto" y cero es "no quiero tener nada aquí".
 // ---------------------------------------------------------------------------
 
 function loadInvestmentComposition() {
@@ -5382,7 +5385,7 @@ function normalizeInvestmentComposition(value) {
   const groups = {};
   Object.entries(source.groups || {}).forEach(([key, weight]) => {
     const name = prettyType(key);
-    const text = compositionWeightText(weight);
+    const text = compositionWeightAsFraction(weight);
     if (name && text !== "") groups[name] = text;
   });
   const positions = {};
@@ -5392,12 +5395,37 @@ function normalizeInvestmentComposition(value) {
     const byPosition = {};
     Object.entries(entries).forEach(([positionKey, weight]) => {
       const id = normalizeType(positionKey);
-      const text = compositionWeightText(weight);
+      const text = compositionWeightAsFraction(weight);
       if (id && text !== "") byPosition[id] = text;
     });
     if (Object.keys(byPosition).length) positions[name] = byPosition;
   });
   return { total: compositionWeightText(source.total), groups, positions };
+}
+
+// El peso se edita en dos columnas, numerador y denominador, porque en un móvil la barra de una
+// fracción no está a mano. Partir y recomponer el texto guardado es todo lo que hace falta: el
+// denominador vacío es 100, así que un 20 suelto sigue siendo un 20 %.
+function compositionWeightParts(value) {
+  const text = compositionWeightText(value).replace(/%\s*$/, "").trim();
+  if (text === "") return { numerator: "", denominator: "" };
+  const fraction = text.match(/^([^/]+)\/([^/]+)$/);
+  if (fraction) return { numerator: fraction[1].trim(), denominator: fraction[2].trim() };
+  return { numerator: text, denominator: COMPOSITION_DEFAULT_DENOMINATOR };
+}
+
+function compositionWeightFromParts(numerator, denominator) {
+  const num = compositionWeightText(numerator).replace(/%\s*$/, "").trim();
+  if (num === "") return "";
+  const den = compositionWeightText(denominator).trim();
+  return `${num}/${den === "" ? COMPOSITION_DEFAULT_DENOMINATOR : den}`;
+}
+
+// Lo que se guardó antes de que el peso fuera una fracción era un número suelto, y ahí un 60
+// significaba 60 sobre 100. Se migra al leerlo para que la vista y el editor lean lo mismo.
+function compositionWeightAsFraction(value) {
+  const parts = compositionWeightParts(value);
+  return compositionWeightFromParts(parts.numerator, parts.denominator);
 }
 
 // Acepta lo que uno escribiría a mano: "20", "20 %", "1/9", "0,5". El vacío y lo ilegible son
@@ -5553,7 +5581,7 @@ function renderInvestmentComposition(summary) {
   const note = document.getElementById("compositionNote");
   if (note) {
     note.innerHTML = plan.weightsWarning
-      ? `<span class="goal-overrun">Los pesos suman ${formatNumber(plan.rawSum)}. Se reparten proporcionalmente hasta el 100 %.</span>`
+      ? `<span class="goal-overrun">Los pesos suman ${pctNoSymbol(plan.rawSum)} %. Se reparten proporcionalmente hasta el 100 %.</span>`
       : "";
   }
 }
@@ -5586,7 +5614,7 @@ function renderCompositionGroupsTable(plan) {
   const rows = plan.rows.map((row, idx) => `
     <tr class="clickable-row" data-composition-group="${escapeAttr(row.key)}">
       <td class="text-clip col-type">${colorDot(chartColor(PIE_CHART_COLORS, idx))} ${escapeHtml(row.label)}</td>
-      <td class="amount">${pct(row.share)}</td>
+      <td class="amount">${pctNoSymbol(row.share)}</td>
       <td class="amount">${money(row.current)}</td>
       <td class="amount">${money(row.target)}</td>
       <td class="amount">${compositionDiffCell(row)}</td>
@@ -5674,20 +5702,29 @@ const scheduleCompositionTotalRender = debounce(() => {
 // ---------------------------------------------------------------------------
 
 function compositionEditorTableHtml(rows, firstHeader) {
-  const body = rows.map(row => `
+  const body = rows.map(row => {
+    const parts = compositionWeightParts(row.weight);
+    // La barra vive dentro de la celda del denominador: una columna solo para el "/" gastaría un
+    // ancho que en un móvil no sobra, y aun así se lee "60 / 100".
+    return `
     <tr data-composition-editor-row data-key="${escapeAttr(row.key)}">
       <td class="text-clip">${escapeHtml(row.label)}</td>
-      <td><input class="tiny-input" type="text" inputmode="decimal" data-field="weight" value="${escapeAttr(row.weight)}" placeholder="—" aria-label="Peso de ${escapeAttr(row.label)}"></td>
+      <td class="amount"><input class="tiny-input" type="text" inputmode="decimal" data-field="numerator" value="${escapeAttr(parts.numerator)}" placeholder="—" aria-label="Peso de ${escapeAttr(row.label)}"></td>
+      <td class="amount fraction-cell"><span class="fraction-slash">/</span><input class="tiny-input" type="text" inputmode="decimal" data-field="denominator" value="${escapeAttr(parts.denominator)}" placeholder="${COMPOSITION_DEFAULT_DENOMINATOR}" aria-label="Denominador de ${escapeAttr(row.label)}"></td>
       <td class="amount" data-composition-share>—</td>
       <td class="amount">${money(row.current)}</td>
-    </tr>`).join("");
-  return `<colgroup><col><col><col><col></colgroup><thead><tr><th class="col-type">${escapeHtml(firstHeader)}</th><th>Peso</th><th class="amount">%</th><th class="amount">Actual</th></tr></thead><tbody>${body || `<tr><td class="empty" colspan="4">No hay nada que repartir todavía.</td></tr>`}</tbody>`;
+    </tr>`;
+  }).join("");
+  return `<colgroup><col><col><col><col><col></colgroup><thead><tr><th class="col-type">${escapeHtml(firstHeader)}</th><th class="amount">Num</th><th class="amount">Den</th><th class="amount">%</th><th class="amount">Actual</th></tr></thead><tbody>${body || `<tr><td class="empty" colspan="5">No hay nada que repartir todavía.</td></tr>`}</tbody>`;
 }
 
 function readCompositionEditorRows(tableId) {
   return Array.from(document.querySelectorAll(`#${tableId} tbody tr[data-composition-editor-row]`)).map(tr => ({
     key: tr.dataset.key || "",
-    weight: compositionWeightText(tr.querySelector('[data-field="weight"]')?.value)
+    weight: compositionWeightFromParts(
+      tr.querySelector('[data-field="numerator"]')?.value,
+      tr.querySelector('[data-field="denominator"]')?.value
+    )
   }));
 }
 
@@ -5704,23 +5741,23 @@ function updateCompositionEditorTotals(tableId, statusId) {
     if (!cell) return;
     if (weight === null) cell.textContent = "—";
     else if (Number.isNaN(weight)) cell.textContent = "?";
-    else cell.textContent = pct(rawSum > 0 ? weight / rawSum : 0);
+    else cell.textContent = pctNoSymbol(rawSum > 0 ? weight / rawSum : 0);
   });
   const status = document.getElementById(statusId);
   if (!status) return;
   const balanced = nearlyEquals(rawSum, 100) || nearlyEquals(rawSum, 1);
   const invalid = parsed.some(weight => Number.isNaN(weight));
   status.textContent = invalid
-    ? "Hay algún peso que no se entiende. Vale un número, un porcentaje o una fracción como 1/9."
+    ? "Hay algún peso que no se entiende. El numerador tiene que ser un número y el denominador no puede ser 0."
     : balanced
       ? "✓ Reparto completo: 100 %"
-      : `! Los pesos suman ${formatNumber(rawSum)} · se reparten proporcionalmente hasta el 100 %`;
+      : `! Los pesos suman ${pctNoSymbol(rawSum)} % · se reparten proporcionalmente hasta el 100 %`;
   status.classList.toggle("balanced", balanced && !invalid);
   status.classList.toggle("unbalanced", !balanced || invalid);
 }
 
 function wireCompositionEditorInputs(tableId, statusId) {
-  document.querySelectorAll(`#${tableId} [data-field="weight"]`).forEach(input => {
+  document.querySelectorAll(`#${tableId} [data-field="numerator"], #${tableId} [data-field="denominator"]`).forEach(input => {
     input.addEventListener("input", () => updateCompositionEditorTotals(tableId, statusId));
   });
   updateCompositionEditorTotals(tableId, statusId);
@@ -5784,7 +5821,7 @@ function showCompositionGroupDetail() {
   document.getElementById("compositionGroupTitle").textContent = type || "Grupo";
   document.getElementById("compositionGroupHead").innerHTML = `
     <div class="goal-metrics composition-metrics">
-      <div><strong>${row ? pct(row.share) : "—"}</strong><span>Peso</span></div>
+      <div><strong>${row ? pctNoSymbol(row.share) : "—"}</strong><span>Peso %</span></div>
       <div><strong>${money(groupTarget)}</strong><span>Objetivo del grupo</span></div>
       <div class="remaining"><strong>${money(plan.missingTotal)}</strong><span>Falta</span></div>
     </div>
@@ -5794,7 +5831,7 @@ function showCompositionGroupDetail() {
     table.innerHTML = `<colgroup><col><col><col><col><col></colgroup><thead><tr><th class="col-type">Posición</th><th class="amount">%</th><th class="amount">Actual</th><th class="amount">Objetivo</th><th class="amount">Falta</th></tr></thead><tbody>${plan.rows.map(item => `
       <tr>
         <td class="text-clip col-type">${escapeHtml(item.label)}</td>
-        <td class="amount">${pct(item.share)}</td>
+        <td class="amount">${pctNoSymbol(item.share)}</td>
         <td class="amount">${money(item.current)}</td>
         <td class="amount">${money(item.target)}</td>
         <td class="amount">${compositionDiffCell(item)}</td>
@@ -5804,7 +5841,7 @@ function showCompositionGroupDetail() {
   }
   const note = document.getElementById("compositionGroupNote");
   note.innerHTML = plan.weightsWarning
-    ? `<span class="goal-overrun">Los pesos suman ${formatNumber(plan.rawSum)}. Se reparten proporcionalmente hasta el 100 %.</span>`
+    ? `<span class="goal-overrun">Los pesos suman ${pctNoSymbol(plan.rawSum)} %. Se reparten proporcionalmente hasta el 100 %.</span>`
     : "";
   document.getElementById("compositionGroupDetail").classList.remove("hidden");
   document.getElementById("compositionGroupForm").classList.add("hidden");

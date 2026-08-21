@@ -781,10 +781,8 @@ input[readonly] {
   margin-bottom: 0;
 }
 .drill-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
+  display: grid;
+  gap: 6px;
 }
 .drill-heading .drill-title { min-width: 0; }
 .year-grid {
@@ -1101,8 +1099,21 @@ canvas { width: 100% !important; height: 100% !important; }
   color: var(--bg);
   box-shadow: none;
 }
-.compact-switch {
-  flex: 0 0 auto;
+/* La misma píldora, pero gobernando una sección entera: ocupa el ancho y es lo más baja
+   posible, porque va encima de las tarjetas y todo lo que mida las empuja hacia abajo. */
+.section-switch {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  width: 100%;
+  margin: 0 0 8px;
+  padding: 1px;
+}
+.section-switch button {
+  min-height: 22px;
+  padding: 2px 6px;
+  font-size: 0.72rem;
+  white-space: nowrap;
 }
 .balance-bars {
   display: grid;
@@ -1788,10 +1799,6 @@ html, body {
     grid-template-columns: minmax(0, 1fr) 110px 34px;
   }
 }
-.register-switch {
-  align-self: center;
-  margin: 0;
-}
 .no-margin { margin: 0; }
 .recurring-fields {
   display: grid;
@@ -2109,13 +2116,9 @@ TABLAS DE INVERSIONES: ajuste mínimo sin scroll horizontal
   overflow: visible;
 }
 .settings-panel-head {
-  align-items: center;
-}
-.settings-panel-switch {
-  flex: 0 0 auto;
-}
-.settings-panel-switch button {
-  white-space: nowrap;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
 }
 .settings-panel-body {
   display: block;
@@ -2151,22 +2154,6 @@ TABLAS DE INVERSIONES: ajuste mínimo sin scroll horizontal
 }
 #ajustes .settings-subtitle:first-child {
   margin-top: 0;
-}
-
-@media (max-width: 640px) {
-  .settings-panel-head {
-    display: grid;
-    grid-template-columns: 1fr;
-    gap: 10px;
-  }
-  .settings-panel-switch {
-    width: 100%;
-  }
-  .settings-panel-switch button {
-    flex: 1 1 0;
-    padding-inline: 8px;
-    font-size: .72rem;
-  }
 }
 
 /* Categorías de inversión */
@@ -2650,8 +2637,20 @@ TABLAS DE INVERSIONES: ajuste mínimo sin scroll horizontal
 }
 
 .composition-editor-wrap .tiny-input {
-  width: 72px;
+  width: 52px;
   text-align: right;
+}
+
+/* La fracción se lee de un vistazo: 60 / 100. */
+.fraction-cell {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 3px;
+}
+
+.fraction-slash {
+  color: var(--muted);
 }
 
 .composition-editor-wrap tr.composition-invalid .tiny-input {
@@ -2674,6 +2673,10 @@ table.composition-compact td {
   padding: 8px 4px;
 }
 
+table.composition-compact .tiny-input {
+  width: 46px;
+}
+
 table.composition-tiny {
   font-size: 0.655rem;
 }
@@ -2681,4 +2684,8 @@ table.composition-tiny {
 table.composition-tiny th,
 table.composition-tiny td {
   padding: 7px 3px;
+}
+
+table.composition-tiny .tiny-input {
+  width: 40px;
 }

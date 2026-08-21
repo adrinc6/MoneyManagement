@@ -18,7 +18,7 @@
        app.js degrada (sin iconos ni gráficas) en vez de romperse. -->
   <script defer crossorigin="anonymous" src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
   <script defer crossorigin="anonymous" src="https://unpkg.com/lucide@1.24.0/dist/umd/lucide.min.js"></script>
-  <link rel="stylesheet" href="styles.css?v=20260821-v43" />
+  <link rel="stylesheet" href="styles.css?v=20260821-v44" />
 </head>
 <body>
   <main class="app">
@@ -57,9 +57,9 @@
             <h2>Nuevo movimiento</h2>
             <p>Rellena Control Finanzas.</p>
           </div>
-          <div class="segmented compact-switch register-switch" id="registerModeSwitch"><button class="active" data-register-mode="single" type="button">Puntual</button><button data-register-mode="recurring" type="button">Periódico</button></div>
         </div>
         <div class="panel-body">
+          <div class="segmented section-switch" id="registerModeSwitch"><button class="active" data-register-mode="single" type="button">Puntual</button><button data-register-mode="recurring" type="button">Periódico</button></div>
           <form id="movementForm" class="form-grid">
             <label class="movement-only">Fecha <input id="formDate" type="date" required /></label>
             <label>Tipo <select id="formType" required></select></label>
@@ -136,8 +136,8 @@
 
     <section id="movimientos" class="view">
       <div class="drill-heading">
+        <div class="segmented section-switch" id="movementModeSwitch"><button class="active" data-movement-mode="realized" type="button">Realizados</button><button data-movement-mode="future" type="button">Futuros</button></div>
         <div id="movementDrillTitle" class="drill-title"></div>
-        <div class="segmented compact-switch no-margin" id="movementModeSwitch"><button class="active" data-movement-mode="realized" type="button">Realizados</button><button data-movement-mode="future" type="button">Futuros</button></div>
       </div>
       <div class="section-toolbar movement-toolbar">
         <button class="btn" id="movementBackBtn"><i data-lucide="arrow-left"></i> Volver</button>
@@ -150,11 +150,16 @@
     </section>
 
     <section id="inversiones" class="view">
+      <div class="segmented section-switch" id="investmentPanelSwitch">
+        <button class="active" data-investment-panel="current" type="button">Inversión</button>
+        <button data-investment-panel="goals" type="button">Objetivos</button>
+        <button data-investment-panel="evolution" type="button">Evolución</button>
+      </div>
+
       <article class="panel composition-panel hidden" id="investmentCompositionPanel">
         <div class="panel-header">
           <div>
-            <h2>Objetivos composición</h2>
-            <p>Cómo quieres tener repartida la cartera.</p>
+            <h2>Composición</h2>
           </div>
           <button class="icon-btn minimal-icon" id="editInvestmentCompositionBtn" type="button" aria-label="Editar composición"><i data-lucide="edit-3"></i></button>
         </div>
@@ -172,11 +177,6 @@
           <div class="investment-summary-title">
             <h2 id="investmentPanelLabel">Inversión</h2>
             <button class="icon-btn minimal-icon hidden" id="editInvestmentGoalsBtn" type="button" aria-label="Editar objetivos"><i data-lucide="edit-3"></i></button>
-          </div>
-          <div class="segmented compact-switch no-margin" id="investmentPanelSwitch">
-            <button class="active" data-investment-panel="current" type="button">Inversión</button>
-            <button data-investment-panel="goals" type="button">Objetivos</button>
-            <button data-investment-panel="evolution" type="button">Evolución</button>
           </div>
         </div>
         <button class="investment-summary-body tappable" id="openInvestmentOverviewBtn" type="button">
@@ -224,7 +224,7 @@
     <section id="ajustes" class="view">
       <article class="panel settings-main-panel">
         <div class="panel-header settings-panel-head">
-          <div class="segmented compact-switch no-margin settings-panel-switch" id="settingsPanelSwitch">
+          <div class="segmented section-switch" id="settingsPanelSwitch">
             <button class="active" data-settings-panel="sync" type="button">Sync</button>
             <button data-settings-panel="connection" type="button">Conexión</button>
             <button data-settings-panel="params" type="button">Parámetros</button>
@@ -475,7 +475,7 @@
     </div>
     <div class="panel-body">
       <div id="monthSituationBars" class="balance-bars"></div>
-      <div class="segmented" id="monthSituationMode">
+      <div class="segmented section-switch" id="monthSituationMode">
         <button class="active" data-situation-mode="ingresos" type="button">Ingresos</button>
         <button data-situation-mode="gastos" type="button">Gastos</button>
         <button data-situation-mode="inversion" type="button">Inversión</button>
@@ -493,7 +493,7 @@
     <div class="panel-body">
       <div id="moneyDialogSummary"></div>
       <div id="bankMoneyDetail">
-        <div class="segmented" id="bankMoneyMode">
+        <div class="segmented section-switch" id="bankMoneyMode">
           <button class="active" data-bank-mode="summary" type="button">Resumen</button>
           <button data-bank-mode="accounts" type="button">Cuentas</button>
         </div>
@@ -505,7 +505,7 @@
         <div class="table-wrap"><table id="bankDistributionTable"></table></div>
       </div>
       <div id="investedMoneyDetail">
-        <div class="segmented" id="moneyMixMode">
+        <div class="segmented section-switch" id="moneyMixMode">
           <button class="active" data-money-mix="types" type="button">Tipos</button>
           <button data-money-mix="profit" type="button">Ganancia</button>
           <button data-money-mix="money" type="button">Dinero</button>
@@ -524,7 +524,7 @@
       <button class="icon-btn" id="closeInvestmentOverviewBtn" aria-label="Cerrar"><i data-lucide="x"></i></button>
     </div>
     <div class="panel-body">
-      <div class="segmented" id="investmentOverviewMode">
+      <div class="segmented section-switch" id="investmentOverviewMode">
         <button class="active" data-investment-overview-mode="invested" type="button">Invertido</button>
         <button data-investment-overview-mode="gains" type="button">Ganancias</button>
       </div>
@@ -591,11 +591,10 @@
 
   <dialog id="investmentCompositionDialog" class="wide-dialog">
     <div class="dialog-head">
-      <h2>Composición objetivo</h2>
+      <h2>Composición</h2>
       <button class="icon-btn" id="closeInvestmentCompositionBtn" type="button" aria-label="Cerrar"><i data-lucide="x"></i></button>
     </div>
     <div class="panel-body composition-editor-body">
-      <p class="dialog-help">Deja el peso vacío para que ese grupo no cuente. Vale un número, un porcentaje o una fracción como 1/9.</p>
       <div class="composition-check"><strong id="investmentCompositionStatus"></strong></div>
       <div class="table-wrap composition-editor-wrap"><table id="investmentCompositionTable"></table></div>
       <div class="section-toolbar composition-editor-toolbar">
@@ -618,7 +617,6 @@
       </div>
     </div>
     <form id="compositionGroupForm" class="panel-body composition-editor-body hidden">
-      <p class="dialog-help">Reparto dentro del grupo. Deja el peso vacío para que esa posición no cuente.</p>
       <div class="composition-check"><strong id="compositionGroupStatus"></strong></div>
       <div class="table-wrap composition-editor-wrap"><table id="compositionGroupEditorTable"></table></div>
       <div class="section-toolbar composition-editor-toolbar">
@@ -667,6 +665,6 @@
 
   <!-- El registro del service worker y la recarga por actualización viven en app.js,
        junto al resto del arranque, para no tener el ciclo de vida repartido en dos sitios. -->
-  <script defer src="app.js?v=20260821-v43"></script>
+  <script defer src="app.js?v=20260821-v44"></script>
 </body>
 </html>
