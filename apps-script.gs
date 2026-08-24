@@ -8,11 +8,6 @@ var DEFAULT_INVESTMENT_TOTALS_SHEET = 'Inversión Totales';
 var DEFAULT_INVESTMENT_ESTIMATE_RULES_SHEET = 'Inversiones Estimación Reglas';
 var DEFAULT_INVESTMENT_ESTIMATE_LEDGER_SHEET = 'Inversiones Estimación Movimientos';
 var INVESTMENT_MODE_PREFERENCE_KEY = 'moneyInvestmentModePreference';
-var DEFAULT_PENDING_SHEET = 'Pendientes';
-// Una fila "Pendientes" que sobreviva más de este tiempo se considera huérfana
-// (ejecución interrumpida/cortada antes de limpiarla) y deja de bloquear los
-// reintentos, para que la operación pueda volver a enviarse y llegar a Sheets.
-var PENDING_OP_STALE_MS = 90 * 1000;
 var PROCESSED_CLIENT_OPS_KEY = 'moneyProcessedClientOps';
 var MOVEMENT_SID_HEADER = 'SID';
 var PROCESSED_NOTIFICATION_REQUESTS_KEY = 'moneyProcessedNotificationRequests';
@@ -288,7 +283,7 @@ function movementSidHeader_() {
 function buildClientOpStatusPayload_(clientOpId) {
   if (!clientOpId) return { ok: true, completed: false, pending: false };
   if (wasClientOpProcessed_(clientOpId)) return { ok: true, completed: true, pending: false };
-  const pending = isClientOpPending_(clientOpId) || isClientOpReceived_(clientOpId);
+  const pending = isClientOpReceived_(clientOpId);
   return { ok: true, completed: false, pending: pending };
 }
 
@@ -369,21 +364,6 @@ function forgetAppliedBatchSids_(clientOpId) {
 
 function wasClientOpProcessed_(clientOpId) {
   return readBoundedList_(processedClientOpsKey_()).some(item => item && item.id === clientOpId);
-}
-
-function isClientOpPending_(clientOpId) {
-  const sheet = getSheet_(DEFAULT_PENDING_SHEET);
-  if (!sheet || sheet.getLastRow() < 2) return false;
-  // Columnas: Fecha (2) y Payload (4).
-  const values = sheet.getRange(2, 2, sheet.getLastRow() - 1, 3).getValues();
-  const staleBefore = Date.now() - PENDING_OP_STALE_MS;
-  return values.some(row => {
-    if (String(row[2] || '').indexOf(clientOpId) === -1) return false;
-    const at = row[0] instanceof Date ? row[0].getTime() : new Date(row[0]).getTime();
-    // Fila caducada: no debe mantener al cliente en "Confirmando" para siempre.
-    if (!Number.isNaN(at) && at < staleBefore) return false;
-    return true;
-  });
 }
 
 function doPost(e) {
@@ -608,37 +588,6 @@ function withScriptLock_(fn) {
   }
 }
 
-function appendPendingPost_(payload) {
-  const id = Utilities.getUuid();
-  const sheet = getOrCreateSheet_(DEFAULT_PENDING_SHEET, ['ID', 'Fecha', 'Accion', 'Payload']);
-  purgeStalePendingRows_(sheet);
-  appendRowSafe_(sheet, [id, new Date(), payload.action || '', JSON.stringify(sanitizePendingPayload_(payload))]);
-  return id;
-}
-
-// Las filas huérfanas de "Pendientes" (ejecuciones cortadas antes de limpiar) se
-// acumulaban para siempre y isClientOpPending_ las recorría todas en cada POST.
-// Se purgan las caducadas como mucho una vez cada hora; un fallo aquí nunca
-// bloquea la operación en curso.
-function purgeStalePendingRows_(sheet) {
-  try {
-    const props = PropertiesService.getDocumentProperties();
-    const lastPurge = Number(props.getProperty('moneyPendingLastPurge') || 0);
-    if (Date.now() - lastPurge < 60 * 60 * 1000) return;
-    props.setProperty('moneyPendingLastPurge', String(Date.now()));
-    const lastRow = sheet.getLastRow();
-    if (lastRow < 2) return;
-    const dates = sheet.getRange(2, 2, lastRow - 1, 1).getValues();
-    const staleBefore = Date.now() - Math.max(PENDING_OP_STALE_MS * 10, 15 * 60 * 1000);
-    for (let i = dates.length - 1; i >= 0; i--) {
-      const at = dates[i][0] instanceof Date ? dates[i][0].getTime() : new Date(dates[i][0]).getTime();
-      if (!Number.isNaN(at) && at < staleBefore) sheet.deleteRow(i + 2);
-    }
-  } catch (err) {
-    // La purga es oportunista.
-  }
-}
-
 function finishPost_(requestPayload, responsePayload) {
   // Confirma las escrituras antes de responder. La antigua ruta añadía y borraba una
   // fila en la hoja "Pendientes" y hacía un segundo flush después de que el cambio real
@@ -649,27 +598,6 @@ function finishPost_(requestPayload, responsePayload) {
     rememberProcessedClientOp_(requestPayload.clientOpId || '');
   }
   return json_(response);
-}
-
-function removePendingPost_(pendingId) {
-  if (!pendingId) return;
-  const sheet = getSheet_(DEFAULT_PENDING_SHEET);
-  if (!sheet) return;
-  const lastRow = sheet.getLastRow();
-  if (lastRow < 2) return;
-  const ids = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
-  for (let i = 0; i < ids.length; i++) {
-    if (String(ids[i][0]) === String(pendingId)) {
-      sheet.deleteRow(i + 2);
-      return;
-    }
-  }
-}
-
-function sanitizePendingPayload_(payload) {
-  const copy = Object.assign({}, payload);
-  delete copy.token;
-  return copy;
 }
 
 function createMovementSid_() {
@@ -752,21 +680,6 @@ function setRangeValuesSafe_(range, values) {
 
 function setCellValueSafe_(range, value) {
   setRangeValuesSafe_(range, [[value]]);
-}
-
-// Variante de appendRow con la misma tolerancia a reglas de validación: si la fila
-// nueva hereda una regla que rechaza el valor, se limpia la validación de esa fila
-// y se reintenta una vez.
-function appendRowSafe_(sheet, values) {
-  const row = sheet.getLastRow() + 1;
-  try {
-    sheet.appendRow(values);
-  } catch (err) {
-    const message = String(err && err.message || err || '');
-    if (!/validaci|validation/i.test(message)) throw err;
-    sheet.getRange(row, 1, 1, Math.max(values.length, 1)).clearDataValidations();
-    setRangeValuesSafe_(sheet.getRange(row, 1, 1, values.length), [values]);
-  }
 }
 
 // Sobrescribe una fila que YA existe. Las altas no pasan por aquí: van por
@@ -1501,7 +1414,7 @@ function saveInvestmentEstimateAllocations_(ledgerSheetName, entries) {
     saved.push(entry);
     existingIds[key] = true;
   });
-  // Una escritura para todo el reparto. Con appendRowSafe_ dentro del bucle eran hasta
+  // Una escritura para todo el reparto. La antigua versión escribía dentro del bucle y eran hasta
   // 500 llamadas a la API en una sola operación.
   if (rows.length) {
     setRangeValuesSafe_(sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, rows[0].length), rows);

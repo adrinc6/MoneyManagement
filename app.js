@@ -1302,6 +1302,7 @@ async function refreshDataImpl(options = {}) {
           investments: payload.investments || [],
           investmentGoals: payload.investmentGoals ?? state.investmentGoals,
           investmentTotals: payload.investmentTotals || state.investmentTotals,
+          appSettings: payload.appSettings ?? currentAppSettings(),
           categories: payload.categories || state.categories
         };
       } else {
@@ -1324,6 +1325,7 @@ async function refreshDataImpl(options = {}) {
             banks: core.banks || state.banks,
             investmentGoals: core.investmentGoals ?? state.investmentGoals,
             investmentTotals: core.investmentTotals || state.investmentTotals,
+            appSettings: core.appSettings ?? currentAppSettings(),
             categories: core.categories || state.categories
           };
           commitDownloadedBlock({
@@ -1331,6 +1333,7 @@ async function refreshDataImpl(options = {}) {
             banks: freshData.banks,
             investmentGoals: freshData.investmentGoals,
             investmentTotals: freshData.investmentTotals,
+            appSettings: freshData.appSettings,
             categories: freshData.categories
           });
         }
@@ -3250,7 +3253,6 @@ function syncRegistrarMode() {
   const isTransfer = normalizeType(document.getElementById("formType").value) === "transferencia";
   // En ingreso e inversión el concepto no aporta nada: la app los agrupa por descripción
   // y el backend saca de ahí la categoría de la cartera. Se oculta y se guarda vacío.
-  const hidesConcept = typeHidesConcept(document.getElementById("formType").value);
   const recurring = isRecurringMode();
   const amountInput = document.getElementById("formAmount");
   if (amountInput) {
@@ -3262,13 +3264,7 @@ function syncRegistrarMode() {
   document.querySelectorAll(".transfer-only").forEach(el => el.classList.toggle("hidden", !isTransfer));
   const formDate = document.getElementById("formDate");
   if (formDate) formDate.required = !isTransfer && !recurring;
-  document.querySelectorAll(".concept-field").forEach(el => el.classList.toggle("hidden", isTransfer || hidesConcept));
-  const conceptEl = document.getElementById("formConcept");
-  if (conceptEl) {
-    conceptEl.required = !isTransfer && !hidesConcept;
-    // Un select oculto no debe arrastrar lo que hubiera elegido antes de cambiar de tipo.
-    if (hidesConcept) conceptEl.value = "";
-  }
+  syncRegistrarConceptField();
   const descriptionEl = document.getElementById("formDescription");
   // La descripción pasa a ser lo único que identifica un ingreso o una inversión, y en
   // inversión es además lo que decide a qué grupo de la cartera va el dinero.
@@ -5171,6 +5167,9 @@ function syncRegisterMode() {
     const hiddenInRecurring = ['formDate', 'formAccount'].includes(fieldId);
     el.classList.toggle('hidden', isTransfer || (recurring && hiddenInRecurring));
   });
+  // El modo periódico también modifica movement-only; se reaplica el único criterio
+  // válido para que no vuelva a mostrar el concepto de ingresos o inversiones.
+  syncRegistrarConceptField();
   const formDate = document.getElementById('formDate');
   if (formDate) formDate.required = !recurring && !isTransfer;
   const recurrenceAccount = document.getElementById('recurrenceAccount');
@@ -5178,6 +5177,17 @@ function syncRegisterMode() {
   ['recurrenceStart', 'recurrenceEnd'].forEach(id => { const el = document.getElementById(id); if (el) el.required = recurring; });
   if (recurring) setDefaultRecurrenceDates();
   renderRecurrencePicker();
+}
+
+function syncRegistrarConceptField() {
+  const type = document.getElementById("formType")?.value || "";
+  const hides = normalizeType(type) === "transferencia" || typeHidesConcept(type);
+  document.querySelectorAll(".concept-field").forEach(el => el.classList.toggle("hidden", hides));
+  const conceptEl = document.getElementById("formConcept");
+  if (!conceptEl) return;
+  conceptEl.required = !hides;
+  // Un select oculto no debe arrastrar lo que hubiera elegido antes de cambiar de tipo.
+  if (hides) conceptEl.value = "";
 }
 
 function setDefaultRecurrenceDates() {
@@ -5390,7 +5400,14 @@ async function saveBudgetsFromDialog(event) {
     const amount = roundMoney(input.value);
     if (Number.isFinite(amount) && amount > 0) budgets[input.dataset.budgetInput] = amount;
   });
-  state.budgets = normalizeBudgets(budgets);
+  const normalizedBudgets = normalizeBudgets(budgets);
+  const mismatch = budgetGoalMismatch(normalizedBudgets, state.investmentGoals.expenseMonthly);
+  if (mismatch) {
+    restoreButton(btn);
+    setNotice(budgetGoalMismatchMessage(mismatch), "warn");
+    return;
+  }
+  state.budgets = normalizedBudgets;
   writeBudgets();
   writeDataCache({ dirtySections: ["appSettings"] });
   renderCurrentView();
@@ -5419,6 +5436,12 @@ async function saveInvestmentGoalsFromDialog(event) {
   const investmentMonthly = roundMoney(document.getElementById("goalInvestmentMonthlyInput").value);
   const yearly = roundMoney(document.getElementById("goalYearlyInput").value);
   const total = roundMoney(document.getElementById("goalTotalInput").value);
+  const mismatch = budgetGoalMismatch(state.budgets, expenseMonthly);
+  if (mismatch) {
+    restoreButton(btn);
+    setNotice(budgetGoalMismatchMessage(mismatch), "warn");
+    return;
+  }
   state.investmentGoals = normalizeInvestmentGoals({ expenseMonthly, investmentMonthly, monthly: investmentMonthly, yearly, total });
   safeSetItem('investmentGoals', JSON.stringify(state.investmentGoals));
   writeDataCache({ dirtySections: ["investmentGoals"] });
@@ -6034,7 +6057,7 @@ function compositionGroupBaseNote(type, summary, plan) {
   if (invested <= 0) return "";
   const value = roundMoney(plan.currentTotal);
   if (nearlyEquals(roundMoney(invested), value)) return "";
-  return `<small class="muted">El grupo tiene ${money(invested)} invertidos y ${money(value)} de valor. Dentro se compara contra el valor, que es el único dato por posición.</small>`;
+  return `<small class="muted">El grupo tiene ${money(invested)} invertidos y ${money(value)} de valor.</small>`;
 }
 
 function showCompositionGroupEditor() {
@@ -6258,11 +6281,6 @@ function parseTransferAccountText(value) {
   if (!separator) return { from: "", to: "" };
   const [from, to] = text.split(separator).map(part => part.trim());
   return { from: from || "", to: to || "" };
-}
-
-function isInvestmentPositionType(value) {
-  const normalized = normalizeType(value);
-  return investmentTypes().some(type => normalizeType(type) === normalized);
 }
 
 // La descarga de posiciones se normaliza antes que la sección de categorías. Validar
@@ -7767,6 +7785,18 @@ function normalizeBudgets(value) {
     budgets[label] = roundMoney((budgets[label] || 0) + amount);
   });
   return budgets;
+}
+
+function budgetGoalMismatch(budgets, expenseMonthly) {
+  const total = roundMoney(sum(Object.values(normalizeBudgets(budgets))));
+  const goal = roundMoney(expenseMonthly);
+  if (!Number.isFinite(goal)) return { total, goal: 0, difference: total };
+  const difference = roundMoney(total - goal);
+  return difference === 0 ? null : { total, goal, difference };
+}
+
+function budgetGoalMismatchMessage({ total, goal, difference }) {
+  return `Las categorías suman ${money(total)} y el objetivo mensual de gastos es ${money(goal)} (diferencia: ${money(Math.abs(difference))}).`;
 }
 
 function loadBudgets() {

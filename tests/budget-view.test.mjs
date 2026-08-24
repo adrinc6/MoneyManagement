@@ -159,3 +159,18 @@ test("una sola columna de filas y un único botón de edición", () => {
   assert.doesNotMatch(html, /budget-cards|monthly-goal-card|data-edit-budget/);
   assert.equal((html.match(/id="editBudgetsBtn"/g) || []).length, 1);
 });
+
+test("las categorías deben sumar exactamente el objetivo mensual de gastos", () => {
+  const app = loadApp();
+  const budgets = { "Vivienda": 600, "Alimentación": 400 };
+
+  assert.equal(app.budgetGoalMismatch(budgets, 1000), null);
+  const mismatch = app.budgetGoalMismatch(budgets, 950);
+  assert.deepEqual(JSON.parse(JSON.stringify(mismatch)), { total: 1000, goal: 950, difference: 50 });
+  assert.match(app.budgetGoalMismatchMessage(mismatch), /categorías suman/);
+});
+
+test("el estado vacío permite objetivo y categorías a cero", () => {
+  const app = loadApp();
+  assert.equal(app.budgetGoalMismatch({}, 0), null);
+});
