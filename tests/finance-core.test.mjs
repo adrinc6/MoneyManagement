@@ -528,3 +528,57 @@ test("un timeout aborta la petición en vez de dejarla colgando", async () => {
     app.fetch = originalFetch;
   }
 });
+
+// Las categorías se redujeron a 6, pero la hoja conserva los nombres antiguos: la
+// traducción ocurre al leer, así que nada de lo que ve la app usa ya los viejos.
+test("conceptAlias traduce los conceptos antiguos y es idempotente", () => {
+  assert.equal(app.conceptAlias("Supermercado"), "Alimentación");
+  assert.equal(app.conceptAlias("Comida"), "Alimentación");
+  assert.equal(app.conceptAlias("Piso"), "Vivienda");
+  assert.equal(app.conceptAlias("Ocio"), "Ocio y social");
+  assert.equal(app.conceptAlias("Fiesta"), "Ocio y social");
+  assert.equal(app.conceptAlias("Viajes"), "Ocio y social");
+  assert.equal(app.conceptAlias("Cuidado personal"), "Personal");
+  assert.equal(app.conceptAlias("Deporte"), "Personal");
+  assert.equal(app.conceptAlias("Universidad"), "Formación");
+  // Idempotente y tolerante a acentos/mayúsculas.
+  assert.equal(app.conceptAlias("Alimentación"), "Alimentación");
+  assert.equal(app.conceptAlias("SUPERMERCADO"), "Alimentación");
+  assert.equal(app.conceptAlias("universidad"), "Formación");
+  // Un concepto desconocido pasa tal cual.
+  assert.equal(app.conceptAlias("Otros"), "Otros");
+});
+
+test("normalizeTransaction traduce el concepto de una fila antigua", () => {
+  const t = app.normalizeTransaction({
+    fecha: "2024-03-04", tipo: "Gasto", concepto: "Supermercado", importe: "-30,50"
+  });
+  assert.equal(t.concepto, "Alimentación");
+});
+
+// El presupuesto por categoría solo debe contar gasto real. Antes se clasificaba por
+// puro descarte, así que un "Efectivo" o un "Retiro" positivo entraba como gasto.
+test("las entradas de dinero no cuentan como gasto", () => {
+  assert.equal(app.isIncome({ tipo: "Efectivo", amount: 50 }), true);
+  assert.equal(app.isMonthlyExpense({ tipo: "Efectivo", amount: 50 }), false);
+  assert.equal(app.isMonthlyExpense({ tipo: "Retiro", amount: 30 }), false);
+  // Un efectivo negativo sí es gasto.
+  assert.equal(app.isIncome({ tipo: "Efectivo", amount: -20 }), false);
+  assert.equal(app.isMonthlyExpense({ tipo: "Efectivo", amount: -20 }), true);
+});
+
+// En la hoja hay 183 filas de TIPO=Gasto con importe positivo: si el tipo dice que es
+// gasto, es gasto, aunque el signo diga otra cosa. Fiarse del signo los excluía.
+test("un Gasto cuenta aunque el importe venga en positivo", () => {
+  assert.equal(app.isMonthlyExpense({ tipo: "Gasto", amount: 40 }), true);
+  assert.equal(app.isMonthlyExpense({ tipo: "Gasto", amount: -40 }), true);
+});
+
+// Hay 92 nóminas guardadas con CONCEPTO="Otros": el TIPO es lo que manda.
+test("una nómina con concepto Otros no es gasto", () => {
+  const t = app.normalizeTransaction({
+    fecha: "2024-03-04", tipo: "Ingreso", concepto: "Otros", importe: "1800"
+  });
+  assert.equal(app.isIncome(t), true);
+  assert.equal(app.isMonthlyExpense(t), false);
+});

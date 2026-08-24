@@ -6,7 +6,7 @@
 // Una sola fuente de versión: el nombre de la caché y las URLs con ?v= salían de
 // literales distintos y se desincronizaron (v22 vs v20), así que el ?v= no invalidaba
 // nada. index.html debe usar este mismo valor; scripts/check-versions.mjs lo verifica.
-const ASSET_VERSION = "20260822-v45";
+const ASSET_VERSION = "20260824-v46";
 const CACHE_VERSION = `mm-${ASSET_VERSION}`;
 
 // Sin estos recursos la app no arranca: si alguno falla, la instalación falla y el

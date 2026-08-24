@@ -34,7 +34,7 @@ function setup() {
 // Las secciones que app.js conoce (CACHE_SECTION_KEYS), en el mismo orden.
 const SECCIONES = [
   "transactions", "futureTransactions", "investments", "investmentTotals",
-  "investmentEstimateRules", "investmentEstimateLedger", "banks", "investmentGoals", "categories"
+  "investmentEstimateRules", "investmentEstimateLedger", "banks", "investmentGoals", "appSettings", "categories"
 ];
 
 const seccionesDe = payload => SECCIONES.filter(k => Object.prototype.hasOwnProperty.call(payload, k));
@@ -53,7 +53,7 @@ test("la descarga de inversiones no trae movimientos ni bancos", () => {
   const gs = setup();
   const payload = gs.buildDataPayload_(gs.resolveSheets_({}));
 
-  assert.deepEqual(seccionesDe(payload), ["investments", "investmentTotals", "investmentGoals", "categories"]);
+  assert.deepEqual(seccionesDe(payload), ["investments", "investmentTotals", "investmentGoals", "appSettings", "categories"]);
   assert.equal(Object.prototype.hasOwnProperty.call(payload, "movedFutureMovements"), false,
     "sin movedFutureMovements: esta descarga no vence futuros");
 });

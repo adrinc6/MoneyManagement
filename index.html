@@ -18,7 +18,7 @@
        app.js degrada (sin iconos ni gráficas) en vez de romperse. -->
   <script defer crossorigin="anonymous" src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
   <script defer crossorigin="anonymous" src="https://unpkg.com/lucide@1.24.0/dist/umd/lucide.min.js"></script>
-  <link rel="stylesheet" href="styles.css?v=20260822-v45" />
+  <link rel="stylesheet" href="styles.css?v=20260824-v46" />
 </head>
 <body>
   <main class="app">
@@ -470,10 +470,15 @@
     <div class="panel-body">
       <div id="monthSituationBars" class="balance-bars"></div>
       <div class="segmented section-switch" id="monthSituationMode">
-        <button class="active" data-situation-mode="ingresos" type="button">Ingresos</button>
-        <button data-situation-mode="gastos" type="button">Gastos</button>
+        <button data-situation-mode="ingresos" type="button">Ingresos</button>
+        <button class="active" data-situation-mode="gastos" type="button">Gastos</button>
         <button data-situation-mode="inversion" type="button">Inversión</button>
       </div>
+      <div class="segmented section-switch" id="expenseViewMode">
+        <button class="active" data-expense-view="presupuesto" type="button">Presupuesto</button>
+        <button data-expense-view="grafico" type="button">Gráfico</button>
+      </div>
+      <div id="expenseBudgetList" class="budget-list"></div>
       <div class="chart-box"><canvas id="monthSituationChart"></canvas></div>
       <div class="table-wrap"><table id="monthSituationTable"></table></div>
     </div>
@@ -583,6 +588,17 @@
 
 
 
+  <dialog id="budgetsDialog">
+    <div class="dialog-head">
+      <h2>Presupuesto mensual</h2>
+      <button class="icon-btn" id="closeBudgetsBtn" type="button" aria-label="Cerrar"><i data-lucide="x"></i></button>
+    </div>
+    <form id="budgetsForm" class="panel-body form-grid">
+      <div id="budgetsFields" class="budget-fields"></div>
+      <button class="btn primary wide" type="submit"><i data-lucide="save"></i> Guardar presupuesto</button>
+    </form>
+  </dialog>
+
   <dialog id="investmentCompositionDialog" class="wide-dialog">
     <div class="dialog-head">
       <h2>Composición</h2>
@@ -659,6 +675,6 @@
 
   <!-- El registro del service worker y la recarga por actualización viven en app.js,
        junto al resto del arranque, para no tener el ciclo de vida repartido en dos sitios. -->
-  <script defer src="app.js?v=20260822-v45"></script>
+  <script defer src="app.js?v=20260824-v46"></script>
 </body>
 </html>
