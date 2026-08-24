@@ -13,6 +13,7 @@ function conDom(app) {
     classList: { toggle() {}, add() {}, remove() {}, contains: () => false },
     addEventListener() {},
     querySelectorAll: () => [],
+    querySelector: () => null,
     focus() {},
     showModal() {},
     close() {}
@@ -57,9 +58,14 @@ test("la lista de presupuesto usa los nombres nuevos y respeta el límite", () =
   assert.match(html, /Alimentación/);
   // Los nombres antiguos ya no existen en la interfaz.
   assert.doesNotMatch(html, /Supermercado|Piso|Comida/);
-  // Vivienda: 600 gastados sobre 550 de límite.
-  assert.match(html, /over-limit/);
+  // Vivienda: 600 gastados sobre 550 de límite -> fila en rojo.
+  assert.match(html, /budget-row over/);
   assert.match(html, /Excedido/);
+  // Alimentación: 150 sobre 330 -> fila en verde.
+  assert.match(html, /budget-row under/);
+  assert.match(html, /Quedan/);
+  // Un solo botón para editarlas todas.
+  assert.equal((html.match(/id="editBudgetsBtn"/g) || []).length, 1);
 });
 
 test("las entradas de dinero no aparecen en el presupuesto", () => {
@@ -119,4 +125,37 @@ test("el editor propone cifras solo mientras no haya presupuesto guardado", () =
   assert.match(html, /data-budget-input="Vivienda" value="500"/);
   // Lo que el usuario no puso se queda vacío, no se rellena con la sugerencia.
   assert.match(html, /data-budget-input="Otros" value=""/);
+});
+
+// Verde mientras el gasto cabe en el presupuesto, rojo en cuanto se pasa. Sin presupuesto
+// no hay nada que comparar, así que la fila se queda neutra.
+test("cada fila se colorea según si se ha pasado del presupuesto", () => {
+  const app = loadApp();
+  const nodes = conDom(app);
+  app.state.budgets = { "Vivienda": 550, "Alimentación": 330 };
+  app.state.transactions = [
+    movimiento(app, "2026-08-02", "Gasto", "Piso", "-600"),        // se pasa
+    movimiento(app, "2026-08-03", "Gasto", "Supermercado", "-100"), // dentro
+    movimiento(app, "2026-08-04", "Gasto", "Otros", "-40")          // sin presupuesto
+  ];
+  app.renderExpenseBudgetList({ month: "2026-08" });
+  const html = nodes.get("expenseBudgetList").innerHTML;
+
+  assert.match(html, /budget-row over[\s\S]*?Vivienda/);
+  assert.match(html, /budget-row under[\s\S]*?Alimentación/);
+  assert.match(html, /budget-row none[\s\S]*?Otros/);
+  assert.match(html, /Sin presupuesto/);
+});
+
+test("una sola columna de filas y un único botón de edición", () => {
+  const app = loadApp();
+  const nodes = conDom(app);
+  app.state.budgets = { "Vivienda": 550 };
+  app.state.transactions = [movimiento(app, "2026-08-02", "Gasto", "Piso", "-100")];
+  app.renderExpenseBudgetList({ month: "2026-08" });
+  const html = nodes.get("expenseBudgetList").innerHTML;
+
+  // El diseño anterior eran tarjetas en dos columnas con un botón "Editar" por tarjeta.
+  assert.doesNotMatch(html, /budget-cards|monthly-goal-card|data-edit-budget/);
+  assert.equal((html.match(/id="editBudgetsBtn"/g) || []).length, 1);
 });

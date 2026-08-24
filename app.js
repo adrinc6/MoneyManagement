@@ -3222,9 +3222,8 @@ function syncOptions() {
     ...state.categories.concepts,
     ...state.transactions.map(t => t.concepto),
     ...state.futureTransactions.map(t => t.concepto)
-  ])
-    .map(conceptAlias)
-    .filter(c => STATIC_CONCEPTS.some(valid => normalizeType(valid) === normalizeType(c)));
+  ].map(conceptAlias))
+    .filter(c => expenseConcepts().some(valid => normalizeType(valid) === normalizeType(c)));
 
   fillSelect("formType", types, "Seleccione");
   fillSelect("formConcept", concepts, "Seleccione");
@@ -3477,6 +3476,8 @@ function renderMonthSituationDialog(summary) {
 
 // Una tarjeta por categoría con lo gastado frente a su presupuesto. Reutiliza
 // monthlyGoalCard, que ya resuelve restante, "Excedido", porcentaje y barra.
+// Una fila por categoría, ancha y baja, para que las seis quepan de un vistazo sin
+// desplazarse. Verde mientras el gasto cabe en el presupuesto y rojo en cuanto se pasa.
 function renderExpenseBudgetList(summary) {
   const container = document.getElementById("expenseBudgetList");
   if (!container) return;
@@ -3487,23 +3488,52 @@ function renderExpenseBudgetList(summary) {
   }
   const totalSpent = sum(rows.map(row => row.spent));
   const totalBudget = sum(rows.map(row => row.budget));
+  const exceededTotal = totalBudget > 0 && totalSpent > totalBudget;
   container.innerHTML = `
-    <div class="budget-cards">
-      ${rows.map(row => monthlyGoalCard("expense", row.label, row.spent, row.budget, {
-        editAttr: "data-edit-budget",
-        editValue: row.label
-      })).join("")}
+    <div class="budget-rows">
+      ${rows.map(budgetRowHtml).join("")}
     </div>
-    <div class="budget-total">
+    <div class="budget-total ${exceededTotal ? "over" : ""}">
       <span>Total</span>
-      <strong class="${totalBudget && totalSpent > totalBudget ? "negative" : ""}">${money(totalSpent)}${totalBudget ? ` / ${money(totalBudget)}` : ""}</strong>
-    </div>`;
-  container.querySelectorAll("[data-edit-budget]").forEach(btn => {
-    btn.addEventListener("click", event => {
-      event.stopPropagation();
-      openBudgetsDialog(btn.dataset.editBudget);
-    });
+      <strong>${money(totalSpent)}${totalBudget ? `<small> / ${money(totalBudget)}</small>` : ""}</strong>
+    </div>
+    <button class="btn ghost wide budget-edit-btn" id="editBudgetsBtn" type="button">
+      <i data-lucide="pencil"></i> Editar presupuesto
+    </button>`;
+  container.querySelector("#editBudgetsBtn")?.addEventListener("click", event => {
+    event.stopPropagation();
+    openBudgetsDialog();
   });
+  refreshIcons();
+}
+
+function budgetRowHtml(row) {
+  const budget = Math.max(safeNumber(row.budget), 0);
+  const spent = Math.max(safeNumber(row.spent), 0);
+  const exceeded = budget > 0 && spent > budget;
+  const ratio = budget > 0 ? spent / budget : 0;
+  const progress = Math.min(100, Math.max(0, ratio * 100));
+  // Sin presupuesto no hay nada que comparar: ni verde ni rojo, solo el gasto.
+  const tone = !budget ? "none" : exceeded ? "over" : "under";
+  const resto = !budget
+    ? "Sin presupuesto"
+    : exceeded
+      ? `Excedido ${money(spent - budget)}`
+      : `Quedan ${money(budget - spent)}`;
+  return `
+    <div class="budget-row ${tone}">
+      <div class="budget-row-head">
+        <span class="budget-row-name">${escapeHtml(row.label)}</span>
+        <span class="budget-row-amount">
+          <strong>${money(spent)}</strong>${budget ? `<small> / ${money(budget)}</small>` : ""}
+        </span>
+      </div>
+      <div class="budget-row-bar"><span style="width:${progress}%"></span></div>
+      <div class="budget-row-foot">
+        <small>${resto}</small>
+        ${budget ? `<small>${pct(ratio)}</small>` : ""}
+      </div>
+    </div>`;
 }
 
 function renderMoneySummary(summary) {
@@ -5334,10 +5364,7 @@ function editInvestmentGoals(focusGoal = "") {
 // así que cambiar STATIC_CONCEPTS no obliga a tocar el HTML.
 function openBudgetsDialog(focusLabel) {
   const budgets = state.budgets || {};
-  const labels = unique([
-    ...STATIC_CONCEPTS.filter(c => normalizeType(c) !== "inversion"),
-    ...Object.keys(budgets)
-  ]);
+  const labels = unique([...expenseConcepts(), ...Object.keys(budgets)]);
   // Sin nada guardado se proponen las cifras sugeridas, para no empezar con todo vacío.
   const vacio = !Object.keys(budgets).length;
   const valorDe = label => (vacio ? SUGGESTED_BUDGETS[label] : budgets[label]) || "";
@@ -7760,7 +7787,7 @@ function writeBudgets() {
 function budgetRows(month) {
   const spent = new Map(getSituationBreakdown(month, "gastos"));
   const budgets = state.budgets || {};
-  const labels = unique([...STATIC_CONCEPTS.filter(c => normalizeType(c) !== "inversion"), ...Object.keys(budgets), ...spent.keys()]);
+  const labels = unique([...expenseConcepts(), ...Object.keys(budgets), ...spent.keys()]);
   return labels
     .map(label => ({ label, spent: safeNumber(spent.get(label)), budget: safeNumber(budgets[label]) }))
     .filter(row => row.spent > 0 || row.budget > 0)
@@ -8005,6 +8032,13 @@ function syncEditMovementConcept() {
   document.querySelectorAll(".edit-concept-field").forEach(el => el.classList.toggle("hidden", hides));
   conceptEl.required = !hides;
   if (hides) conceptEl.value = "";
+}
+
+// Las categorías que se pueden elegir: las seis de gasto. "Inversión" sigue en
+// STATIC_CONCEPTS porque hay histórico con ese concepto, pero ya no se ofrece, porque
+// los movimientos de inversión no llevan concepto.
+function expenseConcepts() {
+  return STATIC_CONCEPTS.filter(c => normalizeType(c) !== "inversion");
 }
 
 function typeHidesConcept(tipo) {

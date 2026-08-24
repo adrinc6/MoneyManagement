@@ -637,3 +637,22 @@ test("el desglose de inversión sigue agrupando por descripción", () => {
   assert.equal(app.budgetRows("2026-08").length, 0);
   app.state.transactions = [];
 });
+
+// El desplegable de Registrar salía con la lista repetida: unique() se aplicaba ANTES de
+// traducir, así que "Supermercado" y "Comida" entraban como distintos y salían los dos
+// como "Alimentación". Hay que traducir primero y quitar duplicados después.
+test("las categorías elegibles son seis, sin repetidos y sin Inversión", () => {
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(app.expenseConcepts())),
+    ["Alimentación", "Formación", "Ocio y social", "Otros", "Personal", "Vivienda"]
+  );
+});
+
+test("traducir antes de deduplicar deja la lista limpia", () => {
+  const entrada = [
+    "Alimentación", "Vivienda", "Supermercado", "Comida", "Piso",
+    "Ocio", "Fiesta", "Viajes", "Deporte", "Cuidado personal", "Universidad"
+  ];
+  const salida = Array.from(app.unique(entrada.map(app.conceptAlias)));
+  assert.deepEqual(JSON.parse(JSON.stringify(salida)), ["Alimentación", "Vivienda", "Ocio y social", "Personal", "Formación"]);
+});
