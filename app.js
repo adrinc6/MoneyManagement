@@ -91,7 +91,22 @@ const DEFAULT_CONFIG = {
 };
 
 const STATIC_TYPES = ["Gasto", "Ingreso", "Inversión", "Transferencia"];
-const STATIC_CONCEPTS = ["Comida", "Cuidado personal", "Deporte", "Fiesta", "Inversión", "Ocio", "Otros", "Piso", "Supermercado", "Universidad", "Viajes"];
+const STATIC_CONCEPTS = ["Alimentación", "Formación", "Inversión", "Ocio y social", "Otros", "Personal", "Vivienda"];
+// La hoja conserva los conceptos antiguos (Supermercado, Piso...). No se reescribe Sheets:
+// se traducen al leer, en normalizeTransaction, que es el único punto por el que entra un
+// movimiento al estado. Así la app solo enseña y solo deja elegir los nombres nuevos, y la
+// hoja se va migrando sola cuando editas un movimiento.
+const CONCEPT_ALIASES = {
+  "supermercado": "Alimentación",
+  "comida": "Alimentación",
+  "piso": "Vivienda",
+  "ocio": "Ocio y social",
+  "fiesta": "Ocio y social",
+  "viajes": "Ocio y social",
+  "cuidado personal": "Personal",
+  "deporte": "Personal",
+  "universidad": "Formación"
+};
 // Las categorías vienen de Sheets (totales, posiciones y movimientos). Este valor solo
 // permite arrancar una hoja completamente vacía; no representa una categoría fija.
 const DEFAULT_INVESTMENT_TYPE = "Inversión";
@@ -130,6 +145,7 @@ const INVESTMENT_ESTIMATE_MODE_KEY = "moneyInvestmentEstimateMode";
 const EVOLUTION_RANGE_KEY = "moneyEvolutionRange";
 const ACCOUNT_GROUPS_KEY = "moneyAccountGroups";
 const EMERGENCY_FUND_KEY = "moneyEmergencyFund";
+const BUDGETS_KEY = "moneyBudgets";
 const INVESTMENT_COMPOSITION_KEY = "moneyInvestmentComposition";
 // El denominador que se supone cuando solo se escribe el numerador: así el peso es un %.
 const COMPOSITION_DEFAULT_DENOMINATOR = "100";
@@ -163,7 +179,7 @@ function safeSetItem(key, value) {
 }
 const DATA_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const DATA_CACHE_VERSION = 3;
-const CACHE_SECTION_KEYS = ["transactions", "futureTransactions", "investments", "investmentTotals", "investmentEstimateRules", "investmentEstimateLedger", "banks", "investmentGoals", "categories"];
+const CACHE_SECTION_KEYS = ["transactions", "futureTransactions", "investments", "investmentTotals", "investmentEstimateRules", "investmentEstimateLedger", "banks", "investmentGoals", "appSettings", "categories"];
 // Cada página es una ejecución independiente de Apps Script (más las redirecciones de
 // Google), así que páginas pequeñas multiplican el coste fijo de red sin aportar nada:
 // 1.000 filas de nueve columnas siguen siendo un JSON pequeño. Cada página se guarda al
@@ -183,7 +199,7 @@ const state = {
   categories: { types: STATIC_TYPES, concepts: STATIC_CONCEPTS, investmentTypes: INVESTMENT_TYPES },
   charts: {},
   movementDrill: { level: "entries", year: String(new Date().getFullYear()), month: currentMonthKey() },
-  summaryModes: { situation: "ingresos", investmentMoney: "invested", moneyMix: "types", bankMoney: "summary", investmentOverviewType: null, investmentOverviewMode: "invested", investmentPanel: "current", settingsPanel: "sync" },
+  summaryModes: { situation: "gastos", expenseView: "presupuesto", investmentMoney: "invested", moneyMix: "types", bankMoney: "summary", investmentOverviewType: null, investmentOverviewMode: "invested", investmentPanel: "current", settingsPanel: "sync" },
   descriptionSuggestions: {},
   submittingMovement: false,
   movementBulkEdit: false,
@@ -193,6 +209,7 @@ const state = {
   evolutionRange: loadEvolutionRange(),
   accountGroups: loadAccountGroups(),
   emergencyFund: loadEmergencyFund(),
+  budgets: loadBudgets(),
   investmentComposition: loadInvestmentComposition(),
   cacheMeta: defaultCacheMeta(),
   investmentNotificationsSending: false,
@@ -278,6 +295,7 @@ function wireUi() {
   document.getElementById("addInvestmentEstimateRuleBtn")?.addEventListener("click", addInvestmentEstimateRule);
   document.getElementById("saveInvestmentEstimateRulesBtn")?.addEventListener("click", saveInvestmentEstimateRules);
   document.getElementById("formType")?.addEventListener("change", syncRegistrarMode);
+  document.getElementById("editMovementType")?.addEventListener("change", syncEditMovementConcept);
   document.getElementById("formAmount")?.addEventListener("input", enforceTransferPositiveAmount);
   document.getElementById("formAmount")?.addEventListener("change", enforceTransferPositiveAmount);
   document.getElementById("saveConfigBtn")?.addEventListener("click", saveConfigFromForm);
@@ -363,6 +381,14 @@ function wireUi() {
     state.summaryModes.situation = btn.dataset.situationMode;
     renderSummary();
   });
+  document.getElementById("expenseViewMode")?.addEventListener("click", event => {
+    const btn = event.target.closest("[data-expense-view]");
+    if (!btn) return;
+    state.summaryModes.expenseView = btn.dataset.expenseView;
+    renderMonthSituationDialog(calculateSummary(getSelectedSummaryMonth()));
+  });
+  document.getElementById("closeBudgetsBtn")?.addEventListener("click", () => document.getElementById("budgetsDialog").close());
+  document.getElementById("budgetsForm")?.addEventListener("submit", saveBudgetsFromDialog);
   document.getElementById("moneyMixMode")?.addEventListener("click", event => {
     const btn = event.target.closest("[data-money-mix]");
     if (!btn) return;
@@ -790,8 +816,8 @@ function syncStatusStep(showProgress, message, type = "") {
 
 function cacheSectionsForScope(scope = "all") {
   if (scope === "movements") return ["transactions", "futureTransactions", "banks"];
-  if (scope === "investments") return ["investments", "investmentTotals", "investmentEstimateRules", "investmentEstimateLedger", "investmentGoals", "categories"];
-  if (scope === "summary") return ["transactions", "futureTransactions", "investments", "investmentTotals", "investmentEstimateRules", "investmentEstimateLedger", "banks", "investmentGoals", "categories"];
+  if (scope === "investments") return ["investments", "investmentTotals", "investmentEstimateRules", "investmentEstimateLedger", "investmentGoals", "appSettings", "categories"];
+  if (scope === "summary") return ["transactions", "futureTransactions", "investments", "investmentTotals", "investmentEstimateRules", "investmentEstimateLedger", "banks", "investmentGoals", "appSettings", "categories"];
   if (scope === "banks") return ["banks"];
   return [...CACHE_SECTION_KEYS];
 }
@@ -1206,7 +1232,7 @@ async function refreshDataImpl(options = {}) {
     let neededSections = resumeSections.length
       ? resumeSections
       : updateInvestments
-      ? ["investments", "investmentTotals", "investmentEstimateRules", "investmentEstimateLedger", "investmentGoals"]
+      ? ["investments", "investmentTotals", "investmentEstimateRules", "investmentEstimateLedger", "investmentGoals", "appSettings"]
       : !cached || force
         ? requestedSections.filter(section => !skipDirty(section))
         : [];
@@ -1265,8 +1291,8 @@ async function refreshDataImpl(options = {}) {
       writeDataCache();
 
       const needsMovements = neededSections.some(section => ["transactions", "futureTransactions"].includes(section));
-      const needsCore = neededSections.some(section => ["investments", "investmentTotals", "investmentEstimateRules", "investmentEstimateLedger", "banks", "investmentGoals", "categories"].includes(section));
-      const onlyInvestments = neededSections.every(section => ["investments", "investmentTotals", "investmentEstimateRules", "investmentEstimateLedger", "investmentGoals", "categories"].includes(section));
+      const needsCore = neededSections.some(section => ["investments", "investmentTotals", "investmentEstimateRules", "investmentEstimateLedger", "banks", "investmentGoals", "appSettings", "categories"].includes(section));
+      const onlyInvestments = neededSections.every(section => ["investments", "investmentTotals", "investmentEstimateRules", "investmentEstimateLedger", "investmentGoals", "appSettings", "categories"].includes(section));
 
       if (updateInvestments || (onlyInvestments && !needsMovements)) {
         syncStatusStep(showProgress, investmentRequestStatus({ updateInvestments }), "");
@@ -1708,6 +1734,8 @@ const SECTION_NORMALIZERS = {
   investmentEstimateLedger: data => (data.investmentEstimateLedger || []).map(normalizeInvestmentEstimateLedger).filter(Boolean),
   banks: (data, dropped) => normalizeRows(data.banks, normalizeBank, dropped, "bancos"),
   investmentGoals: data => normalizeInvestmentGoals(data.investmentGoals ?? state.investmentGoals),
+  // Si Sheets trae ajustes, mandan; si no (primera vez), se conserva lo local y se sube.
+  appSettings: data => normalizeAppSettings(data.appSettings ?? currentAppSettings()),
   categories: data => normalizeCategories(data.categories)
 };
 
@@ -1762,6 +1790,7 @@ const CACHE_SECTION_SERIALIZERS = {
   investmentEstimateLedger: () => state.investmentEstimateLedger,
   banks: () => state.banks,
   investmentGoals: () => state.investmentGoals,
+  appSettings: () => currentAppSettings(),
   categories: () => state.categories
 };
 
@@ -1915,6 +1944,7 @@ function formatCacheSectionName(section) {
     investmentEstimateLedger: "Estimaciones",
     banks: "Bancos",
     investmentGoals: "Objetivos",
+    appSettings: "Ajustes",
     categories: "Categorías"
   };
   return map[section] || section;
@@ -2424,6 +2454,7 @@ function queuePayloadSections(payload = {}) {
   if (action === "saveInvestmentEstimateRules") return ["investmentEstimateRules", "investmentEstimateLedger"];
   if (["clearInvestmentEstimates", "saveInvestmentEstimateAllocations"].includes(action)) return ["investmentEstimateLedger"];
   if (action === "saveInvestmentGoals") return ["investmentGoals"];
+  if (action === "saveAppSettings") return ["appSettings"];
   return [];
 }
 
@@ -3191,7 +3222,9 @@ function syncOptions() {
     ...state.categories.concepts,
     ...state.transactions.map(t => t.concepto),
     ...state.futureTransactions.map(t => t.concepto)
-  ]).map(prettyType);
+  ])
+    .map(conceptAlias)
+    .filter(c => STATIC_CONCEPTS.some(valid => normalizeType(valid) === normalizeType(c)));
 
   fillSelect("formType", types, "Seleccione");
   fillSelect("formConcept", concepts, "Seleccione");
@@ -3216,6 +3249,9 @@ function syncOptions() {
 
 function syncRegistrarMode() {
   const isTransfer = normalizeType(document.getElementById("formType").value) === "transferencia";
+  // En ingreso e inversión el concepto no aporta nada: la app los agrupa por descripción
+  // y el backend saca de ahí la categoría de la cartera. Se oculta y se guarda vacío.
+  const hidesConcept = typeHidesConcept(document.getElementById("formType").value);
   const recurring = isRecurringMode();
   const amountInput = document.getElementById("formAmount");
   if (amountInput) {
@@ -3227,10 +3263,17 @@ function syncRegistrarMode() {
   document.querySelectorAll(".transfer-only").forEach(el => el.classList.toggle("hidden", !isTransfer));
   const formDate = document.getElementById("formDate");
   if (formDate) formDate.required = !isTransfer && !recurring;
-  ["formConcept", "formDescription"].forEach(id => {
-    const el = document.getElementById(id);
-    if (el) el.required = !isTransfer;
-  });
+  document.querySelectorAll(".concept-field").forEach(el => el.classList.toggle("hidden", isTransfer || hidesConcept));
+  const conceptEl = document.getElementById("formConcept");
+  if (conceptEl) {
+    conceptEl.required = !isTransfer && !hidesConcept;
+    // Un select oculto no debe arrastrar lo que hubiera elegido antes de cambiar de tipo.
+    if (hidesConcept) conceptEl.value = "";
+  }
+  const descriptionEl = document.getElementById("formDescription");
+  // La descripción pasa a ser lo único que identifica un ingreso o una inversión, y en
+  // inversión es además lo que decide a qué grupo de la cartera va el dinero.
+  if (descriptionEl) descriptionEl.required = !isTransfer;
   document.getElementById("formTransferFrom").required = isTransfer;
   document.getElementById("formTransferTo").required = isTransfer;
   const submitLabel = isTransfer
@@ -3406,6 +3449,22 @@ function renderMonthSituationDialog(summary) {
     btn.classList.toggle("active", btn.dataset.situationMode === state.summaryModes.situation);
   });
 
+  // El interruptor presupuesto/gráfico solo tiene sentido sobre los gastos.
+  const showingExpenses = state.summaryModes.situation === "gastos";
+  const showingBudget = showingExpenses && state.summaryModes.expenseView === "presupuesto";
+  document.getElementById("expenseViewMode")?.classList.toggle("hidden", !showingExpenses);
+  document.querySelectorAll("[data-expense-view]").forEach(btn => {
+    btn.classList.toggle("active", btn.dataset.expenseView === state.summaryModes.expenseView);
+  });
+  document.getElementById("expenseBudgetList")?.classList.toggle("hidden", !showingBudget);
+  document.querySelector("#monthSituationDialog .chart-box")?.classList.toggle("hidden", showingBudget);
+  document.querySelector("#monthSituationDialog .table-wrap")?.classList.toggle("hidden", showingBudget);
+
+  if (showingBudget) {
+    renderExpenseBudgetList(summary);
+    return;
+  }
+
   const rows = getSituationBreakdown(summary.month, state.summaryModes.situation);
   renderColorRowsTable("monthSituationTable", rows.map(([label, value], idx) => ({
     label, value, color: chartColor(PIE_CHART_COLORS, idx)
@@ -3414,6 +3473,37 @@ function renderMonthSituationDialog(summary) {
     labels: rows.map(([label]) => label),
     datasets: [{ data: rows.map(e => e[1]), backgroundColor: rows.map((_, idx) => chartColor(PIE_CHART_COLORS, idx)), borderWidth: 2, borderColor: chartSurfaceColor() }]
   }, compactChartOptions("", { cutout: "58%" }));
+}
+
+// Una tarjeta por categoría con lo gastado frente a su presupuesto. Reutiliza
+// monthlyGoalCard, que ya resuelve restante, "Excedido", porcentaje y barra.
+function renderExpenseBudgetList(summary) {
+  const container = document.getElementById("expenseBudgetList");
+  if (!container) return;
+  const rows = budgetRows(summary.month);
+  if (!rows.length) {
+    container.innerHTML = '<p class="muted budget-empty">Sin gastos ni presupuesto este mes.</p>';
+    return;
+  }
+  const totalSpent = sum(rows.map(row => row.spent));
+  const totalBudget = sum(rows.map(row => row.budget));
+  container.innerHTML = `
+    <div class="budget-cards">
+      ${rows.map(row => monthlyGoalCard("expense", row.label, row.spent, row.budget, {
+        editAttr: "data-edit-budget",
+        editValue: row.label
+      })).join("")}
+    </div>
+    <div class="budget-total">
+      <span>Total</span>
+      <strong class="${totalBudget && totalSpent > totalBudget ? "negative" : ""}">${money(totalSpent)}${totalBudget ? ` / ${money(totalBudget)}` : ""}</strong>
+    </div>`;
+  container.querySelectorAll("[data-edit-budget]").forEach(btn => {
+    btn.addEventListener("click", event => {
+      event.stopPropagation();
+      openBudgetsDialog(btn.dataset.editBudget);
+    });
+  });
 }
 
 function renderMoneySummary(summary) {
@@ -4399,6 +4489,7 @@ function openMovementDetail(index) {
   document.getElementById("editMovementDate").value = formatDate(t.date);
   document.getElementById("editMovementType").value = t.tipo;
   document.getElementById("editMovementConcept").value = t.concepto;
+  syncEditMovementConcept();
   document.getElementById("editMovementDescription").value = t.descripcion;
   document.getElementById("editMovementAmount").value = t.amount;
   document.getElementById("editMovementAccount").value = t.cuenta || "";
@@ -4438,7 +4529,9 @@ async function saveMovementDetail(event) {
     rowNumber: previous.rowNumber,
     fecha: document.getElementById("editMovementDate").value,
     tipo: document.getElementById("editMovementType").value,
-    concepto: document.getElementById("editMovementConcept").value,
+    concepto: typeHidesConcept(document.getElementById("editMovementType").value)
+      ? ""
+      : document.getElementById("editMovementConcept").value,
     descripcion: document.getElementById("editMovementDescription").value,
     importe: document.getElementById("editMovementAmount").value,
     cuenta: state.movementMode === "future" ? document.getElementById("editMovementAccount").value.trim() : previous.cuenta
@@ -5003,7 +5096,7 @@ function movementFromFormBase() {
   const amount = parseNumber(document.getElementById("formAmount").value);
   return {
     tipo: type,
-    concepto: prettyType(document.getElementById("formConcept").value),
+    concepto: typeHidesConcept(type) ? "" : prettyType(document.getElementById("formConcept").value),
     descripcion: document.getElementById("formDescription").value.trim(),
     importe: amount
   };
@@ -5237,6 +5330,60 @@ function editInvestmentGoals(focusGoal = "") {
   if (input) window.setTimeout(() => input.focus(), 30);
 }
 
+// Editor del presupuesto mensual. Los campos se generan a partir de las categorías,
+// así que cambiar STATIC_CONCEPTS no obliga a tocar el HTML.
+function openBudgetsDialog(focusLabel) {
+  const budgets = state.budgets || {};
+  const labels = unique([
+    ...STATIC_CONCEPTS.filter(c => normalizeType(c) !== "inversion"),
+    ...Object.keys(budgets)
+  ]);
+  // Sin nada guardado se proponen las cifras sugeridas, para no empezar con todo vacío.
+  const vacio = !Object.keys(budgets).length;
+  const valorDe = label => (vacio ? SUGGESTED_BUDGETS[label] : budgets[label]) || "";
+  document.getElementById("budgetsFields").innerHTML = labels.map(label => `
+    <label class="wide">${escapeHtml(label)}
+      <input type="number" step="0.01" min="0" inputmode="decimal" placeholder="Sin límite"
+        data-budget-input="${escapeAttr(label)}" value="${escapeAttr(String(valorDe(label)))}" />
+    </label>`).join("");
+  const dialog = document.getElementById("budgetsDialog");
+  dialog.showModal();
+  if (focusLabel) {
+    [...dialog.querySelectorAll("[data-budget-input]")]
+      .find(input => input.dataset.budgetInput === focusLabel)?.focus();
+  }
+}
+
+async function saveBudgetsFromDialog(event) {
+  event.preventDefault();
+  const btn = event.submitter;
+  markButtonSaving(btn);
+  const budgets = {};
+  document.querySelectorAll("[data-budget-input]").forEach(input => {
+    const amount = roundMoney(input.value);
+    if (Number.isFinite(amount) && amount > 0) budgets[input.dataset.budgetInput] = amount;
+  });
+  state.budgets = normalizeBudgets(budgets);
+  writeBudgets();
+  writeDataCache({ dirtySections: ["appSettings"] });
+  renderCurrentView();
+  if (state.config.scriptUrl) {
+    try {
+      queueAppSettings();
+      document.getElementById("budgetsDialog").close();
+      markButtonSaved(btn);
+      setNotice("Presupuesto guardado en Google Sheets.", "ok");
+    } catch (error) {
+      restoreButton(btn);
+      setNotice(lineMessage("Presupuesto guardado solo en este navegador.", error.message), "warn");
+    }
+  } else {
+    markButtonSaved(btn);
+    document.getElementById("budgetsDialog").close();
+    setNotice("Presupuesto guardado en este navegador.", "ok");
+  }
+}
+
 async function saveInvestmentGoalsFromDialog(event) {
   event.preventDefault();
   const btn = event.submitter;
@@ -5370,9 +5517,12 @@ function loadInvestmentComposition() {
   }
 }
 
+// Además de la copia local, los pesos viajan a la hoja "Objetivos": antes se perdían al
+// reinstalar la app o al caducar la caché y había que reescribirlos a mano.
 function writeInvestmentComposition() {
   state.investmentComposition = normalizeInvestmentComposition(state.investmentComposition);
   safeSetItem(INVESTMENT_COMPOSITION_KEY, JSON.stringify(state.investmentComposition));
+  persistAppSettings();
 }
 
 function compositionWeightText(value) {
@@ -6055,7 +6205,7 @@ function normalizeTransaction(row) {
   if (!row) return null;
   const date = parseDate(row.fecha || row.FECHA || row.date || row[0]);
   const tipo = prettyType(String(row.tipo || row.TIPO || row[4] || "").trim());
-  const concepto = prettyType(String(row.concepto || row.CONCEPTO || row[5] || "").trim());
+  const concepto = conceptAlias(String(row.concepto || row.CONCEPTO || row[5] || "").trim());
   const descripcion = String(row.descripcion || row.DESCRIPCION || row["DESCRIPCION"] || row[6] || "").trim();
   const amount = parseNumber(row.importe ?? row.IMPORTE ?? row.amount ?? row[7]);
   if (!date || !tipo || Number.isNaN(amount)) return null;
@@ -6066,7 +6216,7 @@ function normalizeTransaction(row) {
     rowNumber: Number(row.rowNumber || row.row || 0) || null,
     date,
     tipo,
-    concepto: concepto || (normalizeType(tipo) === "transferencia" ? "Transferencia" : "Otros"),
+    concepto: concepto || defaultConceptForType(tipo),
     descripcion,
     amount,
     cuenta,
@@ -6827,7 +6977,7 @@ function renderMonthSituationBars(summary) {
     </div>`;
 }
 
-function monthlyGoalCard(kind, title, current, goal) {
+function monthlyGoalCard(kind, title, current, goal, options = {}) {
   const normalizedGoal = Math.max(safeNumber(goal), 0);
   const currentValue = Math.max(safeNumber(current), 0);
   const isExpense = kind === "expense";
@@ -6846,7 +6996,7 @@ function monthlyGoalCard(kind, title, current, goal) {
     <div class="summary-item monthly-goal-card ${kind} ${exceeded ? "over-limit" : ""}">
       <div class="monthly-goal-head">
         <span>${escapeHtml(title)}</span>
-        <button class="mini-edit-btn" data-edit-system-goal="${escapeAttr(kind)}" type="button">Editar</button>
+        <button class="mini-edit-btn" ${escapeAttr(options.editAttr || "data-edit-system-goal")}="${escapeAttr(options.editValue || kind)}" type="button">Editar</button>
       </div>
       <div class="monthly-goal-main">
         <strong class="${tone}">${money(currentValue)}</strong>
@@ -7509,6 +7659,112 @@ function loadEmergencyFund() {
 
 function writeEmergencyFund() {
   safeSetItem(EMERGENCY_FUND_KEY, JSON.stringify(state.emergencyFund || { types: [] }));
+  persistAppSettings();
+}
+
+// Los tres ajustes que antes vivían solo en este navegador y ahora viajan también a la
+// hoja "Objetivos", para no reescribirlos al reinstalar la app o vaciar la caché.
+function currentAppSettings() {
+  return {
+    budgets: state.budgets || {},
+    investmentComposition: state.investmentComposition || {},
+    emergencyFund: state.emergencyFund || { types: [] }
+  };
+}
+
+// Aplica lo que venga de Sheets al estado y a la copia local. Lo que falte se queda como
+// está: una hoja recién estrenada no debe vaciar unos ajustes que ya existen aquí.
+function normalizeAppSettings(value) {
+  const settings = value && typeof value === "object" ? value : {};
+  if (settings.budgets && typeof settings.budgets === "object") {
+    state.budgets = normalizeBudgets(settings.budgets);
+    safeSetItem(BUDGETS_KEY, JSON.stringify(state.budgets));
+  }
+  if (settings.investmentComposition && typeof settings.investmentComposition === "object") {
+    state.investmentComposition = normalizeInvestmentComposition(settings.investmentComposition);
+    safeSetItem(INVESTMENT_COMPOSITION_KEY, JSON.stringify(state.investmentComposition));
+  }
+  if (settings.emergencyFund && Array.isArray(settings.emergencyFund.types)) {
+    state.emergencyFund = { types: unique(settings.emergencyFund.types.map(type => prettyType(String(type))).filter(Boolean)) };
+    safeSetItem(EMERGENCY_FUND_KEY, JSON.stringify(state.emergencyFund));
+  }
+  return currentAppSettings();
+}
+
+// Encolar es lo que puede fallar (sin URL configurada, cola llena): quien llame decide
+// si avisa. Guardar en local ya ha ocurrido antes de llegar aquí.
+// Guardar los ajustes en la caché y encolarlos para Sheets. Un fallo al encolar (sin URL,
+// almacenamiento lleno) no puede tirar la interfaz: ya están guardados en local.
+function persistAppSettings() {
+  try {
+    writeDataCache({ dirtySections: ["appSettings"] });
+    queueAppSettings();
+  } catch (error) {
+    console.warn("No se han podido sincronizar los ajustes", error);
+  }
+}
+
+function queueAppSettings() {
+  if (!state.config.scriptUrl) return;
+  queueOp({
+    action: "saveAppSettings",
+    sheetName: state.config.objectiveSheet || "Objetivos",
+    settings: currentAppSettings()
+  });
+}
+
+// Punto de partida del presupuesto, calculado sobre el gasto real del último año (media
+// más un 10 % de margen). Solo se usa como sugerencia en el editor cuando todavía no hay
+// nada guardado: en cuanto guardas, mandan tus cifras.
+const SUGGESTED_BUDGETS = {
+  "Vivienda": 580,
+  "Otros": 390,
+  "Alimentación": 360,
+  "Ocio y social": 230,
+  "Personal": 190,
+  "Formación": 110
+};
+
+// Presupuesto mensual por categoría de gasto: { "Vivienda": 550, ... }. Se guarda en
+// localStorage para arrancar sin red y, además, en la hoja "Objetivos" (writeBudgets).
+function normalizeBudgets(value) {
+  const budgets = {};
+  if (!value || typeof value !== "object") return budgets;
+  Object.entries(value).forEach(([key, raw]) => {
+    const label = conceptAlias(String(key || "").trim());
+    if (!label) return;
+    const amount = roundMoney(raw);
+    if (!Number.isFinite(amount) || amount <= 0) return;
+    // Dos conceptos antiguos pueden colapsar en el mismo nuevo (Comida y Supermercado
+    // son ahora Alimentación): se quedan con la suma, no con el último.
+    budgets[label] = roundMoney((budgets[label] || 0) + amount);
+  });
+  return budgets;
+}
+
+function loadBudgets() {
+  try {
+    return normalizeBudgets(JSON.parse(localStorage.getItem(BUDGETS_KEY) || "{}"));
+  } catch {
+    return {};
+  }
+}
+
+function writeBudgets() {
+  state.budgets = normalizeBudgets(state.budgets);
+  safeSetItem(BUDGETS_KEY, JSON.stringify(state.budgets));
+}
+
+// Las categorías con presupuesto pero sin gasto este mes también deben verse, y las que
+// tienen gasto sin presupuesto tampoco pueden desaparecer: se recorre la unión.
+function budgetRows(month) {
+  const spent = new Map(getSituationBreakdown(month, "gastos"));
+  const budgets = state.budgets || {};
+  const labels = unique([...STATIC_CONCEPTS.filter(c => normalizeType(c) !== "inversion"), ...Object.keys(budgets), ...spent.keys()]);
+  return labels
+    .map(label => ({ label, spent: safeNumber(spent.get(label)), budget: safeNumber(budgets[label]) }))
+    .filter(row => row.spent > 0 || row.budget > 0)
+    .sort((a, b) => (b.budget - a.budget) || (b.spent - a.spent) || a.label.localeCompare(b.label));
 }
 
 // Renombrar una categoría no debe vaciar el fondo en silencio: el fondo guarda nombres, no ids.
@@ -7713,15 +7969,54 @@ function monthName(month) {
 }
 function monthLabel(key) { return `${monthName(key.slice(5, 7))} ${key.slice(0, 4)}`; }
 function endOfToday() { const d = new Date(); d.setHours(23, 59, 59, 999); return d; }
-function isIncome(t) { return normalizeType(t.tipo) === "ingreso"; }
+function isIncome(t) { return normalizeType(t.tipo) === "ingreso" || (normalizeType(t.tipo) === "efectivo" && t.amount > 0); }
 function isInvestment(t) { return normalizeType(t.tipo) === "inversion"; }
 function isTransfer(t) { return normalizeType(t.tipo) === "transferencia"; }
-function isMonthlyExpense(t) { return !isIncome(t) && !isInvestment(t) && !isTransfer(t); }
+function isExpenseType(t) { return normalizeType(t.tipo) === "gasto"; }
+function isMonthlyExpense(t) {
+  if (isIncome(t) || isInvestment(t) || isTransfer(t)) return false;
+  return isExpenseType(t) || safeNumber(t.amount) < 0;
+}
 function normalizeType(value) { return removeAccents(String(value || "")).toLowerCase().trim(); }
 function prettyType(value) {
   const n = normalizeType(value);
   const map = { inversion: "Inversión", descripcion: "Descripción", transferencia: "Transferencia" };
   return map[n] || String(value || "").trim();
+}
+
+// El concepto solo tiene sentido en los gastos, que son los que se reparten por categoría
+// y llevan presupuesto. En ingreso e inversión la app agrupa por descripción y el backend
+// saca de ahí la categoría de la cartera, así que el concepto se deja vacío en la hoja.
+// Un concepto vacío se rellena con "Otros" para que un gasto no se quede sin categoría.
+// En ingreso e inversión ese relleno era ruido: se quedan sin concepto y la app los
+// muestra por descripción, que es lo que ya hacía.
+function defaultConceptForType(tipo) {
+  if (normalizeType(tipo) === "transferencia") return "Transferencia";
+  return typeHidesConcept(tipo) ? "" : "Otros";
+}
+
+// El diálogo de edición esconde el concepto con el mismo criterio que el formulario:
+// cambiar el tipo a Ingreso o Inversión lo oculta y lo deja de exigir.
+function syncEditMovementConcept() {
+  const typeEl = document.getElementById("editMovementType");
+  const conceptEl = document.getElementById("editMovementConcept");
+  if (!typeEl || !conceptEl) return;
+  const hides = typeHidesConcept(typeEl.value);
+  document.querySelectorAll(".edit-concept-field").forEach(el => el.classList.toggle("hidden", hides));
+  conceptEl.required = !hides;
+  if (hides) conceptEl.value = "";
+}
+
+function typeHidesConcept(tipo) {
+  const normalized = normalizeType(tipo);
+  return normalized === "ingreso" || normalized === "inversion";
+}
+
+// Traduce un concepto antiguo de la hoja al nombre nuevo. Idempotente: un concepto ya
+// nuevo no está en la tabla y pasa tal cual.
+function conceptAlias(value) {
+  const pretty = prettyType(value);
+  return CONCEPT_ALIASES[normalizeType(pretty)] || pretty;
 }
 
 function normalizeDescription(value) {

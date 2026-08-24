@@ -29,13 +29,17 @@ MoneyManagement permite:
 - Formulario para crear un movimiento.
 - Modo puntual y modo periódico.
 - Tipo, concepto, descripción, cuenta e importe.
+- El concepto solo aparece en los gastos, que son los que llevan presupuesto. En
+  ingreso e inversión se pide únicamente la descripción: es lo que identifica el
+  movimiento y, en inversión, lo que decide a qué grupo de la cartera va el dinero.
 - Movimientos de transferencia con origen y destino.
 - Guardado con resumen emergente del movimiento.
 
 ### Resumen
 
 - Selector de año y mes con dos desplegables al 50% del ancho.
-- Situación del mes con desglose por ingresos, gastos e inversión.
+- Situación del mes con desglose por ingresos, gastos e inversión. Abre en `Gastos`, con
+  el presupuesto de cada categoría; el interruptor cambia a la gráfica de siempre.
 - Gráficas circulares y barras.
 - Resumen de dinero, banco e invertido.
 - Total contable sin realizar ganancias.
@@ -75,7 +79,8 @@ las posiciones que hay dentro.
 - Cada grupo se compara con lo invertido cuando esa cifra existe y con su valor cuando no.
   Las posiciones se comparan siempre con su valor, que es el único dato que hay por
   posición; cuando las dos cifras no coinciden, el detalle del grupo lo dice.
-- Los pesos se guardan en este navegador, no en Google Sheets.
+- Los pesos se guardan en este navegador y también en la hoja `Objetivos`, así que
+  sobreviven a reinstalar la app o vaciar la caché.
 
 ### Ajustes
 
@@ -142,17 +147,42 @@ La app permite editar sobre todo la cantidad. El precio y el total se recalculan
 
 Sirve para el desglose de saldo por cuenta y para la evolución de bancos.
 
+### Hoja `Objetivos`
+
+| Tiempo | Valor |
+
+Pares clave/valor. Las cuatro primeras filas son los objetivos de siempre (`Gasto
+mensual`, `Inversión mensual`, `Inversión anual`, `Inversión total`), con un número.
+
+Debajo van los ajustes de la app, con un JSON en la columna `Valor`:
+
+| Clave | Qué guarda |
+|---|---|
+| `budgets` | Presupuesto mensual de cada categoría de gasto |
+| `investmentComposition` | Pesos de la composición objetivo de la cartera |
+| `emergencyFund` | Qué categorías de inversión cuentan para el fondo de emergencia |
+
+Las dos lecturas conviven: el lector de objetivos ignora las claves que no reconoce y el
+de ajustes solo mira las suyas. Guardar por un lado no pisa lo del otro.
+
 ### Hoja `Datos`
 
 | TIPO | CONCEPTO |
 
 De aquí salen los desplegables del formulario. Si la hoja no está disponible, la app usa valores por defecto.
 
+Los conceptos son seis: `Vivienda`, `Alimentación`, `Ocio y social`, `Personal`,
+`Formación` y `Otros`. El histórico conserva los nombres antiguos (`Supermercado`,
+`Piso`, `Comida`…) y la app los traduce al leer, así que no hay que tocar la hoja: se
+va actualizando sola cuando editas un movimiento.
+
 ## Cálculos principales
 
 - Ingresos: movimientos de tipo `Ingreso` y `Efectivo` positivo.
-- Gastos: movimientos de tipo `Gasto` y `Efectivo` negativo.
-- Inversión: movimientos de tipo `Inversión`.
+- Gastos: movimientos de tipo `Gasto` y `Efectivo` negativo. Un `Efectivo` o un `Retiro`
+  positivo es dinero que entra y no cuenta como gasto.
+- Inversión: movimientos de tipo `Inversión`. La categoría de la cartera sale de la
+  descripción (`Bolsa`, `Fondos`…), no del concepto.
 - Balance mensual: ingresos menos gastos menos inversión.
 - Banco estimado: banco inicial más movimientos y ajustes.
 - Dinero total sin ganancias realizadas: banco estimado más inversión histórica.
@@ -165,7 +195,11 @@ La app guarda en `localStorage`:
 - la última copia descargada de Sheets;
 - cambios pendientes de guardar;
 - el tema seleccionado;
-- los objetivos de composición de la cartera.
+- los objetivos de composición de la cartera;
+- el presupuesto mensual por categoría.
+
+Los tres últimos son además copia de lo que hay en la hoja `Objetivos`: al entrar mandan
+los de Sheets, y lo que guardas aquí se sube.
 
 Cuando entras, usa la caché si está disponible. Si la caché sigue vigente, la pantalla carga rápido y luego se actualiza solo si hace falta. Al guardar movimientos, bancos o inversiones, la copia local se actualiza también para que la interfaz no dependa de recargar toda la hoja.
 
@@ -182,7 +216,7 @@ El archivo `apps-script.gs` actúa como puente con Google Sheets:
 - guarda movimientos nuevos;
 - actualiza y borra movimientos;
 - guarda bancos;
-- guarda objetivos;
+- guarda objetivos y los ajustes de la app (presupuesto, composición y fondo);
 - actualiza cotizaciones desde Yahoo;
 - manda el aviso diario de inversión por Telegram.
 

@@ -688,6 +688,35 @@ input[readonly] {
   height: 20px;
   min-height: 0;
 }
+/* Presupuesto por categoría: dos columnas en móvil, que es donde se usa la app. */
+.budget-cards {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.budget-cards .monthly-goal-card {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+.budget-total {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px solid var(--line);
+  font-size: 0.86rem;
+}
+.budget-empty {
+  margin: 12px 0;
+  text-align: center;
+}
+.budget-fields {
+  display: grid;
+  gap: 8px;
+}
+
 .monthly-goal-card {
   display: grid;
   gap: 3px;

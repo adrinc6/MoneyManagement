@@ -130,6 +130,7 @@ function buildDataPayload_(sheets, { banks = false, estimates = false, movedFutu
     investments,
     investmentTotals,
     investmentGoals: readInvestmentGoals_(sheets.objective),
+    appSettings: readAppSettings_(sheets.objective),
     categories: readAppCategories_(sheets.data, sheets.investmentTotals, sheets.investment, investments, investmentTotals)
   };
   if (estimates) {
@@ -534,6 +535,10 @@ function applyPostAction_(payload) {
     if (payload.action === 'saveInvestmentEstimateAllocations') {
       const saved = saveInvestmentEstimateAllocations_(payload.investmentEstimateLedgerSheet || DEFAULT_INVESTMENT_ESTIMATE_LEDGER_SHEET, payload.entries || []);
       return { ok: true, estimatesSaved: saved.length };
+    }
+    if (payload.action === 'saveAppSettings') {
+      saveAppSettings_(payload.settings || {}, payload.sheetName || DEFAULT_OBJECTIVE_SHEET);
+      return { ok: true, appSettingsSaved: true, appSettings: readAppSettings_(payload.sheetName || DEFAULT_OBJECTIVE_SHEET) };
     }
     if (payload.action === 'saveInvestmentGoals') {
       saveInvestmentGoals_(payload.goals || {}, payload.sheetName || DEFAULT_OBJECTIVE_SHEET);
@@ -2346,17 +2351,89 @@ function formatPct_(value) {
   return `${amount >= 0 ? '+' : ''}${amount.toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`;
 }
 
-function saveInvestmentGoals_(goals, sheetName) {
-  const sheet = getOrCreateSheet_(sheetName, ['Tiempo', 'Valor']);
-  const rows = [
-    ['Gasto mensual', Number(goals.expenseMonthly || 0)],
-    ['Inversión mensual', Number(goals.investmentMonthly || goals.monthly || 0)],
-    ['Inversión anual', Number(goals.yearly || goals.anual || 0)],
-    ['Inversión total', Number(goals.total || 0)]
-  ];
+// Claves de la hoja "Objetivos" que no son objetivos sino ajustes de la app, guardados
+// como JSON en la columna Valor. readInvestmentGoals_ las ignora (normalizeGoalKey_
+// devuelve '' para ellas), así que ambas lecturas conviven en la misma hoja.
+var APP_SETTINGS_KEYS = ['budgets', 'investmentComposition', 'emergencyFund'];
+
+// Lee la hoja entera como pares clave/valor, preservando el orden de las filas.
+function readObjectiveRows_(sheetName) {
+  const sheet = getSheet_(sheetName || DEFAULT_OBJECTIVE_SHEET);
+  if (!sheet) return [];
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return [];
+  return sheet.getRange(2, 1, lastRow - 1, 2).getDisplayValues()
+    .map(function(row) { return [String(row[0] || '').trim(), row[1]]; })
+    .filter(function(row) { return row[0]; });
+}
+
+// Escribe preservando las filas que no gestiona quien llama. Sin esto, guardar objetivos
+// borraba los ajustes (y al revés): la escritura antigua hacía clearContent de todo.
+function writeObjectiveRows_(sheetName, updates) {
+  const sheet = getOrCreateSheet_(sheetName || DEFAULT_OBJECTIVE_SHEET, ['Tiempo', 'Valor']);
+  const existing = readObjectiveRows_(sheetName);
+  const result = [];
+  const applied = {};
+  existing.forEach(function(row) {
+    const key = row[0];
+    const match = Object.keys(updates).filter(function(k) { return normalizeSettingKey_(k) === normalizeSettingKey_(key); })[0];
+    if (match) {
+      if (applied[match]) return;
+      applied[match] = true;
+      result.push([key, updates[match]]);
+    } else {
+      result.push(row);
+    }
+  });
+  Object.keys(updates).forEach(function(key) {
+    if (!applied[key]) result.push([key, updates[key]]);
+  });
   const lastRow = sheet.getLastRow();
   if (lastRow > 1) sheet.getRange(2, 1, lastRow - 1, 2).clearContent();
-  sheet.getRange(2, 1, rows.length, 2).setValues(rows);
+  if (result.length) sheet.getRange(2, 1, result.length, 2).setValues(result);
+}
+
+function normalizeSettingKey_(value) {
+  return String(value || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim();
+}
+
+function saveInvestmentGoals_(goals, sheetName) {
+  writeObjectiveRows_(sheetName, {
+    'Gasto mensual': Number(goals.expenseMonthly || 0),
+    'Inversión mensual': Number(goals.investmentMonthly || goals.monthly || 0),
+    'Inversión anual': Number(goals.yearly || goals.anual || 0),
+    'Inversión total': Number(goals.total || 0)
+  });
+}
+
+// Ajustes de la app guardados en la misma hoja. Un JSON corrupto en una fila no puede
+// tumbar la descarga entera: esa clave se ignora y el resto sigue.
+function readAppSettings_(sheetName) {
+  const settings = {};
+  readObjectiveRows_(sheetName).forEach(function(row) {
+    const key = APP_SETTINGS_KEYS.filter(function(k) { return normalizeSettingKey_(k) === normalizeSettingKey_(row[0]); })[0];
+    if (!key) return;
+    const raw = String(row[1] || '').trim();
+    if (!raw) return;
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') settings[key] = parsed;
+    } catch (error) {
+      // fila ilegible: se deja fuera y la app usa lo que tenga en local
+    }
+  });
+  return settings;
+}
+
+function saveAppSettings_(settings, sheetName) {
+  const updates = {};
+  APP_SETTINGS_KEYS.forEach(function(key) {
+    const value = settings ? settings[key] : null;
+    if (value === undefined || value === null) return;
+    updates[key] = JSON.stringify(value);
+  });
+  if (!Object.keys(updates).length) return;
+  writeObjectiveRows_(sheetName, updates);
 }
 
 // `knownInvestments` evita releer la hoja de inversiones cuando el llamante ya la tiene:
