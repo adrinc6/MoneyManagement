@@ -295,6 +295,7 @@ function wireUi() {
   document.getElementById("addInvestmentEstimateRuleBtn")?.addEventListener("click", addInvestmentEstimateRule);
   document.getElementById("saveInvestmentEstimateRulesBtn")?.addEventListener("click", saveInvestmentEstimateRules);
   document.getElementById("formType")?.addEventListener("change", syncRegistrarMode);
+  document.getElementById("editMovementType")?.addEventListener("change", syncEditMovementConcept);
   document.getElementById("formAmount")?.addEventListener("input", enforceTransferPositiveAmount);
   document.getElementById("formAmount")?.addEventListener("change", enforceTransferPositiveAmount);
   document.getElementById("saveConfigBtn")?.addEventListener("click", saveConfigFromForm);
@@ -3248,6 +3249,9 @@ function syncOptions() {
 
 function syncRegistrarMode() {
   const isTransfer = normalizeType(document.getElementById("formType").value) === "transferencia";
+  // En ingreso e inversión el concepto no aporta nada: la app los agrupa por descripción
+  // y el backend saca de ahí la categoría de la cartera. Se oculta y se guarda vacío.
+  const hidesConcept = typeHidesConcept(document.getElementById("formType").value);
   const recurring = isRecurringMode();
   const amountInput = document.getElementById("formAmount");
   if (amountInput) {
@@ -3259,10 +3263,17 @@ function syncRegistrarMode() {
   document.querySelectorAll(".transfer-only").forEach(el => el.classList.toggle("hidden", !isTransfer));
   const formDate = document.getElementById("formDate");
   if (formDate) formDate.required = !isTransfer && !recurring;
-  ["formConcept", "formDescription"].forEach(id => {
-    const el = document.getElementById(id);
-    if (el) el.required = !isTransfer;
-  });
+  document.querySelectorAll(".concept-field").forEach(el => el.classList.toggle("hidden", isTransfer || hidesConcept));
+  const conceptEl = document.getElementById("formConcept");
+  if (conceptEl) {
+    conceptEl.required = !isTransfer && !hidesConcept;
+    // Un select oculto no debe arrastrar lo que hubiera elegido antes de cambiar de tipo.
+    if (hidesConcept) conceptEl.value = "";
+  }
+  const descriptionEl = document.getElementById("formDescription");
+  // La descripción pasa a ser lo único que identifica un ingreso o una inversión, y en
+  // inversión es además lo que decide a qué grupo de la cartera va el dinero.
+  if (descriptionEl) descriptionEl.required = !isTransfer;
   document.getElementById("formTransferFrom").required = isTransfer;
   document.getElementById("formTransferTo").required = isTransfer;
   const submitLabel = isTransfer
@@ -4478,6 +4489,7 @@ function openMovementDetail(index) {
   document.getElementById("editMovementDate").value = formatDate(t.date);
   document.getElementById("editMovementType").value = t.tipo;
   document.getElementById("editMovementConcept").value = t.concepto;
+  syncEditMovementConcept();
   document.getElementById("editMovementDescription").value = t.descripcion;
   document.getElementById("editMovementAmount").value = t.amount;
   document.getElementById("editMovementAccount").value = t.cuenta || "";
@@ -4517,7 +4529,9 @@ async function saveMovementDetail(event) {
     rowNumber: previous.rowNumber,
     fecha: document.getElementById("editMovementDate").value,
     tipo: document.getElementById("editMovementType").value,
-    concepto: document.getElementById("editMovementConcept").value,
+    concepto: typeHidesConcept(document.getElementById("editMovementType").value)
+      ? ""
+      : document.getElementById("editMovementConcept").value,
     descripcion: document.getElementById("editMovementDescription").value,
     importe: document.getElementById("editMovementAmount").value,
     cuenta: state.movementMode === "future" ? document.getElementById("editMovementAccount").value.trim() : previous.cuenta
@@ -5082,7 +5096,7 @@ function movementFromFormBase() {
   const amount = parseNumber(document.getElementById("formAmount").value);
   return {
     tipo: type,
-    concepto: prettyType(document.getElementById("formConcept").value),
+    concepto: typeHidesConcept(type) ? "" : prettyType(document.getElementById("formConcept").value),
     descripcion: document.getElementById("formDescription").value.trim(),
     importe: amount
   };
@@ -6202,7 +6216,7 @@ function normalizeTransaction(row) {
     rowNumber: Number(row.rowNumber || row.row || 0) || null,
     date,
     tipo,
-    concepto: concepto || (normalizeType(tipo) === "transferencia" ? "Transferencia" : "Otros"),
+    concepto: concepto || defaultConceptForType(tipo),
     descripcion,
     amount,
     cuenta,
@@ -7968,6 +7982,34 @@ function prettyType(value) {
   const n = normalizeType(value);
   const map = { inversion: "Inversión", descripcion: "Descripción", transferencia: "Transferencia" };
   return map[n] || String(value || "").trim();
+}
+
+// El concepto solo tiene sentido en los gastos, que son los que se reparten por categoría
+// y llevan presupuesto. En ingreso e inversión la app agrupa por descripción y el backend
+// saca de ahí la categoría de la cartera, así que el concepto se deja vacío en la hoja.
+// Un concepto vacío se rellena con "Otros" para que un gasto no se quede sin categoría.
+// En ingreso e inversión ese relleno era ruido: se quedan sin concepto y la app los
+// muestra por descripción, que es lo que ya hacía.
+function defaultConceptForType(tipo) {
+  if (normalizeType(tipo) === "transferencia") return "Transferencia";
+  return typeHidesConcept(tipo) ? "" : "Otros";
+}
+
+// El diálogo de edición esconde el concepto con el mismo criterio que el formulario:
+// cambiar el tipo a Ingreso o Inversión lo oculta y lo deja de exigir.
+function syncEditMovementConcept() {
+  const typeEl = document.getElementById("editMovementType");
+  const conceptEl = document.getElementById("editMovementConcept");
+  if (!typeEl || !conceptEl) return;
+  const hides = typeHidesConcept(typeEl.value);
+  document.querySelectorAll(".edit-concept-field").forEach(el => el.classList.toggle("hidden", hides));
+  conceptEl.required = !hides;
+  if (hides) conceptEl.value = "";
+}
+
+function typeHidesConcept(tipo) {
+  const normalized = normalizeType(tipo);
+  return normalized === "ingreso" || normalized === "inversion";
 }
 
 // Traduce un concepto antiguo de la hoja al nombre nuevo. Idempotente: un concepto ya

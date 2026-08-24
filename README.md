@@ -29,6 +29,9 @@ MoneyManagement permite:
 - Formulario para crear un movimiento.
 - Modo puntual y modo periódico.
 - Tipo, concepto, descripción, cuenta e importe.
+- El concepto solo aparece en los gastos, que son los que llevan presupuesto. En
+  ingreso e inversión se pide únicamente la descripción: es lo que identifica el
+  movimiento y, en inversión, lo que decide a qué grupo de la cartera va el dinero.
 - Movimientos de transferencia con origen y destino.
 - Guardado con resumen emergente del movimiento.
 
@@ -178,7 +181,8 @@ va actualizando sola cuando editas un movimiento.
 - Ingresos: movimientos de tipo `Ingreso` y `Efectivo` positivo.
 - Gastos: movimientos de tipo `Gasto` y `Efectivo` negativo. Un `Efectivo` o un `Retiro`
   positivo es dinero que entra y no cuenta como gasto.
-- Inversión: movimientos de tipo `Inversión`.
+- Inversión: movimientos de tipo `Inversión`. La categoría de la cartera sale de la
+  descripción (`Bolsa`, `Fondos`…), no del concepto.
 - Balance mensual: ingresos menos gastos menos inversión.
 - Banco estimado: banco inicial más movimientos y ajustes.
 - Dinero total sin ganancias realizadas: banco estimado más inversión histórica.

@@ -582,3 +582,58 @@ test("una nómina con concepto Otros no es gasto", () => {
   assert.equal(app.isIncome(t), true);
   assert.equal(app.isMonthlyExpense(t), false);
 });
+
+// En ingreso e inversión el concepto no aportaba nada: la app ya los agrupa por descripción
+// y el backend saca de ahí la categoría de la cartera. Ahora el campo se oculta y la celda
+// se guarda vacía, en vez de rellenarse con un "Otros" que ensuciaba filtros y tablas.
+test("solo los gastos llevan concepto", () => {
+  assert.equal(app.typeHidesConcept("Ingreso"), true);
+  assert.equal(app.typeHidesConcept("Inversión"), true);
+  assert.equal(app.typeHidesConcept("inversion"), true);
+  assert.equal(app.typeHidesConcept("Gasto"), false);
+  assert.equal(app.typeHidesConcept("Transferencia"), false);
+});
+
+test("un ingreso o una inversión sin concepto no se rellenan con Otros", () => {
+  const inv = app.normalizeTransaction({
+    fecha: "2026-08-01", tipo: "Inversión", concepto: "", descripcion: "Bolsa", importe: "-500"
+  });
+  const ing = app.normalizeTransaction({
+    fecha: "2026-08-01", tipo: "Ingreso", concepto: "", descripcion: "Nómina", importe: "1800"
+  });
+  assert.equal(inv.concepto, "");
+  assert.equal(ing.concepto, "");
+
+  // Un gasto sin concepto sí necesita categoría, y una transferencia su marca.
+  const gasto = app.normalizeTransaction({
+    fecha: "2026-08-01", tipo: "Gasto", concepto: "", descripcion: "algo", importe: "-40"
+  });
+  assert.equal(gasto.concepto, "Otros");
+  const tr = app.normalizeTransaction({
+    fecha: "2026-08-01", tipo: "Transferencia", concepto: "", descripcion: "a > b", importe: "-100"
+  });
+  assert.equal(tr.concepto, "Transferencia");
+});
+
+// Sin concepto, el tipo es lo único que dice que esto es una inversión.
+test("una inversión sin concepto se sigue reconociendo", () => {
+  const inv = app.normalizeTransaction({
+    fecha: "2026-08-01", tipo: "Inversión", concepto: "", descripcion: "Bolsa", importe: "-500"
+  });
+  assert.equal(app.isInvestment(inv), true);
+  assert.equal(app.isInvestmentMovement(inv), true);
+  assert.equal(app.isMonthlyExpense(inv), false);
+});
+
+// El desglose de inversión ya agrupaba por descripción: quitar el concepto no lo cambia.
+test("el desglose de inversión sigue agrupando por descripción", () => {
+  app.state.transactions = [
+    app.normalizeTransaction({ fecha: "2026-08-01", tipo: "Inversión", concepto: "", descripcion: "Bolsa", importe: "-500" }),
+    app.normalizeTransaction({ fecha: "2026-08-02", tipo: "Inversión", concepto: "", descripcion: "Fondos", importe: "-300" })
+  ];
+  assert.deepEqual(JSON.parse(JSON.stringify(app.getSituationBreakdown("2026-08", "inversion"))), [["Bolsa", 500], ["Fondos", 300]]);
+  // Y no aparecen en el presupuesto de gasto.
+  app.state.budgets = {};
+  assert.equal(app.budgetRows("2026-08").length, 0);
+  app.state.transactions = [];
+});
