@@ -5383,6 +5383,10 @@ function openBudgetsDialog(focusLabel) {
       <input type="number" step="0.01" min="0" inputmode="decimal" placeholder="Sin límite"
         data-budget-input="${escapeAttr(label)}" value="${escapeAttr(String(valorDe(label)))}" />
     </label>`).join("");
+  renderBudgetAllocationStatus();
+  document.querySelectorAll("[data-budget-input]").forEach(input => {
+    input.addEventListener("input", renderBudgetAllocationStatus);
+  });
   const dialog = document.getElementById("budgetsDialog");
   dialog.showModal();
   if (focusLabel) {
@@ -5395,16 +5399,10 @@ async function saveBudgetsFromDialog(event) {
   event.preventDefault();
   const btn = event.submitter;
   markButtonSaving(btn);
-  const budgets = {};
-  document.querySelectorAll("[data-budget-input]").forEach(input => {
-    const amount = roundMoney(input.value);
-    if (Number.isFinite(amount) && amount > 0) budgets[input.dataset.budgetInput] = amount;
-  });
-  const normalizedBudgets = normalizeBudgets(budgets);
+  const normalizedBudgets = budgetsFromDialog();
   const mismatch = budgetGoalMismatch(normalizedBudgets, state.investmentGoals.expenseMonthly);
   if (mismatch) {
     restoreButton(btn);
-    setNotice(budgetGoalMismatchMessage(mismatch), "warn");
     return;
   }
   state.budgets = normalizedBudgets;
@@ -7785,6 +7783,36 @@ function normalizeBudgets(value) {
     budgets[label] = roundMoney((budgets[label] || 0) + amount);
   });
   return budgets;
+}
+
+function budgetsFromDialog() {
+  const budgets = {};
+  document.querySelectorAll("[data-budget-input]").forEach(input => {
+    const amount = roundMoney(input.value);
+    if (Number.isFinite(amount) && amount > 0) budgets[input.dataset.budgetInput] = amount;
+  });
+  return normalizeBudgets(budgets);
+}
+
+function renderBudgetAllocationStatus() {
+  const el = document.getElementById("budgetAllocationSummary");
+  if (!el) return;
+  const goal = roundMoney(state.investmentGoals.expenseMonthly);
+  const assigned = roundMoney(sum(Object.values(budgetsFromDialog())));
+  const remaining = roundMoney(goal - assigned);
+  const isBalanced = remaining === 0;
+  const status = remaining > 0
+    ? `Faltan ${money(remaining)} por asignar`
+    : remaining < 0
+      ? `Has asignado ${money(Math.abs(remaining))} de más`
+      : "Todo el objetivo está asignado";
+  el.className = `budget-allocation-summary ${remaining < 0 ? "over" : remaining > 0 ? "pending" : "complete"}`;
+  el.innerHTML = `
+    <div><span>Objetivo mensual</span><strong>${money(goal)}</strong></div>
+    <div><span>Asignado a categorías</span><strong>${money(assigned)}</strong></div>
+    <strong class="budget-allocation-status">${status}</strong>`;
+  const saveButton = document.getElementById("saveBudgetsBtn");
+  if (saveButton) saveButton.disabled = !isBalanced;
 }
 
 function budgetGoalMismatch(budgets, expenseMonthly) {

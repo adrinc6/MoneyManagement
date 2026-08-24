@@ -773,6 +773,43 @@ input[readonly] {
   gap: 8px;
 }
 
+.budget-allocation-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 12px;
+  padding: 11px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--muted);
+  border-radius: 10px;
+  background: var(--panel);
+}
+
+.budget-allocation-summary div {
+  display: grid;
+  gap: 2px;
+}
+
+.budget-allocation-summary span {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.budget-allocation-summary strong {
+  font-variant-numeric: tabular-nums;
+}
+
+.budget-allocation-status {
+  grid-column: 1 / -1;
+  font-size: 0.84rem;
+}
+
+.budget-allocation-summary.pending { border-left-color: var(--accent); }
+.budget-allocation-summary.pending .budget-allocation-status { color: var(--accent); }
+.budget-allocation-summary.complete { border-left-color: var(--good); }
+.budget-allocation-summary.complete .budget-allocation-status { color: var(--good); }
+.budget-allocation-summary.over { border-left-color: var(--bad); }
+.budget-allocation-summary.over .budget-allocation-status { color: var(--bad); }
+
 .monthly-goal-card {
   display: grid;
   gap: 3px;

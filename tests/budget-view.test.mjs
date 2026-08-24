@@ -174,3 +174,26 @@ test("el estado vacío permite objetivo y categorías a cero", () => {
   const app = loadApp();
   assert.equal(app.budgetGoalMismatch({}, 0), null);
 });
+
+test("el resumen superior indica lo pendiente y bloquea guardar hasta cuadrar", () => {
+  const app = loadApp();
+  const summary = { innerHTML: "", className: "" };
+  const saveButton = { disabled: false };
+  const inputs = [
+    { value: "600", dataset: { budgetInput: "Vivienda" } },
+    { value: "300", dataset: { budgetInput: "Alimentación" } }
+  ];
+  app.state.investmentGoals.expenseMonthly = 1000;
+  app.document.getElementById = id => ({ budgetAllocationSummary: summary, saveBudgetsBtn: saveButton }[id] || null);
+  app.document.querySelectorAll = selector => selector === "[data-budget-input]" ? inputs : [];
+
+  app.renderBudgetAllocationStatus();
+  assert.match(summary.innerHTML, /Faltan/);
+  assert.match(summary.innerHTML, /100(?:\s| )*€/);
+  assert.equal(saveButton.disabled, true);
+
+  inputs[1].value = "400";
+  app.renderBudgetAllocationStatus();
+  assert.match(summary.innerHTML, /Todo el objetivo está asignado/);
+  assert.equal(saveButton.disabled, false);
+});
