@@ -204,3 +204,53 @@ test("un movimiento de la hoja de futuros no toca el coste, se llame como se lla
     assert.equal(costeDe(gs, "Bolsa"), 100, `la hoja "${nombreFuturos}" no debe mover el coste`);
   }
 });
+
+// El signo del importe es lo que distingue invertir de desinvertir: negativo saca dinero
+// del banco hacia la cartera y positivo lo devuelve. Antes se tomaba el valor absoluto y
+// una venta engordaba el coste de la categoría en vez de reducirlo.
+test("un importe positivo es una desinversión y RESTA del coste", () => {
+  const gs = loadAppsScript();
+  setup(gs);
+
+  gs.adjustInvestmentCostFromMovement_(hojas(gs), MOVEMENT_SHEET, movimiento("Bolsa", 40), 1);
+
+  assert.equal(costeDe(gs, "Bolsa"), 60, "100 - 40");
+  assert.equal(costeDe(gs, "Fondos"), 50);
+});
+
+test("desinvertir más de lo invertido deja el coste en cero, no negativo", () => {
+  const gs = loadAppsScript();
+  setup(gs);
+
+  gs.adjustInvestmentCostFromMovement_(hojas(gs), MOVEMENT_SHEET, movimiento("Bolsa", 999), 1);
+
+  assert.equal(costeDe(gs, "Bolsa"), 0);
+});
+
+test("borrar una desinversión la deshace: el coste vuelve a subir", () => {
+  const gs = loadAppsScript();
+  setup(gs);
+
+  gs.adjustInvestmentCostFromMovement_(hojas(gs), MOVEMENT_SHEET, movimiento("Bolsa", 40), 1);
+  gs.adjustInvestmentCostFromMovement_(hojas(gs), MOVEMENT_SHEET, movimiento("Bolsa", 40), -1);
+
+  assert.equal(costeDe(gs, "Bolsa"), 100);
+});
+
+test("el coste histórico de una categoría es el NETO de compras y ventas", () => {
+  const gs = loadAppsScript();
+  setup(gs, {
+    totals: [],
+    movementRows: [
+      ["2026-01-10", 2026, 1, 10, "Inversión", "", "Bolsa", -500, "Santander", "m1"],
+      ["2026-02-10", 2026, 2, 10, "Inversión", "", "Bolsa", 120, "Santander", "m2"],
+      ["2026-03-10", 2026, 3, 10, "Inversión", "", "Fondos", -80, "Santander", "m3"],
+      ["2026-04-10", 2026, 4, 10, "Inversión", "", "Fondos", 300, "Santander", "m4"]
+    ]
+  });
+
+  const costes = gs.historicalInvestmentCostByCategory_(MOVEMENT_SHEET, ["Bolsa", "Fondos"]);
+
+  assert.equal(costes.Bolsa, 380, "500 invertidos menos 120 desinvertidos");
+  assert.equal(costes.Fondos, 0, "vendido más de lo comprado: se corta en 0");
+});

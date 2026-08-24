@@ -217,6 +217,9 @@ const state = {
   currentInvestmentAllocationPrompt: null,
   currentCompositionGroup: "",
   pendingInvestmentSummaryPopup: null,
+  // Carteras quitadas en el diálogo de categorías con su destino (borrar o traspasar),
+  // pendientes de aplicarse al guardar.
+  pendingInvestmentCategoryResolutions: new Map(),
   futureMovementAccountPromptDismissed: false
 };
 
@@ -2453,7 +2456,7 @@ function queuePayloadSections(payload = {}) {
   if (["renameAccount", "deleteAccount"].includes(action)) return ["banks", "transactions", "futureTransactions"];
   if (action === "reassignFutureMovementsAccount") return ["futureTransactions"];
   if (["updateInvestment", "deleteInvestment"].includes(action)) return ["investments", "investmentTotals", "investmentEstimateLedger"];
-  if (action === "saveInvestmentCategories") return ["categories", "investments", "investmentTotals", "transactions", "futureTransactions"];
+  if (action === "saveInvestmentCategories") return ["categories", "investments", "investmentTotals", "transactions", "futureTransactions", "banks"];
   if (action === "saveInvestmentEstimateRules") return ["investmentEstimateRules", "investmentEstimateLedger"];
   if (["clearInvestmentEstimates", "saveInvestmentEstimateAllocations"].includes(action)) return ["investmentEstimateLedger"];
   if (action === "saveInvestmentGoals") return ["investmentGoals"];
@@ -3233,6 +3236,9 @@ function syncOptions() {
   fillSelect("editMovementType", types, "Seleccione");
   fillSelect("editMovementConcept", concepts, "Seleccione");
   fillSelect("editInvestmentType", investmentTypes());
+  // La descripción de una inversión no es texto libre: es la cartera a la que va el
+  // dinero. Se ofrece como lista cerrada para que una errata no cree una cartera fantasma.
+  fillInvestmentDescriptionSelects();
 
   const accounts = state.banks.map(b => b.cuenta).filter(Boolean);
   fillSelect("formAccount", accounts, accounts.length ? null : "Sin cuentas");
@@ -3267,8 +3273,13 @@ function syncRegistrarMode() {
   syncRegistrarConceptField();
   const descriptionEl = document.getElementById("formDescription");
   // La descripción pasa a ser lo único que identifica un ingreso o una inversión, y en
-  // inversión es además lo que decide a qué grupo de la cartera va el dinero.
-  if (descriptionEl) descriptionEl.required = !isTransfer;
+  // inversión es además lo que decide a qué grupo de la cartera va el dinero: por eso
+  // ahí se elige de una lista cerrada de carteras en vez de escribirse a mano.
+  const isInvestmentType = normalizeType(document.getElementById("formType").value) === "inversion";
+  toggleInvestmentDescriptionFields(document.getElementById("movementForm"), isInvestmentType && !isTransfer);
+  if (descriptionEl) descriptionEl.required = !isTransfer && !isInvestmentType;
+  const descriptionSelectEl = document.getElementById("formDescriptionSelect");
+  if (descriptionSelectEl) descriptionSelectEl.required = !isTransfer && isInvestmentType;
   document.getElementById("formTransferFrom").required = isTransfer;
   document.getElementById("formTransferTo").required = isTransfer;
   const submitLabel = isTransfer
@@ -3354,6 +3365,31 @@ function fillSelect(id, values, placeholder = null) {
   }
 }
 
+// Las dos listas de cartera (registro y edición de movimiento) se rellenan igual. La
+// edición conserva además la descripción histórica aunque ya no sea una cartera viva,
+// para que guardar un movimiento antiguo no lo reetiquete sin querer.
+function fillInvestmentDescriptionSelects() {
+  const types = investmentTypes();
+  fillSelect("formDescriptionSelect", types, types.length ? null : "Sin carteras");
+  const editEl = document.getElementById("editMovementDescriptionSelect");
+  const legacy = editEl && editEl.value && !types.some(type => normalizeType(type) === normalizeType(editEl.value))
+    ? [editEl.value]
+    : [];
+  fillSelect("editMovementDescriptionSelect", unique([...types, ...legacy]), types.length ? null : "Sin carteras");
+}
+
+// Alterna el input libre y el desplegable de cartera en cualquiera de los dos formularios.
+function toggleInvestmentDescriptionFields(root, isInvestment) {
+  if (!root) return;
+  root.querySelectorAll(".free-description-field").forEach(el => el.classList.toggle("hidden", isInvestment));
+  root.querySelectorAll(".investment-description-field").forEach(el => el.classList.toggle("hidden", !isInvestment));
+}
+
+function investmentDescriptionValue(inputId, selectId, isInvestment) {
+  const el = document.getElementById(isInvestment ? selectId : inputId);
+  return String(el?.value || "").trim();
+}
+
 function buildDescriptionSuggestions() {
   const sorted = [...state.transactions]
     .filter(t => t.descripcion)
@@ -3425,7 +3461,7 @@ function buildRegistrarSummaryCards() {
   const personalAvailable = expenseGoal > 0 ? expenseGoal - summary.expenses : null;
   const futureMonth = state.futureTransactions.filter(t => monthKey(t.date) === currentMonth);
   const futureExpenses = Math.abs(sum(futureMonth.filter(isMonthlyExpense).map(t => t.amount)));
-  const futureInvestments = Math.abs(sum(futureMonth.filter(isInvestment).map(t => t.amount)));
+  const futureInvestments = netInvested(futureMonth.filter(isInvestment));
   const futureTotals = `${formatNumber(futureExpenses, 0)}/${formatNumber(futureInvestments, 0)} €`;
 
   return [
@@ -3927,7 +3963,7 @@ function calculateSummary(month) {
   const untilToday = state.transactions.filter(t => t.date <= endOfToday());
   const income = sum(txMonth.filter(isIncome).map(t => t.amount));
   const expenses = Math.abs(sum(txMonth.filter(isMonthlyExpense).map(t => t.amount)));
-  const investedMonth = Math.abs(sum(txMonth.filter(isInvestment).map(t => t.amount)));
+  const investedMonth = netInvested(txMonth.filter(isInvestment));
   const balance = sum(txMonth.map(t => t.amount));
   const computedBank = DEFAULT_CONFIG.initialCash
     + sumTransactionsByType(untilToday, "Ingreso")
@@ -4335,7 +4371,7 @@ function movementBack() {
 function summarizeTransactions(transactions) {
   const income = sum(transactions.filter(t => isIncome(t)).map(t => t.amount));
   const expenses = Math.abs(sum(transactions.filter(t => isMonthlyExpense(t)).map(t => t.amount)));
-  const invested = Math.abs(sum(transactions.filter(t => isInvestment(t)).map(t => t.amount)));
+  const invested = netInvested(transactions.filter(t => isInvestment(t)));
   return { income, expenses, invested, balance: income - expenses - invested };
 }
 
@@ -4515,8 +4551,14 @@ function openMovementDetail(index) {
   document.getElementById("editMovementDate").value = formatDate(t.date);
   document.getElementById("editMovementType").value = t.tipo;
   document.getElementById("editMovementConcept").value = t.concepto;
-  syncEditMovementConcept();
   document.getElementById("editMovementDescription").value = t.descripcion;
+  // En inversión la descripción es la cartera: se preselecciona la que ya resuelve la app
+  // y, si el histórico no coincide con ninguna viva, se conserva como opción propia.
+  const editDescriptionSelect = document.getElementById("editMovementDescriptionSelect");
+  if (editDescriptionSelect) editDescriptionSelect.value = localInvestmentCategoryForMovement(t) || t.descripcion || "";
+  fillInvestmentDescriptionSelects();
+  if (editDescriptionSelect) editDescriptionSelect.value = localInvestmentCategoryForMovement(t) || t.descripcion || "";
+  syncEditMovementConcept();
   document.getElementById("editMovementAmount").value = t.amount;
   document.getElementById("editMovementAccount").value = t.cuenta || "";
   document.querySelector("#movementDetailForm .future-account-field")?.classList.toggle("hidden", state.movementMode !== "future");
@@ -4558,7 +4600,11 @@ async function saveMovementDetail(event) {
     concepto: typeHidesConcept(document.getElementById("editMovementType").value)
       ? ""
       : document.getElementById("editMovementConcept").value,
-    descripcion: document.getElementById("editMovementDescription").value,
+    descripcion: investmentDescriptionValue(
+      "editMovementDescription",
+      "editMovementDescriptionSelect",
+      normalizeType(document.getElementById("editMovementType").value) === "inversion"
+    ),
     importe: document.getElementById("editMovementAmount").value,
     cuenta: state.movementMode === "future" ? document.getElementById("editMovementAccount").value.trim() : previous.cuenta
   });
@@ -4938,6 +4984,15 @@ async function submitMovement(event) {
         return;
       }
       const future = movement.date > endOfToday();
+      // Una inversión en positivo es una DESINVERSIÓN: el dinero vuelve al banco elegido y
+      // baja el coste de la cartera. Se confirma porque el signo es fácil de teclear mal.
+      if (normalizedFormType === "inversion" && movement.amount > 0 && !future && !(await confirmDialog(
+        `Vas a registrar una desinversión de ${money(movement.amount)}: el dinero se sumará a la cuenta elegida y se restará de "${movement.descripcion || "la cartera"}". ¿Continuar?`,
+        "Desinversión"
+      ))) {
+        restoreButton(btn);
+        return;
+      }
       const isInvestmentRegistration = !future && (
         isInvestmentMovement(movement)
         || normalizeType(document.getElementById("formType")?.value) === "inversion"
@@ -4952,7 +5007,8 @@ async function submitMovement(event) {
         applyInvestmentCostDeltaLocal(movement, 1);
       }
       (future ? state.futureTransactions : state.transactions).push(movement);
-      if (isInvestmentRegistration) {
+      // El popup diferido lo consume el diálogo de reparto; en una desinversión no se abre.
+      if (isInvestmentRegistration && movement.amount < 0) {
         state.pendingInvestmentSummaryPopup = {
           title: "Movimiento guardado",
           movement,
@@ -4970,7 +5026,9 @@ async function submitMovement(event) {
         bankSheet: state.config.bankSheet || "Bancos",
         account
       });
-      if (isInvestmentRegistration) {
+      // El reparto entre posiciones solo tiene sentido al invertir. Al desinvertir se
+      // resta del coste de la cartera y no se tocan las posiciones.
+      if (isInvestmentRegistration && movement.amount < 0) {
         scheduleInvestmentAllocationForRegistration([movement], { source: "registro", respectDay: false });
       } else {
         showMovementPopup(
@@ -5123,7 +5181,7 @@ function movementFromFormBase() {
   return {
     tipo: type,
     concepto: typeHidesConcept(type) ? "" : prettyType(document.getElementById("formConcept").value),
-    descripcion: document.getElementById("formDescription").value.trim(),
+    descripcion: investmentDescriptionValue("formDescription", "formDescriptionSelect", normalizeType(type) === "inversion"),
     importe: amount
   };
 }
@@ -5498,12 +5556,12 @@ function renderInvestmentGoals(summary) {
   const today = endOfToday();
   const month = currentMonthKey();
   const year = String(today.getFullYear());
-  const realizedMonth = Math.abs(sum(state.transactions.filter(t => isInvestment(t) && monthKey(t.date) === month).map(t => t.amount)));
-  const plannedMonth = Math.abs(sum(state.futureTransactions.filter(t => isInvestment(t) && monthKey(t.date) === month).map(t => t.amount)));
-  const realizedYear = Math.abs(sum(state.transactions.filter(t => isInvestment(t) && String(t.date.getFullYear()) === year).map(t => t.amount)));
-  const plannedYear = Math.abs(sum(state.futureTransactions.filter(t => isInvestment(t) && String(t.date.getFullYear()) === year).map(t => t.amount)));
+  const realizedMonth = netInvested(state.transactions.filter(t => isInvestment(t) && monthKey(t.date) === month));
+  const plannedMonth = netInvested(state.futureTransactions.filter(t => isInvestment(t) && monthKey(t.date) === month));
+  const realizedYear = netInvested(state.transactions.filter(t => isInvestment(t) && String(t.date.getFullYear()) === year));
+  const plannedYear = netInvested(state.futureTransactions.filter(t => isInvestment(t) && String(t.date.getFullYear()) === year));
   const realizedTotal = summary.investedTotal;
-  const plannedTotal = Math.abs(sum(state.futureTransactions.filter(isInvestment).map(t => t.amount)));
+  const plannedTotal = netInvested(state.futureTransactions.filter(isInvestment));
   const cards = [
     ['Inversión mensual', monthlyInvestmentGoal(), realizedMonth, plannedMonth, 'investment'],
     ['Inversión anual', state.investmentGoals.yearly, realizedYear, plannedYear],
@@ -6489,10 +6547,9 @@ function investmentTotalsByType() {
 }
 
 function realizedInvestmentCostForType(type) {
-  return Math.abs(sum((state.transactions || [])
+  return Math.max(0, netInvested((state.transactions || [])
     .filter(movement => isInvestment(movement)
-      && normalizeType(localInvestmentCategoryForMovement(movement)) === normalizeType(type))
-    .map(movement => movement.amount)));
+      && normalizeType(localInvestmentCategoryForMovement(movement)) === normalizeType(type))));
 }
 
 function localInvestmentCategoryForMovement(movement) {
@@ -6508,14 +6565,17 @@ function localInvestmentCategoryForMovement(movement) {
 function applyInvestmentCostDeltaLocal(movement, sign = 1) {
   const category = localInvestmentCategoryForMovement(movement);
   if (!category) return;
-  const amount = Math.abs(Number(movement.amount || movement.importe || 0));
-  if (!Number.isFinite(amount) || amount <= 0) return;
+  // El importe manda con su signo: negativo = se invierte (sube el coste de la cartera),
+  // positivo = se desinvierte (lo baja). Antes se tomaba el valor absoluto y una venta
+  // engordaba el coste en vez de reducirlo.
+  const amount = -(Number(movement.amount ?? movement.importe ?? 0));
+  if (!Number.isFinite(amount) || amount === 0) return;
   const existing = (state.investmentTotals || []).find(item => normalizeType(item.tipo) === normalizeType(category));
   if (existing) {
     existing.cost = Math.max(0, roundMoney(safeNumber(existing.cost) + sign * amount));
     existing.gain = roundMoney(safeNumber(existing.value) - safeNumber(existing.cost));
     existing.gainPct = existing.cost ? existing.gain / existing.cost : 0;
-  } else if (sign > 0) {
+  } else if (sign > 0 && amount > 0) {
     state.investmentTotals.push({ tipo: category, cost: roundMoney(amount), value: 0, lastValue: 0, daily: 0, dailyPct: 0, gain: -roundMoney(amount), gainPct: -1, order: state.investmentTotals.length + 1 });
   }
 }
@@ -6738,6 +6798,7 @@ function investmentCategoryHasData(type) {
 
 function openInvestmentCategoryDialog() {
   ensureInvestmentCategoryDialog();
+  state.pendingInvestmentCategoryResolutions = new Map();
   const rows = document.getElementById("investmentCategoryRows");
   rows.innerHTML = "";
   investmentTypes().forEach(type => addInvestmentCategoryRow(type));
@@ -6781,13 +6842,23 @@ function addInvestmentCategoryRow(value = "") {
     if (row.nextElementSibling) rows.insertBefore(row.nextElementSibling, row);
     updateInvestmentCategoryMoveButtons();
   });
-  row.querySelector('[data-category-remove]').addEventListener("click", () => {
+  row.querySelector('[data-category-remove]').addEventListener("click", async () => {
     const input = row.querySelector('input');
     const current = prettyType(input?.value || input?.dataset.originalCategory || '');
     const original = prettyType(input?.dataset.originalCategory || '');
-    if ((original && investmentCategoryHasData(original)) || (current && investmentCategoryHasData(current))) {
-      setNotice(`No se puede borrar ${current || original}: tiene posiciones o coste. Mueve/renombra primero sus inversiones.`, 'warn');
-      return;
+    const target = original || current;
+    // Una cartera con datos ya no bloquea el borrado: se pregunta si se elimina todo lo
+    // relacionado (posiciones, coste, movimientos, composición y estimaciones) o si se
+    // traspasa a otra cartera. La decisión se aplica al guardar, con el resto de cambios.
+    const dependencies = investmentCategoryDependencies(target);
+    if (target && dependencies.total) {
+      const otherTypes = [...document.querySelectorAll("#investmentCategoryRows input")]
+        .filter(other => other !== input)
+        .map(other => prettyType(other.value || other.dataset.originalCategory || ''))
+        .filter(Boolean);
+      const resolution = await promptInvestmentCategoryResolution({ type: target, dependencies, otherTypes });
+      if (!resolution) return;
+      state.pendingInvestmentCategoryResolutions.set(normalizeType(target), { ...resolution, type: target });
     }
     row.remove();
     updateInvestmentCategoryMoveButtons();
@@ -6795,6 +6866,149 @@ function addInvestmentCategoryRow(value = "") {
   rows.appendChild(row);
   updateInvestmentCategoryMoveButtons();
   refreshIcons();
+}
+
+// Todo lo que cuelga de una cartera. Se usa para explicar al usuario qué se lleva por
+// delante el borrado y para decidir si hace falta preguntar siquiera.
+function investmentCategoryDependencies(type) {
+  const key = normalizeType(type);
+  if (!key) return { positions: [], transactions: [], futureTransactions: [], rules: 0, ledger: 0, hasTotals: false, total: 0 };
+  const belongs = movement => isInvestment(movement) && normalizeType(localInvestmentCategoryForMovement(movement)) === key;
+  const positions = (state.investments || []).filter(item => normalizeType(item.tipo) === key);
+  const transactions = (state.transactions || []).filter(belongs);
+  const futureTransactions = (state.futureTransactions || []).filter(belongs);
+  const rules = (state.investmentEstimateRules || []).filter(rule => normalizeType(rule.tipo) === key).length;
+  const ledger = (state.investmentEstimateLedger || []).filter(entry => normalizeType(entry.tipo) === key).length;
+  const hasTotals = investmentCategoryHasData(type);
+  return {
+    positions,
+    transactions,
+    futureTransactions,
+    rules,
+    ledger,
+    hasTotals,
+    total: positions.length + transactions.length + futureTransactions.length + rules + ledger + (hasTotals ? 1 : 0)
+  };
+}
+
+function investmentCategoryDependencySummary(dependencies) {
+  const parts = [];
+  if (dependencies.positions.length) parts.push(`${dependencies.positions.length} ${plural(dependencies.positions.length, "posición", "posiciones")}`);
+  if (dependencies.transactions.length) parts.push(`${dependencies.transactions.length} ${plural(dependencies.transactions.length, "movimiento", "movimientos")}`);
+  if (dependencies.futureTransactions.length) parts.push(`${dependencies.futureTransactions.length} ${plural(dependencies.futureTransactions.length, "movimiento futuro", "movimientos futuros")}`);
+  if (dependencies.rules) parts.push(`${dependencies.rules} ${plural(dependencies.rules, "regla", "reglas")} de estimación`);
+  if (dependencies.ledger) parts.push(`${dependencies.ledger} ${plural(dependencies.ledger, "estimación", "estimaciones")}`);
+  if (dependencies.hasTotals) parts.push("coste/valor acumulado");
+  return parts.join(", ");
+}
+
+// Mismo patrón que promptFutureMovementAccountResolution: borrar o traspasar a otro sitio.
+function promptInvestmentCategoryResolution({ type, dependencies, otherTypes }) {
+  document.getElementById("investmentCategoryDeleteInfo").textContent =
+    `"${type}" tiene ${investmentCategoryDependencySummary(dependencies)}. Elige qué hacer antes de eliminarla.`;
+  const select = document.getElementById("investmentCategoryDeleteSelect");
+  select.innerHTML = [
+    `<option value="__delete__">Eliminar la cartera y todo lo relacionado</option>`,
+    ...otherTypes.map(other => `<option value="${escapeAttr(other)}">Traspasar todo a "${escapeHtml(other)}"</option>`)
+  ].join("");
+  return dialogPromise("investmentCategoryDeleteDialog", ({ settle, on }) => {
+    on(document.getElementById("investmentCategoryDeleteForm"), "submit", event => {
+      event.preventDefault();
+      const value = select.value;
+      settle(value === "__delete__" ? { mode: "delete" } : { mode: "reassign", newType: value });
+    });
+    on(document.getElementById("closeInvestmentCategoryDeleteBtn"), "click", () => settle(null));
+  }, null);
+}
+
+function removeInvestmentTypeFromComposition(type) {
+  const current = state.investmentComposition || normalizeInvestmentComposition({});
+  const keep = ([name]) => normalizeType(name) !== normalizeType(type);
+  state.investmentComposition = normalizeInvestmentComposition({
+    ...current,
+    groups: Object.fromEntries(Object.entries(current.groups || {}).filter(keep)),
+    positions: Object.fromEntries(Object.entries(current.positions || {}).filter(keep))
+  });
+  writeInvestmentComposition();
+}
+
+function removeInvestmentTypeFromEmergencyFund(type) {
+  const types = (state.emergencyFund?.types || []).filter(item => normalizeType(item) !== normalizeType(type));
+  state.emergencyFund = { types };
+  writeEmergencyFund();
+}
+
+// Un traspaso puede dejar dos filas de totales para la misma cartera: se funden sumando
+// coste y valor, en vez de dejar la segunda pisando a la primera.
+function mergeInvestmentTotalsByType() {
+  const merged = [];
+  const byType = new Map();
+  (state.investmentTotals || []).forEach(item => {
+    const key = normalizeType(item.tipo);
+    const existing = byType.get(key);
+    if (!existing) {
+      const copy = { ...item };
+      byType.set(key, copy);
+      merged.push(copy);
+      return;
+    }
+    existing.cost = roundMoney(safeNumber(existing.cost) + safeNumber(item.cost));
+    existing.value = roundMoney(safeNumber(existing.value) + safeNumber(item.value));
+    existing.lastValue = roundMoney(safeNumber(existing.lastValue) + safeNumber(item.lastValue));
+  });
+  merged.forEach(item => {
+    item.daily = roundMoney(safeNumber(item.value) - safeNumber(item.lastValue));
+    item.dailyPct = item.lastValue ? item.daily / item.lastValue : 0;
+    item.gain = roundMoney(safeNumber(item.value) - safeNumber(item.cost));
+    item.gainPct = item.cost ? item.gain / item.cost : 0;
+  });
+  state.investmentTotals = merged;
+}
+
+// Borra en local todo lo que cuelga de una cartera y devuelve las ops que hay que enviar.
+// Los movimientos ya realizados devuelven su dinero a la cuenta desde la que salieron:
+// borrarlos sin más dejaba los saldos de Bancos descuadrados.
+function purgeInvestmentCategoryLocally(type) {
+  const key = normalizeType(type);
+  const dependencies = investmentCategoryDependencies(type);
+  const ops = [];
+  const deletedPositions = dependencies.positions.filter(item => item.rowNumber);
+
+  dependencies.transactions.forEach(movement => {
+    if (movement.cuenta) applyBankDelta(movement.cuenta, -Number(movement.amount || 0));
+  });
+  const realized = new Set(dependencies.transactions);
+  state.transactions = (state.transactions || []).filter(movement => !realized.has(movement));
+  const future = new Set(dependencies.futureTransactions);
+  state.futureTransactions = (state.futureTransactions || []).filter(movement => !future.has(movement));
+  state.investments = (state.investments || []).filter(item => normalizeType(item.tipo) !== key);
+  state.investmentTotals = (state.investmentTotals || []).filter(item => normalizeType(item.tipo) !== key);
+  state.investmentEstimateRules = (state.investmentEstimateRules || []).filter(rule => normalizeType(rule.tipo) !== key);
+  state.investmentEstimateLedger = (state.investmentEstimateLedger || []).filter(entry => normalizeType(entry.tipo) !== key);
+  removeInvestmentTypeFromComposition(type);
+  removeInvestmentTypeFromEmergencyFund(type);
+
+  if (dependencies.transactions.length) {
+    ops.push({
+      action: "deleteMovementsBatch",
+      sheetName: state.config.movementSheet,
+      movements: dependencies.transactions.map(movement => ({ rowNumber: movement.rowNumber, movement: serializeTransaction(movement) }))
+    });
+  }
+  if (dependencies.futureTransactions.length) {
+    ops.push({
+      action: "deleteMovementsBatch",
+      sheetName: state.config.futureMovementSheet || "Movimientos futuros",
+      movements: dependencies.futureTransactions.map(movement => ({ rowNumber: movement.rowNumber, movement: serializeTransaction(movement) }))
+    });
+  }
+  if (dependencies.transactions.length) {
+    ops.push({ action: "saveBanks", bankSheet: state.config.bankSheet || "Bancos", banks: state.banks });
+  }
+  deletedPositions.forEach(item => {
+    ops.push({ action: "deleteInvestment", sheetName: state.config.investmentSheet, investment: item, rowNumber: item.rowNumber });
+  });
+  return ops;
 }
 
 async function saveInvestmentCategoriesFromDialog(event) {
@@ -6809,11 +7023,21 @@ async function saveInvestmentCategoriesFromDialog(event) {
   entries.forEach(entry => {
     if (entry.original && normalizeType(entry.original) !== normalizeType(entry.next)) renames[entry.original] = entry.next;
   });
+  // Las carteras que el usuario quitó con datos dentro traen decidido su destino. Un
+  // traspaso es exactamente un renombrado, así que se cuela en el mismo fan-out; un
+  // borrado se resuelve aparte, antes de tocar nada más.
+  const resolutions = [...(state.pendingInvestmentCategoryResolutions?.values() || [])]
+    .filter(resolution => !nextTypes.some(type => normalizeType(type) === normalizeType(resolution.type)));
+  const deletions = resolutions.filter(resolution => resolution.mode === "delete").map(resolution => resolution.type);
+  resolutions
+    .filter(resolution => resolution.mode === "reassign" && resolution.newType)
+    .forEach(resolution => { renames[resolution.type] = resolution.newType; });
   if (!nextTypes.length) {
     restoreButton(btn);
     setNotice("Debe haber al menos una categoría de inversión.", "warn");
     return;
   }
+  const deletionOps = deletions.flatMap(type => purgeInvestmentCategoryLocally(type));
   state.categories = normalizeCategories({ ...state.categories, investmentTypes: nextTypes });
   const renamedCategory = value => {
     const match = Object.entries(renames).find(([from]) => normalizeType(from) === normalizeType(value));
@@ -6848,6 +7072,8 @@ async function saveInvestmentCategoriesFromDialog(event) {
     ...entry,
     tipo: renamedCategory(entry.tipo)
   }));
+  mergeInvestmentTotalsByType();
+  state.pendingInvestmentCategoryResolutions = new Map();
   renderInvestments();
   document.getElementById("investmentCategoriesDialog").close();
   setSyncStatus("Guardando categorías", "");
@@ -6857,10 +7083,12 @@ async function saveInvestmentCategoriesFromDialog(event) {
     renderInvestments();
     writeDataCache();
     if (state.config.scriptUrl) {
+      deletionOps.forEach(op => queueOp(op));
       queueOp({
         action: "saveInvestmentCategories",
         investmentTypes: nextTypes,
         renames,
+        deletions,
         sheetName: state.config.investmentSheet,
         movementSheet: state.config.movementSheet,
         futureMovementSheet: state.config.futureMovementSheet || "Movimientos futuros",
@@ -7976,7 +8204,7 @@ function bankAtMonthSnapshot(month, day) {
 
 function investedAtMonthSnapshot(month, day) {
   const end = monthSnapshotDate(month, day);
-  return Math.abs(sum(state.transactions.filter(t => t.date <= end && isInvestment(t)).map(t => t.amount)));
+  return netInvested(state.transactions.filter(t => t.date <= end && isInvestment(t)));
 }
 
 function monthsBetween(start, end) {
@@ -8056,6 +8284,11 @@ function monthLabel(key) { return `${monthName(key.slice(5, 7))} ${key.slice(0, 
 function endOfToday() { const d = new Date(); d.setHours(23, 59, 59, 999); return d; }
 function isIncome(t) { return normalizeType(t.tipo) === "ingreso" || (normalizeType(t.tipo) === "efectivo" && t.amount > 0); }
 function isInvestment(t) { return normalizeType(t.tipo) === "inversion"; }
+// Inversión NETA de una lista de movimientos. El signo del importe es el que manda: un
+// importe negativo es dinero que sale del banco hacia la cartera (invertir) y uno
+// positivo es dinero que vuelve al banco (desinvertir). Por eso se invierte el signo de
+// la suma en vez de sumar valores absolutos, que contaba las ventas como compras.
+function netInvested(movements) { return roundMoney(-sum(movements.map(t => Number(t.amount) || 0))) || 0; }
 function isTransfer(t) { return normalizeType(t.tipo) === "transferencia"; }
 function isExpenseType(t) { return normalizeType(t.tipo) === "gasto"; }
 function isMonthlyExpense(t) {
@@ -8090,6 +8323,13 @@ function syncEditMovementConcept() {
   document.querySelectorAll(".edit-concept-field").forEach(el => el.classList.toggle("hidden", hides));
   conceptEl.required = !hides;
   if (hides) conceptEl.value = "";
+  // Mismo criterio para la descripción: en inversión se elige la cartera de una lista.
+  const isInvestmentType = normalizeType(typeEl.value) === "inversion";
+  toggleInvestmentDescriptionFields(document.getElementById("movementDetailForm"), isInvestmentType);
+  const descriptionEl = document.getElementById("editMovementDescription");
+  const descriptionSelectEl = document.getElementById("editMovementDescriptionSelect");
+  if (descriptionEl) descriptionEl.required = !isInvestmentType;
+  if (descriptionSelectEl) descriptionSelectEl.required = isInvestmentType;
 }
 
 // Las categorías que se pueden elegir: las seis de gasto. "Inversión" sigue en
