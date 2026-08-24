@@ -189,7 +189,7 @@ test("el resumen superior indica lo pendiente y bloquea guardar hasta cuadrar", 
 
   app.renderBudgetAllocationStatus();
   assert.match(summary.innerHTML, /Faltan/);
-  assert.match(summary.innerHTML, /100(?:\s| )*€/);
+  assert.match(summary.innerHTML, /100(?:\s|\u00a0)*€/);
   assert.equal(saveButton.disabled, true);
 
   inputs[1].value = "400";
