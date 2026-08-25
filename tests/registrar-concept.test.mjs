@@ -49,3 +49,61 @@ test("el concepto se conserva y es obligatorio para gasto", () => {
   assert.equal(dom.conceptInput.required, true);
   assert.equal(dom.conceptInput.value, "Vivienda");
 });
+
+// La descripción de una inversión no es texto libre: es la cartera a la que va el dinero,
+// y una errata creaba una cartera fantasma. Con Tipo = Inversión se elige de una lista
+// cerrada; con cualquier otro tipo sigue siendo el input de siempre.
+function descriptionDom(app, type, { descripcion = "Compra semanal", cartera = "Cartera Pop" } = {}) {
+  const shown = new Map();
+  const field = name => ({ classList: { toggle: (_cls, enabled) => shown.set(name, !enabled) } });
+  const freeField = field("free");
+  const investmentField = field("investment");
+  const typeInput = { value: type };
+  const descriptionInput = { value: descripcion, required: false };
+  const descriptionSelect = { value: cartera, required: false };
+  const root = {
+    querySelectorAll: selector => selector === ".free-description-field" ? [freeField]
+      : selector === ".investment-description-field" ? [investmentField]
+        : []
+  };
+  app.document.getElementById = id => ({
+    formType: typeInput,
+    formConcept: { value: "Vivienda", required: true },
+    formDescription: descriptionInput,
+    formDescriptionSelect: descriptionSelect,
+    formAmount: { value: "-100" },
+    movementForm: root
+  }[id] || null);
+  app.document.querySelectorAll = () => [];
+  return { shown, typeInput, descriptionInput, descriptionSelect, root };
+}
+
+test("con Tipo = Inversión se muestra la lista de carteras y se esconde el texto libre", () => {
+  const app = loadApp();
+  const dom = descriptionDom(app, "Inversión");
+
+  app.toggleInvestmentDescriptionFields(dom.root, true);
+
+  assert.equal(dom.shown.get("investment"), true);
+  assert.equal(dom.shown.get("free"), false);
+});
+
+test("con cualquier otro tipo manda el input de texto libre", () => {
+  const app = loadApp();
+  const dom = descriptionDom(app, "Gasto");
+
+  app.toggleInvestmentDescriptionFields(dom.root, false);
+
+  assert.equal(dom.shown.get("investment"), false);
+  assert.equal(dom.shown.get("free"), true);
+});
+
+test("la descripción del movimiento sale del control visible en cada tipo", () => {
+  const app = loadApp();
+  descriptionDom(app, "Inversión");
+  assert.equal(app.movementFromFormBase().descripcion, "Cartera Pop");
+
+  const otra = loadApp();
+  descriptionDom(otra, "Gasto");
+  assert.equal(otra.movementFromFormBase().descripcion, "Compra semanal");
+});

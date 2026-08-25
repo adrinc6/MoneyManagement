@@ -18,7 +18,7 @@
        app.js degrada (sin iconos ni gráficas) en vez de romperse. -->
   <script defer crossorigin="anonymous" src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
   <script defer crossorigin="anonymous" src="https://unpkg.com/lucide@1.24.0/dist/umd/lucide.min.js"></script>
-  <link rel="stylesheet" href="styles.css?v=20260824-v48" />
+  <link rel="stylesheet" href="styles.css?v=20260824-v49" />
 </head>
 <body>
   <main class="app">
@@ -58,7 +58,8 @@
             <label class="movement-only">Fecha <input id="formDate" type="date" required /></label>
             <label>Tipo <select id="formType" required></select></label>
             <label class="movement-only concept-field">Concepto <select id="formConcept" required></select></label>
-            <label class="wide movement-only">Descripción <input id="formDescription" placeholder="Compra, alquiler, nómina..." required /></label>
+            <label class="wide movement-only free-description-field">Descripción <input id="formDescription" placeholder="Compra, alquiler, nómina..." required /></label>
+            <label class="wide movement-only investment-description-field hidden">Cartera <select id="formDescriptionSelect"></select></label>
             <label class="movement-only">Cuenta <select id="formAccount"></select></label>
             <label class="recurring-account hidden">Cuenta <select id="recurrenceAccount"></select></label>
             <label>Importe EUR <input id="formAmount" type="number" step="0.01" placeholder="0.00" required /></label>
@@ -409,6 +410,18 @@
     </form>
   </dialog>
 
+  <dialog id="investmentCategoryDeleteDialog">
+    <div class="dialog-head">
+      <h2>Eliminar cartera</h2>
+      <button class="icon-btn" id="closeInvestmentCategoryDeleteBtn" type="button" aria-label="Cerrar"><i data-lucide="x"></i></button>
+    </div>
+    <form id="investmentCategoryDeleteForm" class="panel-body form-grid">
+      <p id="investmentCategoryDeleteInfo" class="wide dialog-help"></p>
+      <label class="wide">Qué hacer con sus datos <select id="investmentCategoryDeleteSelect"></select></label>
+      <button class="btn primary wide" type="submit"><i data-lucide="check"></i> Continuar</button>
+    </form>
+  </dialog>
+
   <dialog id="genericConfirmDialog">
     <div class="dialog-head">
       <h2 id="genericConfirmTitle">Confirmar</h2>
@@ -544,7 +557,8 @@
       <label>Fecha <input id="editMovementDate" type="date" required /></label>
       <label>Tipo <select id="editMovementType" required></select></label>
       <label class="edit-concept-field">Concepto <select id="editMovementConcept" required></select></label>
-      <label class="wide">Descripción <input id="editMovementDescription" required /></label>
+      <label class="wide free-description-field">Descripción <input id="editMovementDescription" required /></label>
+      <label class="wide investment-description-field hidden">Cartera <select id="editMovementDescriptionSelect"></select></label>
       <label class="future-account-field">Cuenta <select id="editMovementAccount"></select></label>
       <label>Importe EUR <input id="editMovementAmount" type="number" step="0.01" required /></label>
       <button class="btn danger" id="deleteMovementBtn" type="button"><i data-lucide="trash-2"></i> Eliminar</button>
@@ -676,6 +690,6 @@
 
   <!-- El registro del service worker y la recarga por actualización viven en app.js,
        junto al resto del arranque, para no tener el ciclo de vida repartido en dos sitios. -->
-  <script defer src="app.js?v=20260824-v48"></script>
+  <script defer src="app.js?v=20260824-v49"></script>
 </body>
 </html>

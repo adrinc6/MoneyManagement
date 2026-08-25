@@ -500,7 +500,7 @@ function applyPostAction_(payload) {
       return { ok: true, investmentDeleted: true };
     }
     if (payload.action === 'saveInvestmentCategories') {
-      saveInvestmentCategories_(payload.sheetName || DEFAULT_INVESTMENT_SHEET, payload.investmentTypes || [], payload.renames || {}, payload.movementSheet || DEFAULT_MOVEMENT_SHEET, payload.futureMovementSheet || DEFAULT_FUTURE_MOVEMENT_SHEET, payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.investmentEstimateRulesSheet || DEFAULT_INVESTMENT_ESTIMATE_RULES_SHEET, payload.investmentEstimateLedgerSheet || DEFAULT_INVESTMENT_ESTIMATE_LEDGER_SHEET);
+      saveInvestmentCategories_(payload.sheetName || DEFAULT_INVESTMENT_SHEET, payload.investmentTypes || [], payload.renames || {}, payload.movementSheet || DEFAULT_MOVEMENT_SHEET, payload.futureMovementSheet || DEFAULT_FUTURE_MOVEMENT_SHEET, payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.investmentEstimateRulesSheet || DEFAULT_INVESTMENT_ESTIMATE_RULES_SHEET, payload.investmentEstimateLedgerSheet || DEFAULT_INVESTMENT_ESTIMATE_LEDGER_SHEET, payload.deletions || []);
       syncInvestmentTotalsSheet_(payload.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET, payload.sheetName || DEFAULT_INVESTMENT_SHEET, payload.movementSheet || DEFAULT_MOVEMENT_SHEET);
       return { ok: true };
     }
@@ -2414,9 +2414,10 @@ function historicalInvestmentCostByCategory_(movementSheetName, categories) {
   rows.forEach(movement => {
     const category = movementInvestmentCategory_(movement, categories);
     if (!category) return;
-    const amount = Math.abs(parseNumber_(movement.importe ?? movement.amount));
+    const amount = -parseNumber_(movement.importe ?? movement.amount);
     if (Number.isFinite(amount)) result[category] = (result[category] || 0) + amount;
   });
+  Object.keys(result).forEach(function(key) { result[key] = Math.max(0, result[key]); });
   return result;
 }
 
@@ -2553,8 +2554,10 @@ function applyInvestmentCostChanges_(sheets, changes, movementSheetName) {
   list.forEach(function(change) {
     const category = movementInvestmentCategory_(change.movement, categories);
     if (!category) return;
-    const amount = Math.abs(parseNumber_(change.movement.importe ?? change.movement.amount));
-    if (!Number.isFinite(amount) || amount <= 0) return;
+    // El signo del importe manda: negativo = invertir (sube el coste), positivo =
+    // desinvertir (lo baja). Con Math.abs una venta engordaba el coste de la cartera.
+    const amount = -parseNumber_(change.movement.importe ?? change.movement.amount);
+    if (!Number.isFinite(amount) || amount === 0) return;
     entries.push({ category: category, delta: Number(change.sign || 0) * amount });
   });
   if (!entries.length) return;
@@ -2595,9 +2598,19 @@ function ensureDataSheet_(sheetName) {
   return sheet;
 }
 
-function saveInvestmentCategories_(investmentSheetName, investmentTypes, renames, movementSheetName, futureMovementSheetName, investmentTotalsSheetName, estimateRulesSheetName, estimateLedgerSheetName) {
+function saveInvestmentCategories_(investmentSheetName, investmentTypes, renames, movementSheetName, futureMovementSheetName, investmentTotalsSheetName, estimateRulesSheetName, estimateLedgerSheetName, deletions) {
   const categories = Array.from(new Set((investmentTypes || []).map(v => String(v || '').trim()).filter(Boolean)));
   if (!categories.length) throw new Error('Faltan categorías de inversión');
+
+  // Carteras que el usuario ha decidido borrar con todo lo que cuelga de ellas. Se
+  // purgan aquí para que el guardado de categorías no falle luego al ver que la
+  // categoría sobrante todavía tiene posiciones, reglas o estimaciones.
+  const deleted = (deletions || []).map(v => String(v || '').trim()).filter(Boolean);
+  if (deleted.length) {
+    deleteInvestmentRowsByCategory_(investmentSheetName || DEFAULT_INVESTMENT_SHEET, deleted);
+    deleteEstimateRowsByCategory_(estimateRulesSheetName || DEFAULT_INVESTMENT_ESTIMATE_RULES_SHEET, deleted, estimateColumnMap_, 'movementDescription');
+    deleteEstimateRowsByCategory_(estimateLedgerSheetName || DEFAULT_INVESTMENT_ESTIMATE_LEDGER_SHEET, deleted, ledgerColumnMap_, 'tipo');
+  }
 
   const investmentSheet = getSheet_(investmentSheetName || DEFAULT_INVESTMENT_SHEET);
   const renameEntries = Object.entries(renames || {}).filter(entry => entry[0] && entry[1]);
@@ -2621,10 +2634,41 @@ function saveInvestmentCategories_(investmentSheetName, investmentTypes, renames
   updateInvestmentCategoryNamesInMovements_(futureMovementSheetName || DEFAULT_FUTURE_MOVEMENT_SHEET, renames || {});
   updateInvestmentCategoryNamesInEstimateRules_(estimateRulesSheetName || DEFAULT_INVESTMENT_ESTIMATE_RULES_SHEET, renames || {});
   updateInvestmentCategoryNamesInEstimateLedger_(estimateLedgerSheetName || DEFAULT_INVESTMENT_ESTIMATE_LEDGER_SHEET, renames || {});
-  updateInvestmentCategoryNamesInTotals_(investmentTotalsSheetName || DEFAULT_INVESTMENT_TOTALS_SHEET, renames || {}, categories, investmentSheetName || DEFAULT_INVESTMENT_SHEET);
+  updateInvestmentCategoryNamesInTotals_(investmentTotalsSheetName || DEFAULT_INVESTMENT_TOTALS_SHEET, renames || {}, categories, investmentSheetName || DEFAULT_INVESTMENT_SHEET, deleted);
 }
 
-function updateInvestmentCategoryNamesInTotals_(sheetName, renames, orderedCategories, investmentSheetName) {
+// Borra de una hoja todas las filas cuya categoría esté en la lista. De abajo arriba,
+// para que borrar una fila no desplace los índices de las que aún quedan por mirar.
+function deleteRowsMatching_(sheet, values, matches) {
+  const rows = [];
+  values.forEach(function(row, index) { if (matches(row)) rows.push(index + 2); });
+  rows.reverse().forEach(function(row) { sheet.deleteRow(row); });
+  return rows.length;
+}
+
+function deleteInvestmentRowsByCategory_(sheetName, categories) {
+  const sheet = getSheet_(sheetName);
+  if (!sheet || sheet.getLastRow() < 2) return 0;
+  const col = investmentColumnMap_(sheet);
+  const keys = categories.map(normalizeType_);
+  const values = sheet.getRange(2, col.tipo, sheet.getLastRow() - 1, 1).getValues();
+  return deleteRowsMatching_(sheet, values, function(row) { return keys.indexOf(normalizeType_(row[0])) !== -1; });
+}
+
+function deleteEstimateRowsByCategory_(sheetName, categories, columnMap, columnKey) {
+  const sheet = getSheet_(sheetName);
+  if (!sheet || sheet.getLastRow() < 2) return 0;
+  const col = columnMap(sheet);
+  if (!col[columnKey]) return 0;
+  const keys = categories.map(normalizeType_);
+  const values = sheet.getRange(2, col[columnKey], sheet.getLastRow() - 1, 1).getValues();
+  return deleteRowsMatching_(sheet, values, function(row) { return keys.indexOf(normalizeType_(row[0])) !== -1; });
+}
+
+function updateInvestmentCategoryNamesInTotals_(sheetName, renames, orderedCategories, investmentSheetName, deletions) {
+  // Las categorías borradas a propósito no disparan los guardas de abajo: el usuario ya
+  // ha confirmado que se lleva por delante sus posiciones, coste y movimientos.
+  const deletedKeys = (deletions || []).map(normalizeType_);
   const sheet = getOrCreateSheet_(sheetName || DEFAULT_INVESTMENT_TOTALS_SHEET, investmentTotalsHeaders_());
   const requested = (orderedCategories || []).map(v => String(v || '').trim()).filter(Boolean);
   const requestedKeys = new Set(requested.map(normalizeType_));
@@ -2664,13 +2708,14 @@ function updateInvestmentCategoryNamesInTotals_(sheetName, renames, orderedCateg
     const hasPosition = (positionsByType[item.key] || 0) > 0;
     const hasCost = Math.abs(parseNumber_(row[1]) || 0) > 0.009;
     const hasValue = Math.abs(parseNumber_(row[2]) || 0) > 0.009;
+    if (deletedKeys.indexOf(item.key) !== -1) return;
     if (hasPosition || hasCost || hasValue) {
       throw new Error('No se puede borrar la categoría "' + item.type + '" porque tiene posiciones, coste o valor.');
     }
   });
 
   Object.keys(positionsByType).forEach(key => {
-    if (!requestedKeys.has(key)) {
+    if (!requestedKeys.has(key) && deletedKeys.indexOf(key) === -1) {
       const label = labelByType[key] || key;
       throw new Error('No se puede borrar la categoría "' + label + '" porque tiene posiciones.');
     }
