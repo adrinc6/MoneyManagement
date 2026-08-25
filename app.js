@@ -3271,15 +3271,7 @@ function syncRegistrarMode() {
   const formDate = document.getElementById("formDate");
   if (formDate) formDate.required = !isTransfer && !recurring;
   syncRegistrarConceptField();
-  const descriptionEl = document.getElementById("formDescription");
-  // La descripción pasa a ser lo único que identifica un ingreso o una inversión, y en
-  // inversión es además lo que decide a qué grupo de la cartera va el dinero: por eso
-  // ahí se elige de una lista cerrada de carteras en vez de escribirse a mano.
-  const isInvestmentType = normalizeType(document.getElementById("formType").value) === "inversion";
-  toggleInvestmentDescriptionFields(document.getElementById("movementForm"), isInvestmentType && !isTransfer);
-  if (descriptionEl) descriptionEl.required = !isTransfer && !isInvestmentType;
-  const descriptionSelectEl = document.getElementById("formDescriptionSelect");
-  if (descriptionSelectEl) descriptionSelectEl.required = !isTransfer && isInvestmentType;
+  syncRegistrarDescriptionFields();
   document.getElementById("formTransferFrom").required = isTransfer;
   document.getElementById("formTransferTo").required = isTransfer;
   const submitLabel = isTransfer
@@ -5226,8 +5218,9 @@ function syncRegisterMode() {
     el.classList.toggle('hidden', isTransfer || (recurring && hiddenInRecurring));
   });
   // El modo periódico también modifica movement-only; se reaplica el único criterio
-  // válido para que no vuelva a mostrar el concepto de ingresos o inversiones.
+  // válido para que no vuelva a mostrar el concepto ni la descripción equivocada.
   syncRegistrarConceptField();
+  syncRegistrarDescriptionFields();
   const formDate = document.getElementById('formDate');
   if (formDate) formDate.required = !recurring && !isTransfer;
   const recurrenceAccount = document.getElementById('recurrenceAccount');
@@ -5246,6 +5239,27 @@ function syncRegistrarConceptField() {
   conceptEl.required = !hides;
   // Un select oculto no debe arrastrar lo que hubiera elegido antes de cambiar de tipo.
   if (hides) conceptEl.value = "";
+}
+
+// La descripción del registrar la tocan dos barridos de .movement-only (el de tipo y el
+// de modo periódico), así que su criterio real vive aquí y se reaplica tras cada uno.
+// Es lo único que identifica un ingreso o una inversión, y en inversión decide además a
+// qué grupo de la cartera va el dinero: por eso ahí se elige de una lista cerrada en vez
+// de escribirse a mano. En transferencia no hay descripción que valga.
+function syncRegistrarDescriptionFields() {
+  const type = document.getElementById("formType")?.value || "";
+  const isTransfer = normalizeType(type) === "transferencia";
+  const isInvestment = normalizeType(type) === "inversion";
+  const form = document.getElementById("movementForm");
+  toggleInvestmentDescriptionFields(form, isInvestment && !isTransfer);
+  if (isTransfer && form) {
+    form.querySelectorAll(".free-description-field, .investment-description-field")
+      .forEach(el => el.classList.add("hidden"));
+  }
+  const descriptionEl = document.getElementById("formDescription");
+  if (descriptionEl) descriptionEl.required = !isTransfer && !isInvestment;
+  const descriptionSelectEl = document.getElementById("formDescriptionSelect");
+  if (descriptionSelectEl) descriptionSelectEl.required = !isTransfer && isInvestment;
 }
 
 function setDefaultRecurrenceDates() {

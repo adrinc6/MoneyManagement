@@ -55,7 +55,12 @@ test("el concepto se conserva y es obligatorio para gasto", () => {
 // cerrada; con cualquier otro tipo sigue siendo el input de siempre.
 function descriptionDom(app, type, { descripcion = "Compra semanal", cartera = "Cartera Pop" } = {}) {
   const shown = new Map();
-  const field = name => ({ classList: { toggle: (_cls, enabled) => shown.set(name, !enabled) } });
+  const field = name => ({
+    classList: {
+      toggle: (_cls, enabled) => shown.set(name, !enabled),
+      add: () => shown.set(name, false)
+    }
+  });
   const freeField = field("free");
   const investmentField = field("investment");
   const typeInput = { value: type };
@@ -64,7 +69,9 @@ function descriptionDom(app, type, { descripcion = "Compra semanal", cartera = "
   const root = {
     querySelectorAll: selector => selector === ".free-description-field" ? [freeField]
       : selector === ".investment-description-field" ? [investmentField]
-        : []
+        : selector === ".free-description-field, .investment-description-field"
+          ? [freeField, investmentField]
+          : []
   };
   app.document.getElementById = id => ({
     formType: typeInput,
@@ -106,4 +113,35 @@ test("la descripción del movimiento sale del control visible en cada tipo", () 
   const otra = loadApp();
   descriptionDom(otra, "Gasto");
   assert.equal(otra.movementFromFormBase().descripcion, "Compra semanal");
+});
+
+// El bug: syncRegisterMode corre al final de syncRegistrarMode y barría todos los
+// .movement-only, así que dejaba visibles los dos campos "Descripción" a la vez. El
+// criterio válido tiene que poder reaplicarse encima de ese barrido.
+test("la resincronización del modo periódico no puede mostrar las dos descripciones", () => {
+  const app = loadApp();
+  const dom = descriptionDom(app, "Inversión");
+  dom.shown.set("free", true); // Lo que deja el barrido de movement-only.
+  dom.shown.set("investment", true);
+
+  app.syncRegistrarDescriptionFields();
+
+  assert.equal(dom.shown.get("free"), false);
+  assert.equal(dom.shown.get("investment"), true);
+  assert.equal(dom.descriptionInput.required, false);
+  assert.equal(dom.descriptionSelect.required, true);
+});
+
+test("en transferencia no se muestra ninguna descripción", () => {
+  const app = loadApp();
+  const dom = descriptionDom(app, "Transferencia");
+  dom.shown.set("free", true);
+  dom.shown.set("investment", true);
+
+  app.syncRegistrarDescriptionFields();
+
+  assert.equal(dom.shown.get("free"), false);
+  assert.equal(dom.shown.get("investment"), false);
+  assert.equal(dom.descriptionInput.required, false);
+  assert.equal(dom.descriptionSelect.required, false);
 });
