@@ -2105,6 +2105,7 @@ function sendInvestmentNotificationMessages_(investmentSheet, options) {
     summary = buildInvestmentVariationSummary_(investmentSheet || DEFAULT_INVESTMENT_SHEET);
   }
   summary.isEstimated = options.mode === 'estimated';
+  summary.costs = investmentCostsByType_(options.investmentTotalsSheet || DEFAULT_INVESTMENT_TOTALS_SHEET);
   sendTelegramMessage_(formatGeneralInvestmentMessage_(summary));
   (summary.order || []).forEach(type => sendTelegramMessage_(formatTypeInvestmentMessage_(summary, type)));
 }
@@ -2199,22 +2200,25 @@ function addVariationRow_(bucket, position) {
 
 function formatGeneralInvestmentMessage_(summary) {
   const all = summary.all;
+  const costs = summary.costs || {};
   const lines = [
     `💰 <b>MoneyManagement - Resumen diario</b>`,
     `<b>Total:</b> ${formatMoney_(all.current)} | ${formatPct_(percentageChange_(all.current, all.previous))} | ${formatSignedMoney_(all.variation)}`,
+    formatInvestedLine_(costs.__all, all.current),
     ''
   ];
   (summary.order || []).forEach(type => {
     const bucket = summary[type] || emptyVariationBucket_();
-    lines.push(`${emojiForType_(type)} ${type}: ${formatMoney_(bucket.current)} | ${formatPct_(percentageChange_(bucket.current, bucket.previous))} | ${formatSignedMoney_(bucket.variation)}`);
+    lines.push(`${emojiForType_(type)} ${escapeTelegramHtml_(type)}: ${formatMoney_(bucket.current)} | ${formatPct_(percentageChange_(bucket.current, bucket.previous))} | ${formatSignedMoney_(bucket.variation)}`);
+    lines.push(formatInvestedLine_(costs[normalizeType_(type)], bucket.current));
   });
-  return lines.join('\n');
+  return lines.filter(line => line !== null).join('\n');
 }
 
 function formatTypeInvestmentMessage_(summary, type) {
   const bucket = summary[type] || emptyVariationBucket_();
   const lines = [
-    `${emojiForType_(type)} <b>${type}</b>: ${formatMoney_(bucket.current)} | ${formatPct_(percentageChange_(bucket.current, bucket.previous))} | ${formatSignedMoney_(bucket.variation)}`
+    `${emojiForType_(type)} <b>${escapeTelegramHtml_(type)}</b>: ${formatMoney_(bucket.current)} | ${formatPct_(percentageChange_(bucket.current, bucket.previous))} | ${formatSignedMoney_(bucket.variation)}`
   ];
   if (bucket.positions.length) {
     lines.push('');
@@ -2225,6 +2229,30 @@ function formatTypeInvestmentMessage_(summary, type) {
     lines.push('', 'Sin posiciones.');
   }
   return lines.join('\n');
+}
+
+// El coste (lo realmente invertido) solo existe agregado por categoria en la hoja de
+// totales: readInvestments_ no lo devuelve por posicion. Por eso el resumen "Invertido"
+// aparece en el mensaje general y no en las lineas de posiciones.
+function investmentCostsByType_(sheetName) {
+  const map = { __all: 0 };
+  readInvestmentTotals_(sheetName).forEach(row => {
+    const cost = Number(row.cost);
+    if (!Number.isFinite(cost)) return;
+    map[normalizeType_(row.tipo)] = cost;
+    map.__all += cost;
+  });
+  return map;
+}
+
+// Devuelve null (y el llamante la omite) cuando no hay coste registrado: un "+0,00%"
+// sobre coste 0 seria enganoso. El porcentaje se recalcula aqui en escala 0-100 porque
+// %GAIN se guarda en la hoja como fraccion.
+function formatInvestedLine_(cost, current) {
+  const invested = Number(cost || 0);
+  if (!Number.isFinite(invested) || Math.abs(invested) < 0.005) return null;
+  const gain = Number(current || 0) - invested;
+  return `📈 <i>Invertido: ${formatMoney_(invested)} | ${formatPct_((gain / invested) * 100)} | ${formatSignedMoney_(gain)}</i>`;
 }
 
 function escapeTelegramHtml_(value) {

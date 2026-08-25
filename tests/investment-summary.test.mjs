@@ -82,3 +82,52 @@ test("las cabeceras inglesas recuperan SHARES desde VALUE y PRICE si Sheets entr
   assert.equal(position.cantidad, 5);
   assert.equal(position.total, 1000);
 });
+
+
+// El resumen "Invertido" del mensaje general: el coste solo existe agregado por
+// categoria en la hoja de totales, asi que sin COST no hay linea que mostrar.
+test("la linea Invertido compara el valor actual con el coste", () => {
+  const gs = loadAppsScript();
+
+  assert.equal(
+    gs.formatInvestedLine_(800, 900),
+    "\u{1F4C8} <i>Invertido: 800,00\u20AC | +12,50% | +100,00\u20AC</i>");
+  assert.equal(
+    gs.formatInvestedLine_(800, 720),
+    "\u{1F4C8} <i>Invertido: 800,00\u20AC | -10,00% | -80,00\u20AC</i>");
+});
+
+test("sin coste registrado no se emite linea Invertido", () => {
+  const gs = loadAppsScript();
+
+  assert.equal(gs.formatInvestedLine_(0, 900), null, "un +0,00% sobre coste 0 seria enganoso");
+  assert.equal(gs.formatInvestedLine_("", 900), null);
+});
+
+test("el mensaje general intercala el resumen Invertido bajo el Total y cada categoria", () => {
+  const gs = loadAppsScript();
+  setup(gs, [["IWDA", "ETF World", "IWDA", "Bolsa", 10, 100, 1000, 90, "EUR"]]);
+  const resumen = gs.buildInvestmentVariationSummary_(INVESTMENT_SHEET);
+  resumen.costs = { __all: 800, [gs.normalizeType_("Bolsa")]: 800 };
+
+  const lineas = gs.formatGeneralInvestmentMessage_(resumen).split("\n");
+
+  assert.match(lineas[1], /^<b>Total:<\/b>/);
+  assert.equal(lineas[2], "\u{1F4C8} <i>Invertido: 800,00\u20AC | +25,00% | +200,00\u20AC</i>");
+  assert.equal(lineas[3], "");
+  assert.match(lineas[4], /^\u{1F4B0} Bolsa: /u);
+  assert.equal(lineas[5], "\u{1F4C8} <i>Invertido: 800,00\u20AC | +25,00% | +200,00\u20AC</i>");
+});
+
+test("una categoria sin coste no rompe el resto del mensaje general", () => {
+  const gs = loadAppsScript();
+  setup(gs, [["IWDA", "ETF World", "IWDA", "Bolsa", 10, 100, 1000, 90, "EUR"]]);
+  const resumen = gs.buildInvestmentVariationSummary_(INVESTMENT_SHEET);
+  resumen.costs = { __all: 0 };
+
+  const lineas = gs.formatGeneralInvestmentMessage_(resumen).split("\n");
+
+  assert.ok(lineas.every(linea => !linea.includes("Invertido")));
+  assert.equal(lineas[2], "", "la linea en blanco de separacion se mantiene");
+  assert.match(lineas[3], /^\u{1F4B0} Bolsa: /u);
+});
