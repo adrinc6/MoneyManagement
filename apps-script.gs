@@ -2252,7 +2252,7 @@ function formatInvestedLine_(cost, current) {
   const invested = Number(cost || 0);
   if (!Number.isFinite(invested) || Math.abs(invested) < 0.005) return null;
   const gain = Number(current || 0) - invested;
-  return `📈 <i>Invertido: ${formatMoney_(invested)} | ${formatPct_((gain / invested) * 100)} | ${formatSignedMoney_(gain)}</i>`;
+  return `Invertido: ${formatMoney_(invested)} | ${formatPct_((gain / invested) * 100)} | ${formatSignedMoney_(gain)}`;
 }
 
 function escapeTelegramHtml_(value) {
