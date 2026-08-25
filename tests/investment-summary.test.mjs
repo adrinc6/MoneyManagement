@@ -91,10 +91,10 @@ test("la linea Invertido compara el valor actual con el coste", () => {
 
   assert.equal(
     gs.formatInvestedLine_(800, 900),
-    "Invertido: 800,00\u20AC | +12,50% | +100,00");
+    "Invertido: 800,00\u20AC | +12,50% | +100,00\u20AC");
   assert.equal(
     gs.formatInvestedLine_(800, 720),
-    "Invertido: 800,00\u20AC | -10,00% | -80,00");
+    "Invertido: 800,00\u20AC | -10,00% | -80,00\u20AC");
 });
 
 test("sin coste registrado no se emite linea Invertido", () => {
@@ -113,10 +113,10 @@ test("el mensaje general intercala el resumen Invertido bajo el Total y cada cat
   const lineas = gs.formatGeneralInvestmentMessage_(resumen).split("\n");
 
   assert.match(lineas[1], /^<b>Total:<\/b>/);
-  assert.equal(lineas[2], "Invertido: 800,00\u20AC | +25,00% | +200,00");
+  assert.equal(lineas[2], "Invertido: 800,00\u20AC | +25,00% | +200,00\u20AC");
   assert.equal(lineas[3], "");
   assert.match(lineas[4], /^\u{1F4B0} Bolsa: /u);
-  assert.equal(lineas[5], "Invertido: 800,00\u20AC | +25,00% | +200,00");
+  assert.equal(lineas[5], "Invertido: 800,00\u20AC | +25,00% | +200,00\u20AC");
 });
 
 test("una categoria sin coste no rompe el resto del mensaje general", () => {
