@@ -12,6 +12,22 @@ test("parseNumber entiende formatos ES e internacionales", () => {
   assert.equal(app.parseNumber("-42,5"), -42.5);
 });
 
+// Un precio de fondo con 3 decimales ("11.921" = 11,921 € por participación) caía en la
+// heurística de miles y se guardaba mil veces mayor, arruinando las shares estimadas.
+// En un precio el punto es siempre decimal salvo que haya varios grupos de miles.
+test("parsePrice no confunde 3 decimales con separador de miles", () => {
+  assert.equal(app.parsePrice("11.921"), 11.921);
+  assert.equal(app.parsePrice("135.971"), 135.971);
+  assert.equal(app.parsePrice("14.125"), 14.125);
+  assert.equal(app.parsePrice("0.123"), 0.123);
+  // Lecturas que siguen siendo inequívocas.
+  assert.equal(app.parsePrice("11,921"), 11.921);
+  assert.equal(app.parsePrice("1.234.567"), 1234567);
+  assert.equal(app.parsePrice("1.000,50"), 1000.5);
+  assert.equal(app.parsePrice(11.921), 11.921);
+  assert.ok(Number.isNaN(app.parsePrice("")));
+});
+
 test("roundMoney redondea a 2 decimales y nunca devuelve NaN", () => {
   assert.equal(app.roundMoney(10.555), 10.56);
   assert.equal(app.roundMoney("10,555"), 10.56);

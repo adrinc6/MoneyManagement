@@ -6376,8 +6376,8 @@ function normalizeInvestment(row) {
   const nombre = String(row.nombre || row.NOMBRE || row.name || row.NAME || row[2] || data).trim();
   const shortName = String(row.shortName || row.shortname || row.short_name || row.SHORT_NAME || row['SHORT NAME'] || row['Short Name'] || (isArrayRow ? row[3] : '') || '').trim();
   const tipo = prettyType(String(row.tipo || row.TIPO || row.type || row.TYPE || (isArrayRow ? row[4] : row[3]) || '').trim());
-  let cantidad = parseNumber(row.cantidad ?? row.CANTIDAD ?? row.shares ?? row.SHARES ?? (isArrayRow ? row[5] : row[4]));
-  const valor = parseNumber(row.valor ?? row.VALOR ?? row.price ?? row.PRICE ?? (isArrayRow ? row[6] : row[5]));
+  let cantidad = parsePrice(row.cantidad ?? row.CANTIDAD ?? row.shares ?? row.SHARES ?? (isArrayRow ? row[5] : row[4]));
+  const valor = parsePrice(row.valor ?? row.VALOR ?? row.price ?? row.PRICE ?? (isArrayRow ? row[6] : row[5]));
   const total = parseNumber(row.total ?? row.value ?? row.VALUE ?? row['VALOR TOTAL (€)'] ?? row['VALOR TOTAL'] ?? (isArrayRow ? row[7] : row[6]));
   // Recupera posiciones reales de respuestas antiguas o de una fórmula de SHARES que
   // haya llegado temporalmente vacía: VALUE / PRICE conserva la cantidad exacta.
@@ -6459,8 +6459,8 @@ function normalizeInvestmentEstimateLedger(row) {
     nombre: String(row.nombre ?? row.NOMBRE ?? (isArrayRow ? row[6] : '') ?? '').trim(),
     shortName: String(row.shortName ?? row['SHORT NAME'] ?? (isArrayRow ? row[7] : '') ?? '').trim(),
     importe: parseNumber(row.importe ?? row['IMPORTE'] ?? (isArrayRow ? row[8] : '')),
-    precioUsado: parseNumber(row.precioUsado ?? row['PRECIO USADO'] ?? (isArrayRow ? row[9] : '')),
-    sharesEstimadas: parseNumber(row.sharesEstimadas ?? row['SHARES ESTIMADAS'] ?? (isArrayRow ? row[10] : '')),
+    precioUsado: parsePrice(row.precioUsado ?? row['PRECIO USADO'] ?? (isArrayRow ? row[9] : '')),
+    sharesEstimadas: parsePrice(row.sharesEstimadas ?? row['SHARES ESTIMADAS'] ?? (isArrayRow ? row[10] : '')),
     origen: String(row.origen ?? row.ORIGEN ?? (isArrayRow ? row[11] : '') ?? '').trim(),
     createdAt: String(row.createdAt ?? row['CREATED AT'] ?? '').trim(),
     movimiento: String(row.movimiento ?? row.MOVIMIENTO ?? '').trim()
@@ -7766,7 +7766,8 @@ function readInvestmentAllocationRows() {
     const item = { reglaId: row.dataset.reglaId || "" };
     row.querySelectorAll("[data-field]").forEach(input => {
       const field = input.dataset.field;
-      if (["percentage", "importe", "precioUsado"].includes(field)) item[field] = parseNumber(input.value);
+      if (field === "precioUsado") item[field] = parsePrice(input.value);
+      else if (["percentage", "importe"].includes(field)) item[field] = parseNumber(input.value);
       else item[field] = input.value.trim();
     });
     const amount = safeNumber(item.importe);
@@ -8415,6 +8416,28 @@ function parseNumber(value) {
     normalized = cleaned;
   }
   return Number(normalized);
+}
+
+// Un precio o un número de participaciones no es un importe: "11.921" es 11,921 € por
+// participación, nunca 11.921 €. La heurística de miles de parseNumber no puede saberlo
+// (ambos formatos son válidos en abstracto) y leía mil veces de más, corrompiendo las
+// shares estimadas. Aquí el punto es SIEMPRE decimal; solo se admite como separador de
+// miles cuando hay varios grupos ("1.234.567"), que no admiten otra lectura.
+function parsePrice(value) {
+  if (typeof value === "number") return value;
+  if (value === null || value === undefined) return NaN;
+  const cleaned = String(value).replace(/\s/g, "").replace(/[^\d,.-]/g, "");
+  if (!cleaned || !/\d/.test(cleaned)) return NaN;
+  const hasComma = cleaned.includes(",");
+  const hasDot = cleaned.includes(".");
+  if (hasComma && hasDot) return parseNumber(cleaned);
+  if (hasComma) {
+    return Number(/^-?\d{1,3}(,\d{3}){2,}$/.test(cleaned) ? cleaned.replace(/,/g, "") : cleaned.replace(",", "."));
+  }
+  if (hasDot) {
+    return Number(/^-?\d{1,3}(\.\d{3}){2,}$/.test(cleaned) ? cleaned.replace(/\./g, "") : cleaned);
+  }
+  return Number(cleaned);
 }
 
 function normalizePercentPoints(value) {
