@@ -257,10 +257,93 @@ p { color: var(--muted); }
   height: 100%;
   min-height: 0;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  /* Interruptor, formulario y vista previa. La previa se lleva el sitio que sobre, que es
+     lo que quita el blanco de debajo del importe, pero su fila nunca baja de lo que mide
+     su contenido: así no se recorta ni necesita scroll propio. Cuando no hay nada que
+     calcular está oculta y la fila se colapsa sola. */
+  grid-template-rows: auto auto minmax(min-content, 1fr);
   overflow-y: auto;
   padding: clamp(8px, 1dvh, 12px);
 }
+.movement-preview {
+  background: var(--soft);
+  border-radius: 12px;
+  padding: clamp(8px, 1dvh, 12px) clamp(9px, 1.1dvh, 12px);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: clamp(5px, .7dvh, 9px);
+  min-height: 0;
+  overflow: hidden;
+  margin-top: clamp(6px, 1dvh, 12px);
+}
+.movement-preview h3 {
+  margin: 0;
+  font-size: clamp(.62rem, .8dvh, .7rem);
+  font-weight: 600;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.preview-cards {
+  display: grid;
+  gap: clamp(5px, .7dvh, 8px);
+  /* Las tarjetas se reparten el hueco a partes iguales sin bajar nunca de lo que mide su
+     contenido: llenan el sitio que sobra en vez de dejar un vacío debajo. */
+  grid-auto-rows: minmax(min-content, 1fr);
+  min-height: 0;
+}
+/* Etiqueta a la izquierda y las cifras a su derecha, en una sola línea. La barra, cuando
+   la hay, cruza las dos columnas por debajo. */
+.preview-card {
+  background: var(--panel);
+  border-radius: 9px;
+  padding: clamp(6px, .8dvh, 10px) clamp(9px, 1.1dvh, 12px);
+  display: grid;
+  grid-template-columns: minmax(0, auto) 1fr;
+  align-items: baseline;
+  align-content: center;
+  column-gap: 10px;
+  row-gap: clamp(4px, .55dvh, 7px);
+  min-width: 0;
+}
+.preview-card-label {
+  font-size: clamp(.72rem, .95dvh, .82rem);
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.preview-card-flow {
+  justify-self: end;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.preview-before { color: var(--muted); font-size: clamp(.72rem, .95dvh, .82rem); }
+.preview-card-flow strong { font-size: clamp(.85rem, 1.15dvh, .98rem); }
+.preview-card-flow small { color: var(--muted); font-size: clamp(.7rem, .9dvh, .78rem); }
+.preview-arrow {
+  width: 11px;
+  height: 11px;
+  color: var(--muted);
+  align-self: center;
+  flex-shrink: 0;
+}
+.preview-bar { grid-column: 1 / -1; }
+/* Verde lo ya gastado, gris lo que suma este movimiento, rojo entero si te pasas. */
+.preview-bar {
+  height: clamp(5px, .8dvh, 8px);
+  border-radius: 999px;
+  background: var(--soft);
+  overflow: hidden;
+  display: flex;
+}
+.preview-bar span { display: block; height: 100%; }
+.preview-bar-done { background: var(--good); }
+.preview-bar-added { background: color-mix(in srgb, var(--ink) 30%, transparent); }
+.preview-bar.over span { background: var(--bad); }
 .registrar-form-panel .form-grid {
   min-height: 0;
   gap: clamp(6px, .75dvh, 9px);

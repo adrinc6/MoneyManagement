@@ -310,6 +310,13 @@ function wireUi() {
   document.getElementById("editMovementType")?.addEventListener("change", syncEditMovementConcept);
   document.getElementById("formAmount")?.addEventListener("input", enforceTransferPositiveAmount);
   document.getElementById("formAmount")?.addEventListener("change", enforceTransferPositiveAmount);
+  // Cualquier campo que cambie el cálculo repinta la vista previa.
+  ["formAmount", "formConcept", "formAccount", "recurrenceAccount", "formTransferFrom", "formTransferTo"]
+    .forEach(id => {
+      const el = document.getElementById(id);
+      el?.addEventListener("input", renderMovementPreview);
+      el?.addEventListener("change", renderMovementPreview);
+    });
   document.getElementById("saveConfigBtn")?.addEventListener("click", saveConfigFromForm);
   document.getElementById("clearSyncLogsBtn")?.addEventListener("click", clearSyncLogs);
   document.getElementById("undoSentOpsBtn")?.addEventListener("click", openUndoDialog);
@@ -1037,6 +1044,7 @@ function renderCurrentView(viewId = activeViewId()) {
     safeRender("registrar", () => {
       syncRegisterMode();
       renderRegistrarSummaryCompact();
+      renderMovementPreview();
       renderFutureDueNotice();
     });
   } else if (viewId === "resumen") {
@@ -3304,6 +3312,7 @@ function syncRegistrarMode() {
   document.getElementById("submitMovement").innerHTML = submitLabel;
   syncRegistrarActionButton();
   syncRegisterMode();
+  renderMovementPreview();
   refreshIcons();
 }
 
@@ -5224,6 +5233,139 @@ function transferMovementsFromRecurrenceForm() {
   return dates.map(d => normalizeTransaction({ ...base, fecha: formatDate(d) })).filter(Boolean);
 }
 
+// ---------------------------------------------------------------------------
+// Vista previa del movimiento
+//
+// Antes de guardar enseña las dos consecuencias que de verdad importan: cómo queda
+// la cuenta y cómo queda el presupuesto del concepto. Solo lee el estado que ya está
+// cargado; no toca nada del guardado. Aparece cuando hay tipo e importe, porque antes
+// no hay nada que calcular, y ocupa el hueco que sobra del panel.
+// ---------------------------------------------------------------------------
+
+function registrarAccountName() {
+  const id = isRecurringMode() ? "recurrenceAccount" : "formAccount";
+  return String(document.getElementById(id)?.value || "").trim();
+}
+
+// En periódico no se guarda un movimiento, se guardan todos los del rango: la cuenta
+// se mueve por la suma, no por uno. Sin frecuencia elegida todavía no hay nada que contar.
+function registrarOccurrences() {
+  if (!isRecurringMode()) return 1;
+  if (!state.recurrenceReady) return 0;
+  try {
+    const { dates } = recurrenceDatesFromForm();
+    return dates.length;
+  } catch {
+    return 0;
+  }
+}
+
+// La flecha va en SVG dentro del propio marcado, no como icono de Lucide: si el CDN no
+// carga, la app degrada sin iconos y aquí la flecha es lo que da sentido a las dos cifras.
+const PREVIEW_ARROW = `<svg class="preview-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h13M13 6l6 6-6 6"/></svg>`;
+
+// La cifra resultante va en tinta normal: que un gasto baje el saldo no es una alarma. El
+// rojo se reserva para lo que sí lo es, quedarse en negativo, y para la barra al pasarse.
+function previewFlowCard(label, before, after, suffix = "", extra = "") {
+  return `<div class="preview-card">
+    <span class="preview-card-label">${escapeHtml(label)}</span>
+    <span class="preview-card-flow">
+      <span class="preview-before">${money(before)}</span>
+      ${PREVIEW_ARROW}
+      <strong class="${after < 0 ? "negative" : ""}">${money(after)}</strong>${suffix ? `<small>${escapeHtml(suffix)}</small>` : ""}
+    </span>
+    ${extra}
+  </div>`;
+}
+
+// Verde lo que ya llevas gastado, gris lo que suma este movimiento. Si con él te pasas
+// del presupuesto la barra se llena entera de rojo: no hay medias tintas que enseñar.
+function previewBudgetBar(spent, delta, budget) {
+  if (!(budget > 0)) return "";
+  if (spent + delta >= budget) {
+    return `<div class="preview-bar over"><span style="width:100%"></span></div>`;
+  }
+  const done = Math.max(0, Math.min(100, (spent / budget) * 100));
+  const added = Math.max(0, Math.min(100 - done, (delta / budget) * 100));
+  return `<div class="preview-bar">
+    <span class="preview-bar-done" style="width:${done}%"></span>
+    <span class="preview-bar-added" style="width:${added}%"></span>
+  </div>`;
+}
+
+function movementPreviewCards() {
+  const type = normalizeType(document.getElementById("formType")?.value || "");
+  const amount = parseNumber(document.getElementById("formAmount")?.value);
+  const times = registrarOccurrences();
+  if (!type || !times || !Number.isFinite(amount) || !amount) return "";
+  const total = roundMoney(amount * times);
+  const month = currentMonthKey();
+  const summary = calculateSummary(month);
+  const label = monthName(month.slice(5, 7));
+
+  if (type === "transferencia") {
+    const from = document.getElementById("formTransferFrom")?.value || "";
+    const to = document.getElementById("formTransferTo")?.value || "";
+    if (!from || !to || from === to) return "";
+    const moved = Math.abs(total);
+    return previewFlowCard(from, getBankAmount(from), getBankAmount(from) - moved)
+      + previewFlowCard(to, getBankAmount(to), getBankAmount(to) + moved);
+  }
+
+  const account = registrarAccountName();
+  const first = account
+    ? previewFlowCard(account, getBankAmount(account), getBankAmount(account) + total)
+    : "";
+
+  if (type === "gasto") {
+    const concept = conceptAlias(String(document.getElementById("formConcept")?.value || "").trim());
+    const delta = Math.abs(total);
+    if (concept) {
+      const row = budgetRows(month).find(r => r.label === concept);
+      const spent = safeNumber(row?.spent);
+      const budget = safeNumber(row?.budget);
+      return first + previewFlowCard(
+        concept, spent, spent + delta,
+        budget ? `/ ${money(budget)}` : "",
+        previewBudgetBar(spent, delta, budget)
+      );
+    }
+    const limit = safeNumber(state.investmentGoals?.expenseMonthly);
+    return first + previewFlowCard(
+      `Gastos de ${label}`, summary.expenses, summary.expenses + delta,
+      limit ? `/ ${money(limit)}` : "",
+      previewBudgetBar(summary.expenses, delta, limit)
+    );
+  }
+
+  // En inversión lo que interesa no es la cuenta, es la cartera: arriba cuánto llevas
+  // invertido en total y debajo cómo queda el grupo al que va este dinero, que es lo que
+  // en inversión se elige en la descripción.
+  if (type === "inversion") {
+    const delta = Math.abs(total);
+    const group = String(document.getElementById("formDescriptionSelect")?.value || "").trim();
+    const top = previewFlowCard("Invertido", summary.investedTotal, summary.investedTotal + delta);
+    if (!group) return top + first;
+    const groupBefore = safeNumber(summary.investedByType?.[group]);
+    return top + previewFlowCard(group, groupBefore, groupBefore + delta);
+  }
+
+  return first + previewFlowCard(`Ingresos de ${label}`, summary.income, summary.income + Math.abs(total));
+}
+
+function renderMovementPreview() {
+  const box = document.getElementById("movementPreview");
+  if (!box) return;
+  let cards = "";
+  try {
+    cards = movementPreviewCards();
+  } catch {
+    cards = "";
+  }
+  box.classList.toggle("hidden", !cards);
+  box.innerHTML = cards ? `<h3>Si guardas esto</h3><div class="preview-cards">${cards}</div>` : "";
+}
+
 function movementFromFormBase() {
   const type = prettyType(document.getElementById("formType").value);
   // parseNumber en vez de Number: acepta coma decimal española y devuelve NaN
@@ -5379,6 +5521,7 @@ function confirmRecurrence(event) {
   state.recurrenceReady = true;
   document.getElementById("recurrenceDialog")?.close();
   syncRecurrenceSummary();
+  renderMovementPreview();
 }
 
 // El botón cuenta lo que hay elegido: mientras no sea válido dice "Elegir", que es la
