@@ -29,6 +29,7 @@
   --goal-remaining: #cbd5d1;
   --goal-remaining-text: #52615d;
   --shadow: 0 12px 34px rgba(20, 31, 29, .08);
+  --nav-inset: min(24px, env(safe-area-inset-bottom));
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
@@ -87,7 +88,7 @@ button:active { transform: translateY(1px); }
 
 .app {
   width: min(980px, calc(100% - 20px));
-  height: calc(100dvh - 60px - env(safe-area-inset-bottom));
+  height: calc(100dvh - 60px - var(--nav-inset));
   margin: 10px auto 0;
   padding: 10px 16px 8px;
   display: flex;
@@ -1471,8 +1472,8 @@ dialog::backdrop { background: rgba(15, 23, 42, .5); }
   bottom: 0;
   transform: translateX(-50%);
   width: min(520px, 100vw);
-  height: calc(52px + env(safe-area-inset-bottom));
-  min-height: calc(52px + env(safe-area-inset-bottom));
+  height: calc(52px + var(--nav-inset));
+  min-height: calc(52px + var(--nav-inset));
   z-index: 50;
   isolation: isolate;
   background: var(--nav-bg);
@@ -1502,7 +1503,7 @@ dialog::backdrop { background: rgba(15, 23, 42, .5); }
   place-items: center;
   gap: 3px;
   font-size: .7rem;
-  padding: 0 0 env(safe-area-inset-bottom);
+  padding: 0 0 var(--nav-inset);
 }
 /* Solo se redondean las esquinas superiores exteriores, que son las de la barra:
    por dentro las cinco columnas van a sangre, sin huecos ni separadores. */
@@ -1527,7 +1528,7 @@ dialog::backdrop { background: rgba(15, 23, 42, .5); }
   left: 50%;
   bottom: 0;
   width: 100vw;
-  height: calc(52px + env(safe-area-inset-bottom));
+  height: calc(52px + var(--nav-inset));
   transform: translateX(-50%);
   z-index: -1;
   background: var(--page-bg);
@@ -1640,7 +1641,7 @@ dialog::backdrop { background: rgba(15, 23, 42, .5); }
   }
   .app {
     width: 100%;
-    height: calc(100dvh - 52px - env(safe-area-inset-bottom));
+    height: calc(100dvh - 52px - var(--nav-inset));
     margin-top: 0;
     padding: 4px 12px 6px;
     border-top: 0;
