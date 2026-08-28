@@ -1505,14 +1505,21 @@ dialog::backdrop { background: rgba(15, 23, 42, .5); }
   place-items: center;
   gap: 3px;
   font-size: .7rem;
-  padding: 0 0 var(--nav-inset);
+  /* El padding va en el botón, no en la barra: su fondo pinta por debajo, así que
+     el contenido se separa de los lados pero el verde y el gris siguen llegando
+     al borde. */
+  padding: 0 4px var(--nav-inset);
 }
 /* Solo se redondean las esquinas superiores exteriores, que son las de la barra:
-   por dentro las cinco columnas van a sangre, sin huecos ni separadores. */
+   por dentro las cinco columnas van a sangre, sin huecos ni separadores. Los
+   extremos meten más padding para que su etiqueta no quede bajo la esquina
+   redondeada de la pantalla. */
 .bottom-nav button:first-child {
+  padding-left: 20px;
   border-radius: 24px 0 0 0;
 }
 .bottom-nav button:last-child {
+  padding-right: 20px;
   border-radius: 0 24px 0 0;
 }
 .bottom-nav .fab {
