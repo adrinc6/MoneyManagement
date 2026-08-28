@@ -2042,6 +2042,7 @@ TABLAS DE INVERSIONES: ajuste mínimo sin scroll horizontal
 .table-wrap:has(#investmentEditTable),
 .table-wrap:has(#investmentBreakdownTable),
 .table-wrap:has([id^="compositionGroupTable"]),
+.table-wrap:has([id^="contributionTable"]),
 .table-wrap:has(#investmentCompositionTable),
 .table-wrap:has(#compositionGroupEditorTable) {
   overflow-x: hidden;
@@ -2793,6 +2794,52 @@ TABLAS DE INVERSIONES: ajuste mínimo sin scroll horizontal
   display: block;
   min-width: 1px;
   background-color: var(--slice, var(--goal-remaining));
+}
+
+/* Futuras aportaciones: el mismo lenguaje de tarjetas, con el porcentaje de lo que aportes
+   donde en la composición va el peso. */
+.composition-header-actions {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 6px;
+}
+
+.contribution-total {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--soft);
+  font-size: 0.755rem;
+  color: var(--muted);
+}
+
+.contribution-total strong {
+  font-size: 0.875rem;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.contribution-share {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 0.71rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.contribution-missing {
+  flex: 0 0 auto;
+  font-size: 0.755rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
 }
 
 /* Un grupo, una tarjeta: sus tres cifras y, si reparte por dentro, su tabla. La única barra

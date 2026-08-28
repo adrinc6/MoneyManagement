@@ -163,7 +163,10 @@
           <div>
             <h2>Composición</h2>
           </div>
-          <button class="icon-btn minimal-icon" id="editInvestmentCompositionBtn" type="button" aria-label="Editar composición"><i data-lucide="edit-3"></i></button>
+          <div class="composition-header-actions">
+            <button class="icon-btn minimal-icon" id="openFutureContributionsBtn" type="button" aria-label="Futuras aportaciones"><i data-lucide="target"></i></button>
+            <button class="icon-btn minimal-icon" id="editInvestmentCompositionBtn" type="button" aria-label="Editar composición"><i data-lucide="edit-3"></i></button>
+          </div>
         </div>
         <div class="panel-body composition-body">
           <label class="composition-total"><span>A repartir por pesos</span><input id="compositionTotalInput" type="number" step="0.01" inputmode="decimal" placeholder="Mínimo" /></label>
@@ -632,6 +635,14 @@
         <button class="btn primary" id="saveInvestmentCompositionBtn" type="button"><i data-lucide="save"></i> Guardar composición</button>
       </div>
     </div>
+  </dialog>
+
+  <dialog id="futureContributionsDialog" class="wide-dialog">
+    <div class="dialog-head">
+      <h2>Futuras aportaciones</h2>
+      <button class="icon-btn" id="closeFutureContributionsBtn" type="button" aria-label="Cerrar"><i data-lucide="x"></i></button>
+    </div>
+    <div class="panel-body composition-body" id="futureContributionsBody"></div>
   </dialog>
 
   <dialog id="investmentCompositionGroupDialog" class="wide-dialog">

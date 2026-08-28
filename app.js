@@ -283,6 +283,8 @@ function wireUi() {
   document.getElementById("settingsPanelSwitch")?.addEventListener("click", setSettingsPanelFromClick);
   document.getElementById("editInvestmentGoalsBtn")?.addEventListener("click", editInvestmentGoals);
   document.getElementById("editInvestmentCompositionBtn")?.addEventListener("click", openInvestmentCompositionDialog);
+  document.getElementById("openFutureContributionsBtn")?.addEventListener("click", openFutureContributionsDialog);
+  document.getElementById("closeFutureContributionsBtn")?.addEventListener("click", () => document.getElementById("futureContributionsDialog")?.close());
   document.getElementById("closeInvestmentCompositionBtn")?.addEventListener("click", () => document.getElementById("investmentCompositionDialog")?.close());
   document.getElementById("saveInvestmentCompositionBtn")?.addEventListener("click", saveInvestmentCompositionFromDialog);
   document.getElementById("closeCompositionGroupBtn")?.addEventListener("click", () => document.getElementById("investmentCompositionGroupDialog")?.close());
@@ -6241,6 +6243,98 @@ function compositionPositionsTableHtml(plan) {
       <td class="amount">${money(plan.currentTotal)}</td>
       <td class="amount">${net < 0 ? `<span class="negative">-${money(-net)}</span>` : money(net)}</td>
     </tr></tfoot>`;
+}
+
+// ---------------------------------------------------------------------------
+// Futuras aportaciones
+//
+// A dónde mandar el dinero que todavía no has puesto. El reparto no es el de los pesos: es lo
+// que le falta a cada grupo sobre lo que le falta a la cartera entera, que es lo que hace que
+// aportando así se llegue al objetivo sin tener que vender nada. Dentro del grupo, igual: cada
+// posición se lleva su parte de lo que le falta al grupo.
+function futureContributionPlan(summary) {
+  const cartera = compositionCarteraPlan(summary);
+  const groups = cartera.rows.map((row, idx) => {
+    const inner = computeCompositionPlan({ entries: compositionPositionEntries(row.key), total: String(row.base) });
+    const innerMissing = roundMoney(sum(inner.rows.map(item => item.missing)));
+    return {
+      key: row.key,
+      label: row.label,
+      // El color es el del grupo en la tira de la composición, no el del orden de esta lista.
+      color: chartColor(PIE_CHART_COLORS, idx),
+      missing: row.missing,
+      // Un grupo puede necesitar dinero y que sus posiciones ya estén en su sitio (el grupo se
+      // mide por lo invertido y las posiciones por su valor). Ahí manda el objetivo de cada una.
+      positions: inner.rows.map(item => ({
+        label: item.label,
+        missing: item.missing,
+        share: innerMissing > 0
+          ? item.missing / innerMissing
+          : (inner.total > 0 ? item.target / inner.total : 0)
+      }))
+    };
+  });
+  const missingTotal = roundMoney(sum(groups.map(group => group.missing)));
+  return {
+    missingTotal,
+    // Un grupo que ya está en su sitio no recibe nada, así que no sale en la lista.
+    groups: groups
+      .filter(group => group.missing > 0)
+      .map(group => ({ ...group, share: missingTotal > 0 ? group.missing / missingTotal : 0 }))
+      .sort((a, b) => b.share - a.share || a.label.localeCompare(b.label))
+  };
+}
+
+function openFutureContributionsDialog() {
+  const dialog = document.getElementById("futureContributionsDialog");
+  if (!dialog) return;
+  if (!dialog.open) dialog.showModal();
+  renderFutureContributions();
+}
+
+function renderFutureContributions() {
+  const host = document.getElementById("futureContributionsBody");
+  if (!host) return;
+  const plan = futureContributionPlan(calculateSummary(getSelectedSummaryMonth()));
+  if (!plan.missingTotal) {
+    host.innerHTML = emptyBlock("La cartera ya está en su reparto: no hay nada que aportar.");
+    refreshIcons();
+    return;
+  }
+  host.innerHTML = `
+    <div class="contribution-total"><span>Falta en total</span><strong>${money(plan.missingTotal)}</strong></div>
+    <div class="composition-groups">${plan.groups.map((group, idx) => contributionGroupCardHtml(group, idx)).join("")}</div>`;
+  plan.groups.forEach((group, idx) => fitCompositionTable(`contributionTable-${idx}`));
+  refreshIcons();
+}
+
+function contributionGroupCardHtml(group, idx) {
+  const positions = group.positions.filter(item => item.share > 0);
+  const table = positions.length
+    ? `<div class="table-wrap composition-group-body"><table id="contributionTable-${idx}">
+        <colgroup><col><col><col></colgroup>
+        <thead><tr><th class="col-type">Posición</th><th class="amount">%</th><th class="amount">Falta</th></tr></thead>
+        <tbody>${positions.map(item => `
+          <tr>
+            <td class="text-clip col-type" title="${escapeAttr(item.label)}">${escapeHtml(item.label)}</td>
+            <td class="amount">${pctNoSymbol(item.share)} %</td>
+            <td class="amount">${money(item.missing)}</td>
+          </tr>`).join("")}</tbody>
+        <tfoot><tr><td>Total</td><td class="amount">100 %</td><td class="amount">${money(group.missing)}</td></tr></tfoot>
+      </table></div>`
+    : "";
+  return `
+    <article class="composition-group-card">
+      <div class="composition-group-head">
+        <div class="composition-group-name">
+          ${colorDot(group.color)}
+          <h3 class="text-clip" title="${escapeAttr(group.label)}">${escapeHtml(group.label)}</h3>
+          <span class="contribution-share">${pctNoSymbol(group.share)} %</span>
+        </div>
+        <span class="contribution-missing">${money(group.missing)}</span>
+      </div>
+      ${table}
+    </article>`;
 }
 
 // Qué grupos ha dejado plegados este móvil. Es una preferencia de vista, no un dato de la
