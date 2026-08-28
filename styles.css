@@ -278,10 +278,9 @@ p { color: var(--muted); }
 }
 .movement-preview h3 {
   margin: 0;
-  font-size: clamp(.62rem, .8dvh, .7rem);
-  font-weight: 600;
-  letter-spacing: .09em;
-  text-transform: uppercase;
+  font-size: clamp(.72rem, .95dvh, .82rem);
+  font-weight: 500;
+  letter-spacing: 0;
   color: var(--muted);
 }
 .preview-cards {

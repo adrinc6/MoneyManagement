@@ -5363,7 +5363,7 @@ function renderMovementPreview() {
     cards = "";
   }
   box.classList.toggle("hidden", !cards);
-  box.innerHTML = cards ? `<h3>Si guardas esto</h3><div class="preview-cards">${cards}</div>` : "";
+  box.innerHTML = cards ? `<h3>si guardas esto\u2026</h3><div class="preview-cards">${cards}</div>` : "";
 }
 
 function movementFromFormBase() {
