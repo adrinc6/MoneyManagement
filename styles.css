@@ -87,9 +87,9 @@ button:active { transform: translateY(1px); }
 
 .app {
   width: min(980px, calc(100% - 20px));
-  height: calc(100dvh - 92px - env(safe-area-inset-bottom));
+  height: calc(100dvh - 76px - env(safe-area-inset-bottom));
   margin: 10px auto 0;
-  padding: 18px 16px 8px;
+  padding: 10px 16px 8px;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -103,7 +103,7 @@ button:active { transform: translateY(1px); }
   align-items: center;
   justify-content: space-between;
   gap: 14px;
-  margin-bottom: 14px;
+  margin-bottom: 8px;
 }
 .brand-title {
   display: flex;
@@ -111,11 +111,25 @@ button:active { transform: translateY(1px); }
   gap: 10px;
   min-width: 0;
 }
+/* Título y aviso comparten celda de rejilla: la fila mide el mayor de los dos y
+   nunca la suma, así que un aviso de dos líneas no empuja la cabecera hacia abajo.
+   La min-height cubre la caja del aviso para que tampoco encoja cuando el título
+   se oculta. */
 .brand-title-text {
   min-width: 0;
+  display: grid;
+  grid-template-areas: "stack";
+  align-items: center;
+  min-height: 42px;
 }
-.brand-title-text:has(.sync-status.show) h1 {
-  display: none;
+.brand-title-text > * {
+  grid-area: stack;
+  min-width: 0;
+}
+/* Con aviso visible se esconde también "MoneyManagement", pero el bloque sigue
+   ocupando su sitio (visibility, no display) para que la altura no cambie. */
+.brand-title-text:has(.sync-status.show) .brand-title-main {
+  visibility: hidden;
 }
 .site-logo {
   width: 34px;
@@ -133,14 +147,15 @@ button:active { transform: translateY(1px); }
   min-width: 0;
 }
 .eyebrow {
-  margin: 0 0 2px;
+  margin: 0 0 1px;
   color: var(--muted);
-  font-size: 0.765rem;
+  font-size: 0.72rem;
+  line-height: 1.2;
   text-transform: uppercase;
   letter-spacing: .08em;
 }
 h1, h2, h3, p { margin-top: 0; }
-h1 { margin-bottom: 0; font-size: 2rem; }
+h1 { margin-bottom: 0; font-size: 2rem; line-height: 1.15; }
 h2 { margin-bottom: 0; font-size: 1.05rem; }
 p { color: var(--muted); }
 
@@ -525,13 +540,21 @@ input[readonly] {
   background: var(--soft);
   border: 1px solid var(--line);
   border-radius: 8px;
-  padding: 6px 10px;
+  padding: 5px 9px;
   color: var(--muted);
-  font-size: 0.785rem;
+  font-size: 0.75rem;
   line-height: 1.2;
   white-space: pre-line;
 }
-.sync-status.show { display: inline-block; }
+/* Tope duro de dos líneas con puntos suspensivos: ningún aviso, por largo que sea,
+   puede crecer y mover la cabecera. */
+.sync-status.show {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+}
 .sync-status.ok { color: var(--good); border-color: var(--good); }
 .sync-status.warn { color: var(--warn); border-color: var(--warn); }
 .header-action {
@@ -1448,8 +1471,8 @@ dialog::backdrop { background: rgba(15, 23, 42, .5); }
   bottom: max(16px, env(safe-area-inset-bottom));
   transform: translateX(-50%);
   width: min(520px, 100vw);
-  height: 68px;
-  min-height: 68px;
+  height: 52px;
+  min-height: 52px;
   z-index: 50;
   isolation: isolate;
   background: var(--nav-bg);
@@ -1458,9 +1481,7 @@ dialog::backdrop { background: rgba(15, 23, 42, .5); }
   box-shadow: 0 20px 54px rgba(0, 0, 0, .22);
   display: grid;
   grid-template-columns: repeat(5, 1fr);
-  gap: 2px;
   align-items: stretch;
-  padding: 0 10px;
   backdrop-filter: blur(18px);
 }
 .bottom-nav button {
@@ -1477,22 +1498,22 @@ dialog::backdrop { background: rgba(15, 23, 42, .5); }
   display: grid;
   place-items: center;
   gap: 2px;
-  font-size: .72rem;
+  font-size: .68rem;
   padding: 0;
 }
+/* Solo se redondean las esquinas superiores exteriores, que son las de la barra:
+   por dentro las cinco columnas van a sangre, sin huecos ni separadores. */
 .bottom-nav button:first-child {
-  border-top-left-radius: 24px;
-  border-bottom-left-radius: 24px;
+  border-radius: 24px 0 0 0;
 }
 .bottom-nav button:last-child {
-  border-top-right-radius: 24px;
-  border-bottom-right-radius: 24px;
+  border-radius: 0 24px 0 0;
 }
 .bottom-nav .fab {
-  border-radius: 16px 16px 0 0;
+  border-radius: 0;
   min-height: 100%;
 }
-.bottom-nav svg { width: 20px; height: 20px; }
+.bottom-nav svg { width: 19px; height: 19px; }
 .bottom-nav button.active {
   background: rgba(255, 255, 255, .1);
   color: var(--nav-active);
@@ -1503,7 +1524,7 @@ dialog::backdrop { background: rgba(15, 23, 42, .5); }
   left: 50%;
   bottom: calc(-1 * max(16px, env(safe-area-inset-bottom)));
   width: 100vw;
-  height: calc(84px + env(safe-area-inset-bottom));
+  height: calc(68px + env(safe-area-inset-bottom));
   transform: translateX(-50%);
   z-index: -1;
   background: var(--page-bg);
@@ -1513,7 +1534,7 @@ dialog::backdrop { background: rgba(15, 23, 42, .5); }
   transform: none;
   background: var(--accent);
   color: var(--on-accent);
-  border-radius: 16px 16px 0 0;
+  border-radius: 0;
   box-shadow: 0 12px 28px rgba(15, 118, 110, .35);
   transition: transform .18s ease, background .18s ease, box-shadow .18s ease;
 }
@@ -1529,10 +1550,10 @@ dialog::backdrop { background: rgba(15, 23, 42, .5); }
 .bottom-nav .fab.saving svg {
   animation: spin .8s linear infinite;
 }
-.bottom-nav .fab svg { width: 20px; height: 20px; }
+.bottom-nav .fab svg { width: 19px; height: 19px; }
 .nav-badge {
   position: absolute;
-  top: 7px;
+  top: 5px;
   right: calc(50% - 22px);
   min-width: 18px;
   height: 18px;
@@ -1616,9 +1637,9 @@ dialog::backdrop { background: rgba(15, 23, 42, .5); }
   }
   .app {
     width: 100%;
-    height: calc(100dvh - 88px - env(safe-area-inset-bottom));
+    height: calc(100dvh - 72px - env(safe-area-inset-bottom));
     margin-top: 0;
-    padding: 16px 12px 6px;
+    padding: 4px 12px 6px;
     border-top: 0;
     border-inline: 0;
     border-radius: 0 0 24px 24px;
@@ -1628,7 +1649,7 @@ dialog::backdrop { background: rgba(15, 23, 42, .5); }
   .form-grid > label.wide {
     grid-template-columns: minmax(88px, .38fr) minmax(0, 1fr);
   }
-  h1 { font-size: 1.4rem; }
+  h1 { font-size: 1.2rem; }
   .panel-header { padding: 14px 14px 0; }
   .panel-body { padding: 14px; }
   .table-wrap { max-height: none; }

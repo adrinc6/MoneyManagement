@@ -18,7 +18,7 @@
        app.js degrada (sin iconos ni gráficas) en vez de romperse. -->
   <script defer crossorigin="anonymous" src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
   <script defer crossorigin="anonymous" src="https://unpkg.com/lucide@1.24.0/dist/umd/lucide.min.js"></script>
-  <link rel="stylesheet" href="styles.css?v=20260824-v49" />
+  <link rel="stylesheet" href="styles.css?v=20260828-v50" />
 </head>
 <body>
   <main class="app">
@@ -26,9 +26,13 @@
       <div class="brand-title">
         <img src="images/logo.png" alt="" class="site-logo" />
         <div class="brand-title-text">
-        <p class="eyebrow">MoneyManagement</p>
-        <h1 id="viewTitle">Registrar</h1>
-        <div id="sourceNotice" class="sync-status"></div>
+          <!-- Marca y título van juntos para poder apilarlos con el aviso en la misma
+               celda de rejilla: así la cabecera mide igual haya aviso o no. -->
+          <div class="brand-title-main">
+            <p class="eyebrow">MoneyManagement</p>
+            <h1 id="viewTitle">Registrar</h1>
+          </div>
+          <div id="sourceNotice" class="sync-status"></div>
         </div>
       </div>
       <div class="refresh-group">
@@ -690,6 +694,6 @@
 
   <!-- El registro del service worker y la recarga por actualización viven en app.js,
        junto al resto del arranque, para no tener el ciclo de vida repartido en dos sitios. -->
-  <script defer src="app.js?v=20260824-v49"></script>
+  <script defer src="app.js?v=20260828-v50"></script>
 </body>
 </html>
