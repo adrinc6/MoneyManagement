@@ -281,7 +281,6 @@ function wireUi() {
   document.getElementById("movementModeSwitch")?.addEventListener("click", setMovementModeFromClick);
   document.getElementById("investmentPanelSwitch")?.addEventListener("click", setInvestmentPanelFromClick);
   document.getElementById("settingsPanelSwitch")?.addEventListener("click", setSettingsPanelFromClick);
-  document.getElementById("editInvestmentGoalsBtn")?.addEventListener("click", editInvestmentGoals);
   document.getElementById("editInvestmentCompositionBtn")?.addEventListener("click", openInvestmentCompositionDialog);
   document.getElementById("openFutureContributionsBtn")?.addEventListener("click", openFutureContributionsDialog);
   document.getElementById("closeFutureContributionsBtn")?.addEventListener("click", () => document.getElementById("futureContributionsDialog")?.close());
