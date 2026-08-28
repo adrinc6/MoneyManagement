@@ -197,6 +197,8 @@ const state = {
   investmentMode: loadInvestmentEstimateMode(),
   banks: [],
   categories: { types: STATIC_TYPES, concepts: STATIC_CONCEPTS, investmentTypes: INVESTMENT_TYPES },
+  // En periódico no se guarda nada hasta que se ha pasado por el diálogo de frecuencia.
+  recurrenceReady: false,
   charts: {},
   movementDrill: { level: "entries", year: String(new Date().getFullYear()), month: currentMonthKey() },
   summaryModes: { situation: "gastos", expenseView: "presupuesto", investmentMoney: "invested", moneyMix: "types", bankMoney: "summary", investmentOverviewType: null, investmentOverviewMode: "invested", investmentPanel: "current", settingsPanel: "sync" },
@@ -266,7 +268,14 @@ function wireUi() {
   document.getElementById("investmentSendNotificationsBtn")?.addEventListener("click", sendInvestmentNotificationsFromHeader);
   document.getElementById("movementForm")?.addEventListener("submit", submitMovement);
   document.getElementById("registerModeSwitch")?.addEventListener("click", setRegisterModeFromClick);
-  document.getElementById("recurrenceType")?.addEventListener("change", renderRecurrencePicker);
+  document.getElementById("recurrenceType")?.addEventListener("change", () => {
+    state.recurrenceReady = false;
+    renderRecurrencePicker();
+    hideRecurrenceError();
+  });
+  document.getElementById("openRecurrenceBtn")?.addEventListener("click", openRecurrenceDialog);
+  document.getElementById("closeRecurrenceBtn")?.addEventListener("click", () => document.getElementById("recurrenceDialog")?.close());
+  document.getElementById("recurrenceForm")?.addEventListener("submit", confirmRecurrence);
   document.getElementById("movementModeSwitch")?.addEventListener("click", setMovementModeFromClick);
   document.getElementById("investmentPanelSwitch")?.addEventListener("click", setInvestmentPanelFromClick);
   document.getElementById("settingsPanelSwitch")?.addEventListener("click", setSettingsPanelFromClick);
@@ -419,6 +428,7 @@ function wireUi() {
 function showView(id) {
   document.querySelectorAll(".view").forEach(v => v.classList.toggle("active", v.id === id));
   document.querySelectorAll("[data-view-button]").forEach(b => b.classList.toggle("active", b.dataset.viewButton === id));
+  syncNavIndicator(id);
   if (id === "movimientos") {
     const now = new Date();
     state.movementDrill = { level: "entries", year: String(now.getFullYear()), month: currentMonthKey() };
@@ -435,6 +445,17 @@ function showView(id) {
   }[id] || "MoneyManagement";
   renderCurrentView(id);
   window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+// El indicador de la isla es una sola pieza que se desplaza entre las cinco columnas.
+// Se coloca con una variable en vez de moverlo con clases para que la transición de
+// transform sea continua al saltar de una pestaña a otra.
+function syncNavIndicator(id) {
+  const nav = document.querySelector(".bottom-nav");
+  if (!nav) return;
+  const buttons = [...nav.querySelectorAll("[data-view-button]")];
+  const index = buttons.findIndex(b => b.dataset.viewButton === id);
+  if (index >= 0) nav.style.setProperty("--nav-i", String(index));
 }
 
 function syncInvestmentHeaderActions(activeViewId = "") {
@@ -3264,10 +3285,15 @@ function syncRegistrarMode() {
     amountInput.placeholder = isTransfer ? "0.00" : "0.00";
     if (isTransfer) enforceTransferPositiveAmount();
   }
-  document.querySelectorAll(".movement-only").forEach(el => el.classList.toggle("hidden", isTransfer));
-  document.querySelectorAll(".transfer-only").forEach(el => el.classList.toggle("hidden", !isTransfer));
+  // La cuenta y el concepto comparten hueco con origen y destino: en transferencia se
+  // cambia el par, no se desmonta la fila.
+  document.querySelectorAll("#movementForm .field-account").forEach(el => el.classList.toggle("hidden", isTransfer || recurring));
+  document.querySelectorAll("#movementForm .transfer-only").forEach(el => el.classList.toggle("hidden", !isTransfer));
+  document.querySelectorAll("#movementForm .concept-field").forEach(el => el.classList.toggle("hidden", isTransfer));
   const formDate = document.getElementById("formDate");
   if (formDate) formDate.required = !isTransfer && !recurring;
+  // En transferencia no hay fecha que elegir, pero el campo se queda a la vista bloqueado.
+  setFieldLocked(formDate, isTransfer);
   syncRegistrarConceptField();
   syncRegistrarDescriptionFields();
   document.getElementById("formTransferFrom").required = isTransfer;
@@ -3542,18 +3568,18 @@ function budgetRowHtml(row) {
     : exceeded
       ? `Excedido ${money(spent - budget)}`
       : `Quedan ${money(budget - spent)}`;
+  // El presupuesto baja al pie y la cabecera se queda solo con lo gastado: la cifra que
+  // importa gana tamaño y la de referencia deja de competir con ella.
   return `
     <div class="budget-row ${tone}">
       <div class="budget-row-head">
         <span class="budget-row-name">${escapeHtml(row.label)}</span>
-        <span class="budget-row-amount">
-          <strong>${money(spent)}</strong>${budget ? `<small> / ${money(budget)}</small>` : ""}
-        </span>
+        <span class="budget-row-amount"><strong>${money(spent)}</strong></span>
       </div>
       <div class="budget-row-bar"><span style="width:${progress}%"></span></div>
       <div class="budget-row-foot">
-        <small>${resto}</small>
-        ${budget ? `<small>${pct(ratio)}</small>` : ""}
+        <small>${budget ? `Presupuesto ${money(budget)}` : "Sin presupuesto"}</small>
+        <small>${budget ? resto : pct(ratio)}</small>
       </div>
     </div>`;
 }
@@ -3737,10 +3763,34 @@ function investmentSummaryCard(label, invested, current, extraClass = "") {
   </div>`;
 }
 
+// El desglose de Invertido va en tabla, no en tarjetas: cinco grupos en tarjeta se comen
+// la pantalla antes de llegar a la gráfica. Cada fila ocupa una sola línea y el símbolo de
+// porcentaje vive en la cabecera, no repetido en cada celda.
+function investmentSummaryRow(label, invested, current, extraClass = "") {
+  const gain = current - invested;
+  const tone = gain >= 0 ? "positive" : "negative";
+  return `<tr class="${extraClass}">
+    <td class="text-clip" title="${escapeAttr(label)}">${escapeHtml(label)}</td>
+    <td class="amount">${money(invested)}</td>
+    <td class="amount ${tone}">${money(gain)}</td>
+    <td class="amount col-pct">${pctCell(gainPct(current, invested))}</td>
+  </tr>`;
+}
+
+function investmentSummaryTable(rows) {
+  return `<div class="table-wrap invested-summary-wrap">
+    <table id="investedSummaryTable">
+      <colgroup><col><col class="col-money"><col class="col-money"><col class="col-pct"></colgroup>
+      <thead><tr><th></th><th class="col-money">Invertido</th><th class="col-money">P/L</th><th class="col-pct">%</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </div>`;
+}
+
 function openMoneyDetail(mode) {
   const summary = calculateSummary(getSelectedSummaryMonth());
   const isBank = mode === "bank";
-  const parts = investmentTypes().map(type => investmentSummaryCard(
+  const parts = investmentTypes().map(type => investmentSummaryRow(
     type,
     summary.investedByType[type] || 0,
     summary.valueByType[type] || 0
@@ -3749,12 +3799,9 @@ function openMoneyDetail(mode) {
   document.getElementById("moneyDialogTitle").textContent = isBank ? "Banco" : "Invertido";
   document.getElementById("bankMoneyDetail").classList.toggle("hidden", !isBank);
   document.getElementById("investedMoneyDetail").classList.toggle("hidden", isBank);
-  document.getElementById("moneyDialogSummary").innerHTML = isBank ? "" : `
-    <div class="money-grid investment-money-grid">
-      ${investmentSummaryCard("Invertido", summary.investedTotal, summary.valueTotal, "investment-summary-total")}
-      ${parts}
-    </div>
-  `;
+  document.getElementById("moneyDialogSummary").innerHTML = isBank ? "" : investmentSummaryTable(
+    investmentSummaryRow("Total", summary.investedTotal, summary.valueTotal, "invested-summary-total") + parts
+  );
   if (isBank) renderBankDetail(summary);
   document.getElementById("moneyDialog").showModal();
   renderMoneyCharts(summary);
@@ -4184,16 +4231,22 @@ function renderMovementTable(rows) {
   const table = document.getElementById("movementTable");
   table.classList.toggle("movement-bulk-edit", state.movementBulkEdit);
   table.classList.toggle("future-movements", state.movementMode === "future");
+  // El concepto ya no tiene columna propia: cuelga de la descripción en gris, que es lo
+  // que libera el ancho para que el importe quepa entero. El cuarto elemento de la columna
+  // es el texto sobre el que filtra, distinto del que ordena cuando la celda lleva dos datos.
   const columns = [
     ["day", "Día", t => t.date.getDate()],
     ["type", "Tipo", t => t.tipo],
-    ["concept", "Concepto", t => t.concepto],
-    ["desc", "Desc.", t => t.descripcion],
+    ["desc", "Descripción", t => t.descripcion, t => `${t.descripcion} ${t.concepto}`],
     ["money", "Importe", t => t.amount]
   ];
   const control = state.tableControls.movement || {};
   let visibleRows = [...rows];
-  if (control.filter) visibleRows = visibleRows.filter(t => String(columns.find(c => c[0] === control.column)?.[2](t) ?? "").toLowerCase().includes(control.filter.toLowerCase()));
+  if (control.filter) visibleRows = visibleRows.filter(t => {
+    const column = columns.find(c => c[0] === control.column);
+    const getter = column?.[3] || column?.[2];
+    return String(getter?.(t) ?? "").toLowerCase().includes(control.filter.toLowerCase());
+  });
   if (control.sort) visibleRows.sort((a, b) => {
     const getter = columns.find(c => c[0] === control.column)?.[2] || columns[0][2];
     const av = getter(a), bv = getter(b);
@@ -4203,7 +4256,6 @@ function renderMovementTable(rows) {
   const renderCell = (column, t) => {
     if (column[0] === "day") return `<td class="amount col-day">${String(t.date.getDate()).padStart(2, "0")}</td>`;
     if (column[0] === "type") return `<td class="col-type">${tag(t.tipo)}</td>`;
-    if (column[0] === "concept") return `<td class="text-clip col-concept" title="${escapeAttr(t.concepto)}">${escapeHtml(t.concepto)}</td>`;
     if (column[0] === "desc") {
       if (state.movementMode === "future") {
         const accountText = movementAccountText(t) || "Sin cuenta";
@@ -4214,7 +4266,12 @@ function renderMovementTable(rows) {
           <span class="text-clip cell-secondary${accountIssue ? " cell-secondary-warn" : ""}" title="${escapeAttr(accountIssue || accountText)}">${escapeHtml(accountText)}</span>
         </td>`;
       }
-      return `<td class="text-clip col-desc" title="${escapeAttr(t.descripcion)}">${escapeHtml(t.descripcion)}</td>`;
+      // En realizados la segunda línea es el concepto. Sin concepto (ingreso e inversión no
+      // lo llevan) la celda se queda con una sola línea, sin hueco vacío.
+      return `<td class="col-desc${t.concepto ? " col-desc-with-account" : ""}" title="${escapeAttr(t.descripcion)}">
+        <span class="text-clip">${escapeHtml(t.descripcion)}</span>
+        ${t.concepto ? `<span class="text-clip cell-secondary" title="${escapeAttr(t.concepto)}">${escapeHtml(t.concepto)}</span>` : ""}
+      </td>`;
     }
     return `<td class="col-money">${amountCell(t.amount)}</td>`;
   };
@@ -4863,6 +4920,11 @@ async function submitMovement(event) {
   if (state.submittingMovement) return;
   const isTransfer = normalizeType(document.getElementById("formType").value) === "transferencia";
   const isRecurring = isRecurringMode();
+  if (isRecurring && !state.recurrenceReady) {
+    setNotice("Elige la frecuencia antes de guardar.", "warn");
+    openRecurrenceDialog();
+    return;
+  }
   const btn = document.getElementById("submitMovement");
   state.submittingMovement = true;
   syncRegistrarActionButton();
@@ -5187,6 +5249,8 @@ function setRegisterModeFromClick(event) {
   const btn = event.target.closest('[data-register-mode]');
   if (!btn) return;
   document.querySelectorAll('[data-register-mode]').forEach(b => b.classList.toggle('active', b === btn));
+  // Salir de periódico invalida lo elegido: al volver hay que pasar otra vez por el diálogo.
+  state.recurrenceReady = false;
   syncRegistrarMode();
 }
 
@@ -5208,14 +5272,13 @@ function syncRegisterMode() {
   document.getElementById('registrar')?.classList.toggle('recurring-register-active', recurring);
   document.getElementById('movementForm')?.classList.toggle('recurring-form-active', recurring);
   document.getElementById('movementForm')?.classList.toggle('single-form-active', !recurring);
-  document.getElementById('recurringFields')?.classList.toggle('hidden', !recurring);
   document.querySelector('#movementForm .recurring-account')?.classList.toggle('hidden', !recurring || isTransfer);
-  document.querySelectorAll('#movementForm .movement-only').forEach(el => {
-    const fieldId = el.querySelector('input, select')?.id;
-    const hiddenInRecurring = ['formDate', 'formAccount'].includes(fieldId);
-    el.classList.toggle('hidden', isTransfer || (recurring && hiddenInRecurring));
-  });
-  // El modo periódico también modifica movement-only; se reaplica el único criterio
+  // En periódico no hay una fecha, hay un rango: el hueco de la fecha lo ocupa el botón
+  // que abre el diálogo de frecuencia, que además es obligatorio pasar antes de guardar.
+  document.querySelector('#movementForm .field-date')?.classList.toggle('hidden', recurring);
+  document.querySelector('#movementForm .field-frequency')?.classList.toggle('hidden', !recurring);
+  document.querySelectorAll('#movementForm .field-account').forEach(el => el.classList.toggle('hidden', isTransfer || recurring));
+  // El modo periódico vuelve a tocar los mismos huecos; se reaplica el único criterio
   // válido para que no vuelva a mostrar el concepto ni la descripción equivocada.
   syncRegistrarConceptField();
   syncRegistrarDescriptionFields();
@@ -5223,20 +5286,36 @@ function syncRegisterMode() {
   if (formDate) formDate.required = !recurring && !isTransfer;
   const recurrenceAccount = document.getElementById('recurrenceAccount');
   if (recurrenceAccount) recurrenceAccount.required = recurring && !isTransfer;
-  ['recurrenceStart', 'recurrenceEnd'].forEach(id => { const el = document.getElementById(id); if (el) el.required = recurring; });
   if (recurring) setDefaultRecurrenceDates();
   renderRecurrencePicker();
+  syncRecurrenceSummary();
 }
 
+// En ingreso e inversión el concepto no aporta nada, pero se queda en su hueco bloqueado
+// en gris en vez de desaparecer: así la rejilla mide lo mismo en los cuatro tipos y nada
+// salta de sitio al cambiar de uno a otro. En transferencia el hueco lo ocupa el destino,
+// que es lo único que ahí lo esconde de verdad.
 function syncRegistrarConceptField() {
   const type = document.getElementById("formType")?.value || "";
-  const hides = normalizeType(type) === "transferencia" || typeHidesConcept(type);
-  document.querySelectorAll(".concept-field").forEach(el => el.classList.toggle("hidden", hides));
+  const isTransfer = normalizeType(type) === "transferencia";
+  const locked = isTransfer || typeHidesConcept(type);
   const conceptEl = document.getElementById("formConcept");
   if (!conceptEl) return;
-  conceptEl.required = !hides;
-  // Un select oculto no debe arrastrar lo que hubiera elegido antes de cambiar de tipo.
-  if (hides) conceptEl.value = "";
+  conceptEl.required = !locked;
+  setFieldLocked(conceptEl, locked);
+  // Un select bloqueado no debe arrastrar lo que hubiera elegido antes de cambiar de tipo.
+  if (locked) conceptEl.value = "";
+}
+
+// Deja un control a la vista pero fuera de juego: sin foco, sin poder enviarse y con el
+// campo entero atenuado. El acceso al contenedor es defensivo porque estas funciones se
+// ejercitan en los tests con elementos de mentira que no tienen parentElement.
+function setFieldLocked(control, locked) {
+  if (!control) return;
+  control.disabled = !!locked;
+  if (locked) control.required = false;
+  const field = control.closest?.("label, .form-grid > *") || control.parentElement;
+  field?.classList?.toggle("field-locked", !!locked);
 }
 
 // La descripción del registrar la tocan dos barridos de .movement-only (el de tipo y el
@@ -5251,13 +5330,72 @@ function syncRegistrarDescriptionFields() {
   const form = document.getElementById("movementForm");
   toggleInvestmentDescriptionFields(form, isInvestment && !isTransfer);
   if (isTransfer && form) {
-    form.querySelectorAll(".free-description-field, .investment-description-field")
-      .forEach(el => el.classList.add("hidden"));
+    // En transferencia no hay descripción que valga, pero el campo se queda en su hueco
+    // bloqueado; el que desaparece es el desplegable de carteras.
+    form.querySelectorAll(".investment-description-field").forEach(el => el.classList.toggle("hidden", true));
+    form.querySelectorAll(".free-description-field").forEach(el => el.classList.toggle("hidden", false));
   }
   const descriptionEl = document.getElementById("formDescription");
   if (descriptionEl) descriptionEl.required = !isTransfer && !isInvestment;
+  setFieldLocked(descriptionEl, isTransfer);
   const descriptionSelectEl = document.getElementById("formDescriptionSelect");
   if (descriptionSelectEl) descriptionSelectEl.required = !isTransfer && isInvestment;
+}
+
+// En periódico la fecha suelta no significa nada: lo que hace falta es un rango y unos
+// días. Vive en su propio diálogo y hay que pasar por él antes de poder guardar, así el
+// formulario mantiene las mismas cuatro filas que en puntual.
+function openRecurrenceDialog() {
+  setDefaultRecurrenceDates();
+  renderRecurrencePicker();
+  hideRecurrenceError();
+  document.getElementById("recurrenceDialog")?.showModal();
+  refreshIcons();
+}
+
+function hideRecurrenceError() {
+  document.getElementById("recurrenceError")?.classList.add("hidden");
+}
+
+function recurrenceFormError() {
+  const start = parseDate(document.getElementById("recurrenceStart")?.value);
+  const end = parseDate(document.getElementById("recurrenceEnd")?.value);
+  if (!start || !end) return "Elige la fecha de inicio y la de fin.";
+  if (end < start) return "La fecha de fin tiene que ir después de la de inicio.";
+  if (!selectedRecurrenceValues().length) return "Marca al menos un día.";
+  return "";
+}
+
+function confirmRecurrence(event) {
+  event?.preventDefault();
+  const error = recurrenceFormError();
+  const box = document.getElementById("recurrenceError");
+  if (error) {
+    if (box) {
+      box.textContent = error;
+      box.classList.remove("hidden");
+    }
+    return;
+  }
+  state.recurrenceReady = true;
+  document.getElementById("recurrenceDialog")?.close();
+  syncRecurrenceSummary();
+}
+
+// El botón cuenta lo que hay elegido: mientras no sea válido dice "Elegir", que es la
+// pista de que todavía falta pasar por ahí.
+function syncRecurrenceSummary() {
+  const label = document.getElementById("recurrenceSummary");
+  if (!label) return;
+  const ready = !!state.recurrenceReady && !recurrenceFormError();
+  document.querySelector("#movementForm .field-frequency")?.classList.toggle("field-frequency-ready", ready);
+  if (!ready) {
+    state.recurrenceReady = false;
+    label.textContent = "Elegir";
+    return;
+  }
+  const monthly = document.getElementById("recurrenceType")?.value === "monthly";
+  label.textContent = `${monthly ? "Mensual" : "Semanal"} · ${selectedRecurrenceValues().length} d.`;
 }
 
 function setDefaultRecurrenceDates() {

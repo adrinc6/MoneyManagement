@@ -18,7 +18,7 @@
        app.js degrada (sin iconos ni gráficas) en vez de romperse. -->
   <script defer crossorigin="anonymous" src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
   <script defer crossorigin="anonymous" src="https://unpkg.com/lucide@1.24.0/dist/umd/lucide.min.js"></script>
-  <link rel="stylesheet" href="styles.css?v=20260828-v50" />
+  <link rel="stylesheet" href="styles.css?v=20260828-v51" />
 </head>
 <body>
   <main class="app">
@@ -58,23 +58,26 @@
       <article class="panel registrar-form-panel">
         <div class="panel-body">
           <div class="segmented section-switch" id="registerModeSwitch"><button class="active" data-register-mode="single" type="button">Puntual</button><button data-register-mode="recurring" type="button">Periódico</button></div>
-          <form id="movementForm" class="form-grid">
-            <label class="movement-only">Fecha <input id="formDate" type="date" required /></label>
-            <label>Tipo <select id="formType" required></select></label>
-            <label class="movement-only concept-field">Concepto <select id="formConcept" required></select></label>
-            <label class="wide movement-only free-description-field">Descripción <input id="formDescription" placeholder="Compra, alquiler, nómina..." required /></label>
-            <label class="wide movement-only investment-description-field hidden">Descripción <select id="formDescriptionSelect"></select></label>
-            <label class="movement-only">Cuenta <select id="formAccount"></select></label>
-            <label class="recurring-account hidden">Cuenta <select id="recurrenceAccount"></select></label>
-            <label>Importe EUR <input id="formAmount" type="number" step="0.01" placeholder="0.00" required /></label>
-            <label class="transfer-only hidden">Origen <select id="formTransferFrom"></select></label>
-            <label class="transfer-only hidden">Destino <select id="formTransferTo"></select></label>
-            <section id="recurringFields" class="wide recurring-fields hidden">
-              <label>Frecuencia <select id="recurrenceType"><option value="weekly">Semanal</option><option value="monthly">Mensual</option></select></label>
-              <label>Fecha inicio <input id="recurrenceStart" type="date" /></label>
-              <label>Fecha fin <input id="recurrenceEnd" type="date" /></label>
-              <div id="recurrencePicker" class="wide recurrence-picker"></div>
-            </section>
+          <!-- Cuatro filas fijas, iguales para los cuatro tipos: fecha y tipo, cuenta y
+               concepto, descripción, importe. Lo que cambia entre tipos es qué control
+               ocupa cada hueco y cuál queda bloqueado, nunca cuántas filas hay. -->
+          <form id="movementForm" class="form-grid registrar-fields">
+            <label class="slot-a field-date">Fecha <input id="formDate" type="date" required /></label>
+            <div class="slot-a field-frequency hidden">
+              <span class="field-frequency-title">Frecuencia</span>
+              <button class="btn field-frequency-btn" id="openRecurrenceBtn" type="button">
+                <i data-lucide="repeat-2"></i><span id="recurrenceSummary">Elegir</span>
+              </button>
+            </div>
+            <label class="slot-b">Tipo <select id="formType" required></select></label>
+            <label class="slot-c field-account">Cuenta <select id="formAccount"></select></label>
+            <label class="slot-c recurring-account hidden">Cuenta <select id="recurrenceAccount"></select></label>
+            <label class="slot-c transfer-only hidden">Origen <select id="formTransferFrom"></select></label>
+            <label class="slot-d concept-field">Concepto <select id="formConcept" required></select></label>
+            <label class="slot-d transfer-only hidden">Destino <select id="formTransferTo"></select></label>
+            <label class="slot-e wide free-description-field">Descripción <input id="formDescription" placeholder="Compra, alquiler, nómina..." required /></label>
+            <label class="slot-e wide investment-description-field hidden">Descripción <select id="formDescriptionSelect"></select></label>
+            <label class="slot-f wide">Importe EUR <input id="formAmount" type="number" step="0.01" placeholder="0.00" required /></label>
             <button class="btn primary wide form-submit-inline" id="submitMovement" type="submit"><i data-lucide="save"></i> Guardar registro</button>
           </form>
         </div>
@@ -346,6 +349,23 @@
     </section>
   </main>
   <div class="toast-container" id="toastContainer" aria-live="polite"></div>
+  <dialog id="recurrenceDialog">
+    <div class="dialog-head">
+      <h2>Frecuencia</h2>
+      <button class="icon-btn" id="closeRecurrenceBtn" type="button" aria-label="Cerrar"><i data-lucide="x"></i></button>
+    </div>
+    <form id="recurrenceForm" class="panel-body">
+      <section id="recurringFields" class="recurring-fields">
+        <label>Frecuencia <select id="recurrenceType"><option value="weekly">Semanal</option><option value="monthly">Mensual</option></select></label>
+        <label>Fecha inicio <input id="recurrenceStart" type="date" /></label>
+        <label>Fecha fin <input id="recurrenceEnd" type="date" /></label>
+        <div id="recurrencePicker" class="wide recurrence-picker"></div>
+      </section>
+      <p id="recurrenceError" class="recurrence-error hidden"></p>
+      <button class="btn primary full" id="confirmRecurrenceBtn" type="submit"><i data-lucide="check"></i> Aplicar frecuencia</button>
+    </form>
+  </dialog>
+
   <dialog id="movementPopup"><div class="dialog-head"><h2 id="movementPopupTitle">Movimiento</h2><button class="icon-btn" id="closeMovementPopupBtn" aria-label="Cerrar"><i data-lucide="x"></i></button></div><div class="panel-body" id="movementPopupBody"></div></dialog>
   <dialog id="movementDeleteAccountDialog">
     <div class="dialog-head">
@@ -477,6 +497,7 @@
       <span class="nav-badge hidden" id="pendingOpsBadge">0</span>
       <i data-lucide="settings"></i><span>Ajustes</span>
     </button>
+    <span class="nav-ind" aria-hidden="true"></span>
   </nav>
 
   <dialog id="monthSituationDialog">
@@ -694,6 +715,6 @@
 
   <!-- El registro del service worker y la recarga por actualización viven en app.js,
        junto al resto del arranque, para no tener el ciclo de vida repartido en dos sitios. -->
-  <script defer src="app.js?v=20260828-v50"></script>
+  <script defer src="app.js?v=20260828-v51"></script>
 </body>
 </html>
