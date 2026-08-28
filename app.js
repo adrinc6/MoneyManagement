@@ -3184,19 +3184,17 @@ async function fetchDownloadData(options = {}, { label = "datos", showProgress =
         throw error;
       }
       recoveryAttempt += 1;
+      // onRecovery ajusta la petición (p. ej. parte la página) y devuelve qué hizo.
       const recoveryDetail = typeof onRecovery === "function"
         ? String(onRecovery({ attempt: recoveryAttempt, error }) || "")
         : "";
       if (recoveryAttempt === 1 || recoveryAttempt % 6 === 0) {
-        logSyncEvent(`Reconectando al descargar ${label}; se conserva el progreso.`, "", `Intento ${recoveryAttempt}: ${describeRequestError(error)}`);
+        logSyncEvent(`Reconectando al descargar ${label}; se conserva el progreso.`, "", lineMessage(`Intento ${recoveryAttempt}: ${describeRequestError(error)}`, recoveryDetail));
       }
-      syncStatusStep(showProgress, lineMessage(
-        `Descargando ${label}`,
-        `Reconectando sin reiniciar (intento ${recoveryAttempt})`,
-        recoveryDetail
       // Los primeros intentos no se pintan como aviso: un reintento aislado es normal y
       // teñir la barra de amarillo hacía parecer roto algo que iba a funcionar.
-      ), recoveryAttempt >= 3 ? "warn" : "");
+      // El aviso ocupa dos líneas como máximo: manda el ajuste aplicado si lo hay.
+      syncStatusStep(showProgress, `Descargando ${label}\n${recoveryDetail || `Reconectando (intento ${recoveryAttempt})`}`, recoveryAttempt >= 3 ? "warn" : "");
       await waitForDownloadRecovery(recoveryAttempt);
     }
   }
@@ -5327,7 +5325,7 @@ function renderFutureDueNotice() {
   const due = state.futureTransactions.filter(t => t.date <= endOfToday());
   if (!due.length) return;
   if (state.config.scriptUrl) {
-    setSyncStatus(`Moviendo ${due.length} movimiento(s) futuro(s) vencido(s)`, "");
+    setSyncStatus(`Moviendo ${due.length} futuro(s)\nya vencido(s)`, "");
     return;
   }
   showMovementPopup(
@@ -7114,7 +7112,7 @@ async function saveInvestmentCategoriesFromDialog(event) {
       setNotice("Categorías aplicadas en caché y enviadas a Sheets.", "ok");
     } else {
       safeSetItem(INVESTMENT_CATEGORY_CACHE_KEY, JSON.stringify(nextTypes));
-      setSyncStatus("Categorías guardadas en este navegador", "ok");
+      setSyncStatus("Categorías guardadas\nen este navegador", "ok");
     }
     markButtonSaved(btn);
   } catch (error) {
@@ -8493,8 +8491,12 @@ function removeAccents(value) { return String(value || "").normalize("NFD").repl
 function setSyncStatus(message, type = "") {
   const el = document.getElementById("sourceNotice");
   if (!el) return;
-  el.textContent = message || "";
-  el.classList.toggle("show", Boolean(message));
+  // El aviso de cabecera tiene alto fijo de dos líneas: se normaliza el separador
+  // " // " de lineMessage a salto real y se descartan las líneas que ya no caben,
+  // para que un mensaje largo nunca desplace la cabecera.
+  const text = String(message ?? "").replace(/\s*\/\/\s*/g, "\n").split("\n").slice(0, 2).join("\n");
+  el.textContent = text;
+  el.classList.toggle("show", Boolean(text));
   el.classList.toggle("ok", type === "ok");
   el.classList.toggle("warn", type === "warn");
 }
