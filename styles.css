@@ -2418,14 +2418,16 @@ TABLAS DE INVERSIONES: ajuste mínimo sin scroll horizontal
   font-size: 0.765rem;
 }
 
-/* Desglose de Invertido: una fila por grupo, siempre en una línea. El ancho de las
-   columnas de dinero es fijo para que ninguna cifra parta la fila en dos. */
+/* Desglose de Invertido: una fila por grupo, siempre en una línea. Las tres columnas de
+   números se quedan con el ancho que piden sus cifras (y su cabecera) y el grupo se lleva
+   el resto; antes iban a un ancho fijo en ch que recortaba "Invertido" y los porcentajes
+   de dos dígitos. */
 .invested-summary-wrap {
   max-height: none;
 }
 #investedSummaryTable {
   width: 100%;
-  table-layout: fixed;
+  table-layout: auto;
   border-collapse: collapse;
   font-size: 0.775rem;
   font-variant-numeric: tabular-nums;
@@ -2446,8 +2448,23 @@ TABLAS DE INVERSIONES: ajuste mínimo sin scroll horizontal
   letter-spacing: .04em;
 }
 #investedSummaryTable tbody tr:last-child td { border-bottom: 0; }
-#investedSummaryTable .col-money { width: 9ch; }
-#investedSummaryTable .col-pct { width: 5ch; }
+/* width:1% con el contenido en una línea deja cada columna de números en su ancho de
+   contenido; el grupo pide el 100% restante y max-width:0 es lo que le permite encogerse
+   y recortar con puntos suspensivos en vez de ensanchar la tabla. */
+#investedSummaryTable .col-money,
+#investedSummaryTable .col-pct {
+  width: 1%;
+  min-width: 0;
+  white-space: nowrap;
+  /* Las cabeceras van pegadas a la derecha como las cifras que encabezan: .col-money ya
+     lo traía de la regla general, pero el % de .col-pct se quedaba a la izquierda. */
+  text-align: right;
+}
+#investedSummaryTable th:first-child,
+#investedSummaryTable td:first-child {
+  width: 100%;
+  max-width: 0;
+}
 #investedSummaryTable .invested-summary-total td {
   background: var(--soft);
   font-weight: 700;
