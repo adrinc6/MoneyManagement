@@ -1462,103 +1462,6 @@ canvas { width: 100% !important; height: 100% !important; }
 .investment-summary-body > strong {
   font-size: 1.25rem;
 }
-.investment-goals-body {
-  display: grid;
-  gap: 0;
-}
-.investment-evolution-body {
-  display: grid;
-  gap: 10px;
-  margin-top: 10px;
-}
-.evolution-toolbar,
-.evolution-estimates {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 7px;
-}
-.evolution-toolbar label,
-.evolution-estimates label {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 4px;
-  color: var(--muted);
-  font-size: .68rem;
-}
-.evolution-toolbar select,
-.evolution-estimates input {
-  min-height: 34px;
-  padding: 6px 7px;
-  font-size: 0.75rem;
-}
-.evolution-table-wrap table {
-  min-width: 0;
-  table-layout: fixed;
-  font-size: .72rem;
-}
-.evolution-table-wrap th,
-.evolution-table-wrap td {
-  padding: 6px 3px;
-  letter-spacing: 0;
-}
-.evolution-table-wrap th:first-child,
-.evolution-table-wrap td:first-child {
-  width: 12%;
-}
-.evolution-table-wrap th:not(:first-child),
-.evolution-table-wrap td:not(:first-child) {
-  width: 14.66%;
-  text-align: right;
-}
-.total-metrics {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 7px;
-  margin-top: 8px;
-}
-.total-metrics-line {
-  min-width: 0;
-  padding: 8px;
-  border-radius: 8px;
-  background: var(--soft);
-}
-.total-metrics-line.split {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 7px;
-  padding: 0;
-  background: transparent;
-}
-.total-metrics-line.split > div {
-  min-width: 0;
-  padding: 8px;
-  border-radius: 8px;
-  background: var(--soft);
-}
-.total-metrics span,
-.total-metrics strong {
-  display: block;
-}
-.total-metrics span {
-  color: var(--muted);
-  font-size: 0.765rem;
-}
-.total-metrics strong {
-  margin-top: 2px;
-  font-size: 0.845rem;
-  overflow-wrap: anywhere;
-}
-dialog {
-  width: min(900px, calc(100vw - 24px));
-  border: 0;
-  border-radius: 8px;
-  padding: 0;
-  box-shadow: 0 24px 80px rgba(0, 0, 0, .25);
-  background: var(--panel);
-  color: var(--ink);
-}
-dialog::backdrop { background: rgba(15, 23, 42, .5); }
-
 /* Isla: flota por encima del contenido, separada de los bordes. El hueco que necesita
    por debajo lo reserva cada vista con --nav-space, no la altura de .app. */
 .bottom-nav {
@@ -1772,15 +1675,6 @@ dialog::backdrop { background: rgba(15, 23, 42, .5); }
 
   .tag { padding-inline: 5px; font-size: .68rem; }
   .bank-row { grid-template-columns: 1fr; }
-  .evolution-toolbar,
-  .evolution-estimates { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; }
-  .evolution-toolbar label,
-  .evolution-estimates label { font-size: .62rem; }
-  .evolution-toolbar select,
-  .evolution-estimates input { min-height: 31px; padding: 5px 4px; font-size: 0.75rem; }
-  .evolution-table-wrap table { font-size: .64rem; }
-  .evolution-table-wrap th,
-  .evolution-table-wrap td { padding: 5px 2px; }
 }
 
 @media (max-width: 380px) {
@@ -2103,46 +1997,8 @@ html, body {
 }
 .choice-grid input:checked + span { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
 .table-head-btn { border: 0; background: transparent; color: inherit; font-weight: 800; padding: 0; }
-.goal-row {
-  display: grid;
-  gap: 8px;
-  padding: 12px 0;
-  border-bottom: 1px solid var(--line);
-}
-.goal-row:first-child { padding-top: 0; }
-.goal-row:last-child { border-bottom: 0; padding-bottom: 0; }
-.goal-row strong,
-.goal-row span,
-.goal-row small { display: block; }
-.goal-heading {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 10px;
-}
-.goal-heading > strong {
-  min-width: 0;
-  font-size: 0.865rem;
-}
-.goal-meta {
-  display: flex;
-  align-items: baseline;
-  justify-content: flex-end;
-  gap: 8px;
-  min-width: 0;
-  color: var(--muted);
-  font-size: 0.755rem;
-  text-align: right;
-}
-.goal-overrun {
-  color: var(--bad);
-  font-weight: 700;
-}
 .goal-track { height: 14px; display: flex; overflow: hidden; border-radius: 999px; background: var(--soft); }
 .goal-track span { display: block; }
-.goal-track .done { background: var(--blue); }
-.goal-track .planned { background: var(--warn); }
-.goal-track .remaining { background: var(--goal-remaining); }
 .goal-metrics {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -2165,8 +2021,6 @@ html, body {
   font-size: .68rem;
   line-height: 1.15;
 }
-.goal-metrics .done strong { color: var(--blue); }
-.goal-metrics .planned strong { color: var(--warn); }
 .goal-metrics .remaining strong { color: var(--goal-remaining-text); }
 @media (max-width: 720px) {
   .recurring-fields { grid-template-columns: 1fr; }
@@ -2187,8 +2041,7 @@ TABLAS DE INVERSIONES: ajuste mínimo sin scroll horizontal
    ========================================================= */
 .table-wrap:has(#investmentEditTable),
 .table-wrap:has(#investmentBreakdownTable),
-.table-wrap:has(#compositionTable),
-.table-wrap:has(#compositionGroupTable),
+.table-wrap:has([id^="compositionGroupTable"]),
 .table-wrap:has(#investmentCompositionTable),
 .table-wrap:has(#compositionGroupEditorTable) {
   overflow-x: hidden;
@@ -2855,9 +2708,23 @@ TABLAS DE INVERSIONES: ajuste mínimo sin scroll horizontal
 
 /* Objetivos de composición */
 
+/* Objetivos se lee de un vistazo o no sirve: letra algo más pequeña y todo más junto para que
+   quepan los máximos grupos posibles en una pantalla. */
+.composition-panel .panel-header {
+  padding: 12px 12px 0;
+}
+
+.composition-panel .panel-header h2 {
+  font-size: 1rem;
+}
+
+.composition-panel .panel-body {
+  padding: 12px;
+}
+
 .composition-body {
   display: grid;
-  gap: 12px;
+  gap: 9px;
 }
 
 .composition-total {
@@ -2868,13 +2735,16 @@ TABLAS DE INVERSIONES: ajuste mínimo sin scroll horizontal
 }
 
 .composition-total span {
-  font-size: 0.815rem;
+  font-size: 0.755rem;
   color: var(--muted);
 }
 
 .composition-total input {
-  width: 140px;
+  width: 118px;
+  min-height: 34px;
+  padding: 6px 9px;
   text-align: right;
+  font-size: 0.8rem;
   font-variant-numeric: tabular-nums;
 }
 
@@ -2889,6 +2759,11 @@ TABLAS DE INVERSIONES: ajuste mínimo sin scroll horizontal
 
 .composition-metrics {
   margin: 0;
+  gap: 6px;
+}
+
+.composition-metrics > div {
+  padding: 5px 7px;
 }
 
 .composition-metrics strong,
@@ -2896,22 +2771,204 @@ TABLAS DE INVERSIONES: ajuste mínimo sin scroll horizontal
   display: block;
 }
 
+.composition-metrics strong {
+  font-size: 0.765rem;
+}
+
+.composition-metrics span {
+  margin-top: 0;
+  font-size: 0.625rem;
+}
+
 /* Solo se pinta cuando hay reparto: una barra vacía a media tarjeta se ve como un fallo. */
 .composition-track:empty {
   display: none;
 }
 
+.composition-track {
+  height: 9px;
+}
+
 .composition-track span {
   display: block;
   min-width: 1px;
+  background-color: var(--slice, var(--goal-remaining));
 }
 
-.composition-note:empty {
+/* Un grupo, una tarjeta: sus tres cifras y, si reparte por dentro, su tabla. La única barra
+   de la pestaña es la tira de la composición total, así que aquí van solo cifras. */
+.composition-groups {
+  display: grid;
+  gap: 7px;
+}
+
+.composition-groups:empty {
   display: none;
 }
 
-.composition-note {
-  font-size: 0.795rem;
+.composition-group-card {
+  display: grid;
+  gap: 7px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--panel);
+}
+
+.composition-group-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.composition-group-name {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  min-width: 0;
+}
+
+.composition-group-name h3 {
+  margin: 0;
+  font-size: 0.845rem;
+  font-weight: 700;
+}
+
+.composition-group-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 2px;
+}
+
+.composition-group-actions .icon-btn {
+  width: 28px;
+  height: 28px;
+  min-height: 0;
+}
+
+/* Lo que pesa hoy y lo que debería pesar, juntos: es la comparación que se mira primero. */
+.composition-weight {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--soft);
+  font-size: 0.68rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.composition-weight .now {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.composition-weight em {
+  font-style: normal;
+  color: var(--muted);
+}
+
+.composition-weight.over .goal {
+  color: var(--bad);
+}
+
+.composition-fixed-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--soft);
+  color: var(--muted);
+  font-size: 0.655rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* El tramo de un importe fijo va rayado: ocupa su parte del objetivo sin competir por peso. */
+.composition-fixed-slice {
+  background-image: repeating-linear-gradient(45deg, rgba(255, 255, 255, .55) 0 3px, transparent 3px 6px);
+}
+
+.composition-group-card[data-folded="true"] .composition-group-body {
+  display: none;
+}
+
+.composition-fold-btn i {
+  transition: transform .18s ease;
+}
+
+.composition-group-card[data-folded="true"] .composition-fold-btn i {
+  transform: rotate(180deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .composition-fold-btn i { transition: none; }
+}
+
+.composition-group-body {
+  max-height: none;
+}
+
+.composition-group-body table {
+  font-size: 0.705rem;
+}
+
+.composition-group-body th,
+.composition-group-body td {
+  padding: 5px 3px;
+}
+
+.composition-group-body th {
+  font-size: 0.645rem;
+}
+
+.composition-group-body tfoot td {
+  border-top: 1px solid var(--line);
+  border-bottom: 0;
+  font-weight: 700;
+}
+
+/* Cada fila del editor va por peso o por importe fijo, y el interruptor decide cuál de los dos
+   juegos de campos se ve. En % siguen los dos huecos de la fracción. */
+.composition-mode-btn {
+  min-width: 26px;
+  padding: 3px 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--field);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.755rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.composition-mode-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.composition-value-cell {
+  white-space: nowrap;
+}
+
+.composition-weight-fields {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 3px;
+}
+
+tr[data-mode="fixed"] .composition-weight-fields,
+tr[data-mode="weight"] .composition-fixed-fields {
+  display: none;
+}
+
+tr[data-mode="fixed"] .composition-fixed-fields .tiny-input {
+  width: 78px;
 }
 
 .composition-editor-body {
@@ -2940,7 +2997,8 @@ TABLAS DE INVERSIONES: ajuste mínimo sin scroll horizontal
 }
 
 .composition-editor-wrap .tiny-input {
-  width: 52px;
+  width: 50px;
+  padding-inline: 6px;
   text-align: right;
 }
 
@@ -2977,7 +3035,8 @@ table.composition-compact td {
 }
 
 table.composition-compact .tiny-input {
-  width: 46px;
+  width: 44px;
+  padding-inline: 5px;
 }
 
 table.composition-tiny {
@@ -2991,4 +3050,5 @@ table.composition-tiny td {
 
 table.composition-tiny .tiny-input {
   width: 40px;
+  padding-inline: 3px;
 }

@@ -18,7 +18,7 @@
        app.js degrada (sin iconos ni gráficas) en vez de romperse. -->
   <script defer crossorigin="anonymous" src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
   <script defer crossorigin="anonymous" src="https://unpkg.com/lucide@1.24.0/dist/umd/lucide.min.js"></script>
-  <link rel="stylesheet" href="styles.css?v=20260828-v57" />
+  <link rel="stylesheet" href="styles.css?v=20260828-v58" />
 </head>
 <body>
   <main class="app">
@@ -156,7 +156,6 @@
       <div class="segmented section-switch" id="investmentPanelSwitch">
         <button class="active" data-investment-panel="current" type="button">Inversión</button>
         <button data-investment-panel="goals" type="button">Objetivos</button>
-        <button data-investment-panel="evolution" type="button">Evolución</button>
       </div>
 
       <article class="panel composition-panel hidden" id="investmentCompositionPanel">
@@ -167,11 +166,10 @@
           <button class="icon-btn minimal-icon" id="editInvestmentCompositionBtn" type="button" aria-label="Editar composición"><i data-lucide="edit-3"></i></button>
         </div>
         <div class="panel-body composition-body">
-          <label class="composition-total"><span>Objetivo total</span><input id="compositionTotalInput" type="number" step="0.01" inputmode="decimal" placeholder="Mínimo" /></label>
+          <label class="composition-total"><span>A repartir por pesos</span><input id="compositionTotalInput" type="number" step="0.01" inputmode="decimal" placeholder="Mínimo" /></label>
           <div class="composition-summary" id="compositionTotalSummary"></div>
           <div class="goal-track composition-track" id="compositionTrack"></div>
-          <div class="table-wrap"><table id="compositionTable"></table></div>
-          <div class="composition-note" id="compositionNote"></div>
+          <div class="composition-groups" id="compositionGroups"></div>
         </div>
       </article>
 
@@ -179,27 +177,12 @@
         <div class="investment-summary-head">
           <div class="investment-summary-title">
             <h2 id="investmentPanelLabel">Inversión</h2>
-            <button class="icon-btn minimal-icon hidden" id="editInvestmentGoalsBtn" type="button" aria-label="Editar objetivos"><i data-lucide="edit-3"></i></button>
           </div>
         </div>
         <button class="investment-summary-body tappable" id="openInvestmentOverviewBtn" type="button">
           <strong id="investmentCurrentTotal">0,00 EUR</strong>
           <div class="total-metrics" id="investmentTotalMetrics"></div>
         </button>
-        <div class="investment-goals-body hidden" id="investmentGoals"></div>
-        <div class="investment-evolution-body hidden" id="investmentEvolution">
-          <div class="evolution-toolbar">
-            <label><span>Mes inicial</span><select id="evolutionStartMonth"></select></label>
-            <label><span>Mes final</span><select id="evolutionEndMonth"></select></label>
-            <label><span>Día foto</span><select id="evolutionSnapshotDay"></select></label>
-          </div>
-          <div class="table-wrap evolution-table-wrap"><table id="evolutionTable"></table></div>
-          <div class="evolution-estimates">
-            <label><span>Ingresos</span><input id="evolutionEstimateIncome" type="number" step="1" inputmode="decimal" /></label>
-            <label><span>Gasto</span><input id="evolutionEstimateExpense" type="number" step="1" inputmode="decimal" /></label>
-            <label><span>Aportaciones</span><input id="evolutionEstimateInvestment" type="number" step="1" inputmode="decimal" /></label>
-          </div>
-        </div>
       </article>
 
       <article class="panel">
@@ -619,8 +602,6 @@
     <form id="investmentGoalsForm" class="panel-body form-grid">
       <label class="wide">Gasto mensual <input id="goalExpenseMonthlyInput" type="number" step="0.01" inputmode="decimal" /></label>
       <label class="wide">Inversión mensual <input id="goalInvestmentMonthlyInput" type="number" step="0.01" inputmode="decimal" /></label>
-      <label class="wide">Inversión anual <input id="goalYearlyInput" type="number" step="0.01" inputmode="decimal" /></label>
-      <label class="wide">Inversión total <input id="goalTotalInput" type="number" step="0.01" inputmode="decimal" /></label>
       <button class="btn primary wide" type="submit"><i data-lucide="save"></i> Guardar objetivos</button>
     </form>
   </dialog>
@@ -658,19 +639,10 @@
       <h2 id="compositionGroupTitle">Grupo</h2>
       <button class="icon-btn" id="closeCompositionGroupBtn" type="button" aria-label="Cerrar"><i data-lucide="x"></i></button>
     </div>
-    <div id="compositionGroupDetail" class="panel-body composition-editor-body">
-      <div id="compositionGroupHead"></div>
-      <div class="table-wrap composition-editor-wrap"><table id="compositionGroupTable"></table></div>
-      <div class="composition-note" id="compositionGroupNote"></div>
-      <div class="section-toolbar composition-editor-toolbar">
-        <button class="btn" id="compositionGroupEditBtn" type="button"><i data-lucide="edit-3"></i> Editar pesos</button>
-      </div>
-    </div>
-    <form id="compositionGroupForm" class="panel-body composition-editor-body hidden">
+    <form id="compositionGroupForm" class="panel-body composition-editor-body">
       <div class="composition-check"><strong id="compositionGroupStatus"></strong></div>
       <div class="table-wrap composition-editor-wrap"><table id="compositionGroupEditorTable"></table></div>
       <div class="section-toolbar composition-editor-toolbar">
-        <button class="btn" id="compositionGroupBackBtn" type="button"><i data-lucide="arrow-left"></i> Volver</button>
         <button class="btn primary" type="submit"><i data-lucide="save"></i> Guardar pesos</button>
       </div>
     </form>
@@ -715,6 +687,6 @@
 
   <!-- El registro del service worker y la recarga por actualización viven en app.js,
        junto al resto del arranque, para no tener el ciclo de vida repartido en dos sitios. -->
-  <script defer src="app.js?v=20260828-v57"></script>
+  <script defer src="app.js?v=20260828-v58"></script>
 </body>
 </html>
