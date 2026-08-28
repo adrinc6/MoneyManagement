@@ -3491,7 +3491,6 @@ function buildRegistrarSummaryCards() {
 }
 
 function renderMonthSituationDialog(summary) {
-  renderMonthSituationBars(summary);
   document.querySelectorAll("[data-situation-mode]").forEach(btn => {
     btn.classList.toggle("active", btn.dataset.situationMode === state.summaryModes.situation);
   });
@@ -7364,38 +7363,6 @@ function moneyTooltip() {
 
 function summaryItem(title, value, tone) {
   return `<div class="summary-item"><span>${escapeHtml(title)}</span><strong class="${tone || ""}">${escapeHtml(value)}</strong></div>`;
-}
-
-function renderMonthSituationBars(summary) {
-  const outflow = summary.expenses + summary.investedMonth;
-  const expenseShare = outflow ? summary.expenses / outflow : 0;
-  const investmentShare = outflow ? summary.investedMonth / outflow : 0;
-  document.getElementById("monthSituationBars").innerHTML = `
-    <div class="balance-bar-row">
-      <div class="balance-bar-heading">
-        <strong>Ingresos</strong>
-        <span class="balance-bar-summary">
-          <strong class="positive">${money(summary.income)}</strong>
-        </span>
-        </div>
-    </div>
-    <div class="balance-bar-row">
-      <div class="balance-bar-heading">
-        <strong>Gastos + Inversión</strong>
-        <span class="balance-bar-summary">
-          <strong>${money(outflow)}</strong>
-          <small>Gasto ${pct(expenseShare)} · Inversión ${pct(investmentShare)}</small>
-        </span>
-      </div>
-    </div>
-    <div class="balance-bar-row balance-final">
-      <div class="balance-bar-heading">
-        <strong>Balance</strong>
-        <span class="balance-bar-summary">
-          <strong class="${summary.balance >= 0 ? "positive" : "negative"}">${money(summary.balance)}</strong>
-        </span>
-      </div>
-    </div>`;
 }
 
 function monthlyGoalCard(kind, title, current, goal, options = {}) {

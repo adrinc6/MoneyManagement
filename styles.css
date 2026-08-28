@@ -1302,41 +1302,6 @@ canvas { width: 100% !important; height: 100% !important; }
 #bankMoneyDetail > .section-switch {
   margin-top: 0;
 }
-.balance-bars {
-  display: grid;
-  gap: 12px;
-}
-.balance-bar-row {
-  display: grid;
-  gap: 6px;
-}
-.balance-bar-row > div:first-child,
-.balance-bar-heading {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-  color: var(--muted);
-  font-size: 0.795rem;
-}
-.balance-bar-row strong { color: var(--ink); }
-.balance-bar-summary {
-  display: grid;
-  gap: 2px;
-  text-align: right;
-}
-.balance-bar-summary strong {
-  font-size: 0.875rem;
-}
-.balance-bar-summary small {
-  color: var(--muted);
-  font-size: 0.765rem;
-  line-height: 1.2;
-}
-.balance-final {
-  padding-top: 4px;
-  border-top: 1px solid var(--line);
-}
 .bank-check {
   margin: 12px 0;
   display: flex;

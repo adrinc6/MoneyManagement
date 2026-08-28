@@ -18,7 +18,7 @@
        app.js degrada (sin iconos ni gráficas) en vez de romperse. -->
   <script defer crossorigin="anonymous" src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
   <script defer crossorigin="anonymous" src="https://unpkg.com/lucide@1.24.0/dist/umd/lucide.min.js"></script>
-  <link rel="stylesheet" href="styles.css?v=20260828-v51" />
+  <link rel="stylesheet" href="styles.css?v=20260828-v52" />
 </head>
 <body>
   <main class="app">
@@ -506,7 +506,6 @@
       <button class="icon-btn" id="closeMonthSituationBtn" aria-label="Cerrar"><i data-lucide="x"></i></button>
     </div>
     <div class="panel-body">
-      <div id="monthSituationBars" class="balance-bars"></div>
       <div class="segmented section-switch" id="monthSituationMode">
         <button data-situation-mode="ingresos" type="button">Ingresos</button>
         <button class="active" data-situation-mode="gastos" type="button">Gastos</button>
@@ -715,6 +714,6 @@
 
   <!-- El registro del service worker y la recarga por actualización viven en app.js,
        junto al resto del arranque, para no tener el ciclo de vida repartido en dos sitios. -->
-  <script defer src="app.js?v=20260828-v51"></script>
+  <script defer src="app.js?v=20260828-v52"></script>
 </body>
 </html>
