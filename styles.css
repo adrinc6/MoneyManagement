@@ -1462,6 +1462,54 @@ canvas { width: 100% !important; height: 100% !important; }
 .investment-summary-body > strong {
   font-size: 1.25rem;
 }
+.total-metrics {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 7px;
+  margin-top: 8px;
+}
+.total-metrics-line {
+  min-width: 0;
+  padding: 8px;
+  border-radius: 8px;
+  background: var(--soft);
+}
+.total-metrics-line.split {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  padding: 0;
+  background: transparent;
+}
+.total-metrics-line.split > div {
+  min-width: 0;
+  padding: 8px;
+  border-radius: 8px;
+  background: var(--soft);
+}
+.total-metrics span,
+.total-metrics strong {
+  display: block;
+}
+.total-metrics span {
+  color: var(--muted);
+  font-size: 0.765rem;
+}
+.total-metrics strong {
+  margin-top: 2px;
+  font-size: 0.845rem;
+  overflow-wrap: anywhere;
+}
+dialog {
+  width: min(900px, calc(100vw - 24px));
+  border: 0;
+  border-radius: 8px;
+  padding: 0;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, .25);
+  background: var(--panel);
+  color: var(--ink);
+}
+dialog::backdrop { background: rgba(15, 23, 42, .5); }
 /* Isla: flota por encima del contenido, separada de los bordes. El hueco que necesita
    por debajo lo reserva cada vista con --nav-space, no la altura de .app. */
 .bottom-nav {
