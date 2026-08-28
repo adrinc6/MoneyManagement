@@ -142,11 +142,13 @@ const SENT_HISTORY_KEY = "moneySentHistory";
 const SYNC_LOG_KEY = "moneySyncLog";
 const THEME_KEY = "moneyTheme";
 const INVESTMENT_ESTIMATE_MODE_KEY = "moneyInvestmentEstimateMode";
-const EVOLUTION_RANGE_KEY = "moneyEvolutionRange";
 const ACCOUNT_GROUPS_KEY = "moneyAccountGroups";
 const EMERGENCY_FUND_KEY = "moneyEmergencyFund";
 const BUDGETS_KEY = "moneyBudgets";
 const INVESTMENT_COMPOSITION_KEY = "moneyInvestmentComposition";
+const COMPOSITION_FOLDED_KEY = "moneyCompositionFolded";
+// Marca de importe fijo dentro del texto del peso. Ver normalizeCompositionEntry.
+const COMPOSITION_FIXED_PREFIX = "\u20ac";
 // El denominador que se supone cuando solo se escribe el numerador: así el peso es un %.
 const COMPOSITION_DEFAULT_DENOMINATOR = "100";
 const FUTURE_MOVEMENT_ACCOUNT_SKIP_KEY = "moneyFutureMovementAccountSkip";
@@ -208,11 +210,11 @@ const state = {
   movementMode: "realized",
   tableControls: {},
   investmentGoals: loadInvestmentGoals(),
-  evolutionRange: loadEvolutionRange(),
   accountGroups: loadAccountGroups(),
   emergencyFund: loadEmergencyFund(),
   budgets: loadBudgets(),
   investmentComposition: loadInvestmentComposition(),
+  compositionFolded: loadCompositionFolded(),
   cacheMeta: defaultCacheMeta(),
   investmentNotificationsSending: false,
   pendingInvestmentAllocationPrompts: [],
@@ -281,22 +283,13 @@ function wireUi() {
   document.getElementById("settingsPanelSwitch")?.addEventListener("click", setSettingsPanelFromClick);
   document.getElementById("editInvestmentGoalsBtn")?.addEventListener("click", editInvestmentGoals);
   document.getElementById("editInvestmentCompositionBtn")?.addEventListener("click", openInvestmentCompositionDialog);
+  document.getElementById("openFutureContributionsBtn")?.addEventListener("click", openFutureContributionsDialog);
+  document.getElementById("closeFutureContributionsBtn")?.addEventListener("click", () => document.getElementById("futureContributionsDialog")?.close());
   document.getElementById("closeInvestmentCompositionBtn")?.addEventListener("click", () => document.getElementById("investmentCompositionDialog")?.close());
   document.getElementById("saveInvestmentCompositionBtn")?.addEventListener("click", saveInvestmentCompositionFromDialog);
   document.getElementById("closeCompositionGroupBtn")?.addEventListener("click", () => document.getElementById("investmentCompositionGroupDialog")?.close());
-  document.getElementById("compositionGroupEditBtn")?.addEventListener("click", showCompositionGroupEditor);
-  document.getElementById("compositionGroupBackBtn")?.addEventListener("click", showCompositionGroupDetail);
   document.getElementById("compositionGroupForm")?.addEventListener("submit", saveCompositionGroupFromDialog);
   document.getElementById("compositionTotalInput")?.addEventListener("input", saveCompositionTotalFromInput);
-  document.getElementById("evolutionStartMonth")?.addEventListener("change", saveEvolutionRangeAndRender);
-  document.getElementById("evolutionEndMonth")?.addEventListener("change", saveEvolutionRangeAndRender);
-  document.getElementById("evolutionSnapshotDay")?.addEventListener("change", saveEvolutionRangeAndRender);
-  document.getElementById("evolutionEstimateIncome")?.addEventListener("change", saveEvolutionRangeAndRender);
-  document.getElementById("evolutionEstimateExpense")?.addEventListener("change", saveEvolutionRangeAndRender);
-  document.getElementById("evolutionEstimateInvestment")?.addEventListener("change", saveEvolutionRangeAndRender);
-  document.getElementById("evolutionEstimateIncome")?.addEventListener("input", saveEvolutionRangeAndRender);
-  document.getElementById("evolutionEstimateExpense")?.addEventListener("input", saveEvolutionRangeAndRender);
-  document.getElementById("evolutionEstimateInvestment")?.addEventListener("input", saveEvolutionRangeAndRender);
   document.getElementById("closeInvestmentGoalsBtn")?.addEventListener("click", () => document.getElementById("investmentGoalsDialog").close());
   document.getElementById("investmentGoalsForm")?.addEventListener("submit", saveInvestmentGoalsFromDialog);
   document.getElementById("themeToggle")?.addEventListener("change", setThemeFromToggle);
@@ -4513,7 +4506,6 @@ function renderInvestmentEditTable() {
 function fitInvestmentTables() {
   fitInvestmentTableColumns("investmentEditTable", 0);
   fitInvestmentTableColumns("investmentBreakdownTable", 0);
-  fitCompositionTable("compositionTable");
 }
 
 function fitInvestmentTableColumns(tableId, flexibleColumnIndex = 0) {
@@ -5712,11 +5704,8 @@ function loadInvestmentGoals() {
 }
 
 function editInvestmentGoals(focusGoal = "") {
-  const current = state.investmentGoals;
-  document.getElementById("goalExpenseMonthlyInput").value = formatDecimalInput(current.expenseMonthly);
+  document.getElementById("goalExpenseMonthlyInput").value = formatDecimalInput(state.investmentGoals.expenseMonthly);
   document.getElementById("goalInvestmentMonthlyInput").value = formatDecimalInput(monthlyInvestmentGoal());
-  document.getElementById("goalYearlyInput").value = formatDecimalInput(current.yearly);
-  document.getElementById("goalTotalInput").value = formatDecimalInput(current.total);
   document.getElementById("investmentGoalsDialog").showModal();
   const focusMap = {
     expense: "goalExpenseMonthlyInput",
@@ -5788,15 +5777,13 @@ async function saveInvestmentGoalsFromDialog(event) {
   markButtonSaving(btn);
   const expenseMonthly = roundMoney(document.getElementById("goalExpenseMonthlyInput").value);
   const investmentMonthly = roundMoney(document.getElementById("goalInvestmentMonthlyInput").value);
-  const yearly = roundMoney(document.getElementById("goalYearlyInput").value);
-  const total = roundMoney(document.getElementById("goalTotalInput").value);
   const mismatch = budgetGoalMismatch(state.budgets, expenseMonthly);
   if (mismatch) {
     restoreButton(btn);
     setNotice(budgetGoalMismatchMessage(mismatch), "warn");
     return;
   }
-  state.investmentGoals = normalizeInvestmentGoals({ expenseMonthly, investmentMonthly, monthly: investmentMonthly, yearly, total });
+  state.investmentGoals = normalizeInvestmentGoals({ ...state.investmentGoals, expenseMonthly, investmentMonthly, monthly: investmentMonthly });
   safeSetItem('investmentGoals', JSON.stringify(state.investmentGoals));
   writeDataCache({ dirtySections: ["investmentGoals"] });
   renderCurrentView();
@@ -5848,57 +5835,6 @@ function monthlyInvestmentGoal() {
   return safeNumber(state.investmentGoals.investmentMonthly || state.investmentGoals.monthly);
 }
 
-function renderInvestmentGoals(summary) {
-  const el = document.getElementById('investmentGoals');
-  if (!el) return;
-  const today = endOfToday();
-  const month = currentMonthKey();
-  const year = String(today.getFullYear());
-  const realizedMonth = netInvested(state.transactions.filter(t => isInvestment(t) && monthKey(t.date) === month));
-  const plannedMonth = netInvested(state.futureTransactions.filter(t => isInvestment(t) && monthKey(t.date) === month));
-  const realizedYear = netInvested(state.transactions.filter(t => isInvestment(t) && String(t.date.getFullYear()) === year));
-  const plannedYear = netInvested(state.futureTransactions.filter(t => isInvestment(t) && String(t.date.getFullYear()) === year));
-  const realizedTotal = summary.investedTotal;
-  const plannedTotal = netInvested(state.futureTransactions.filter(isInvestment));
-  const cards = [
-    ['Inversión mensual', monthlyInvestmentGoal(), realizedMonth, plannedMonth, 'investment'],
-    ['Inversión anual', state.investmentGoals.yearly, realizedYear, plannedYear],
-    ['Inversión total', state.investmentGoals.total, realizedTotal, plannedTotal]
-  ];
-  el.innerHTML = cards.map(([label, goal, done, planned, systemGoal]) => {
-    const totalProgress = done + planned;
-    const remaining = Math.max(goal - totalProgress, 0);
-    const overrun = Math.max(totalProgress - goal, 0);
-    const denominator = Math.max(goal, totalProgress, 1);
-    const pctDone = Math.min(100, done / denominator * 100);
-    const pctPlanned = Math.min(100 - pctDone, planned / denominator * 100);
-    const pctRemaining = Math.max(0, 100 - pctDone - pctPlanned);
-    return `
-      <div class="goal-row">
-        <div class="goal-heading">
-          <strong>${escapeHtml(label)}</strong>
-          <div class="goal-meta">
-            <span>Objetivo ${money(goal)}</span>
-            ${overrun ? `<span class="goal-overrun">Te pasas ${money(overrun)}</span>` : ''}
-          </div>
-        </div>
-        <div class="goal-track">
-          <span class="done" style="width:${pctDone}%"></span>
-          <span class="planned" style="width:${pctPlanned}%"></span>
-          <span class="remaining" style="width:${pctRemaining}%"></span>
-        </div>
-        <div class="goal-metrics">
-          <div class="done"><strong>${money(done)}</strong><span>Aportado</span></div>
-          <div class="planned"><strong>${money(planned)}</strong><span>Programado</span></div>
-          <div class="remaining"><strong>${money(remaining)}</strong><span>Restante</span></div>
-        </div>
-      </div>`;
-  }).join('');
-  el.querySelectorAll("[data-edit-system-goal]").forEach(btn => {
-    btn.addEventListener("click", () => editInvestmentGoals(btn.dataset.editSystemGoal));
-  });
-}
-
 // ---------------------------------------------------------------------------
 // Objetivos de composición
 //
@@ -5939,7 +5875,7 @@ function normalizeInvestmentComposition(value) {
   const groups = {};
   Object.entries(source.groups || {}).forEach(([key, weight]) => {
     const name = prettyType(key);
-    const text = compositionWeightAsFraction(weight);
+    const text = normalizeCompositionEntry(weight);
     if (name && text !== "") groups[name] = text;
   });
   const positions = {};
@@ -5949,12 +5885,41 @@ function normalizeInvestmentComposition(value) {
     const byPosition = {};
     Object.entries(entries).forEach(([positionKey, weight]) => {
       const id = normalizeType(positionKey);
-      const text = compositionWeightAsFraction(weight);
+      const text = normalizeCompositionEntry(weight);
       if (id && text !== "") byPosition[id] = text;
     });
     if (Object.keys(byPosition).length) positions[name] = byPosition;
   });
   return { total: compositionWeightText(source.total), groups, positions };
+}
+
+// Un grupo o una posición puede llevar dinero en vez de peso. Se guarda en el mismo sitio con
+// el euro por delante ("€1000") en vez de en otro mapa: así renombrar una categoría, borrarla o
+// leer la composición entera sigue siendo un único recorrido.
+function isCompositionFixedText(value) {
+  return compositionWeightText(value).trim().startsWith(COMPOSITION_FIXED_PREFIX);
+}
+
+// Devuelve el importe fijo de una entrada, null si esa entrada va por peso y NaN si el importe
+// está mal escrito: los tres casos se distinguen igual que en parseCompositionWeight.
+function compositionFixedAmount(value) {
+  if (!isCompositionFixedText(value)) return null;
+  const text = compositionWeightText(value).trim().slice(COMPOSITION_FIXED_PREFIX.length).trim();
+  if (text === "") return NaN;
+  const amount = parseNumber(text);
+  if (!Number.isFinite(amount) || amount < 0) return NaN;
+  return roundMoney(amount);
+}
+
+function compositionFixedText(amount) {
+  const value = compositionWeightText(amount).trim();
+  return value === "" ? "" : `${COMPOSITION_FIXED_PREFIX}${value}`;
+}
+
+function normalizeCompositionEntry(value) {
+  if (!isCompositionFixedText(value)) return compositionWeightAsFraction(value);
+  const amount = compositionFixedAmount(value);
+  return Number.isFinite(amount) ? compositionFixedText(String(amount)) : "";
 }
 
 // El peso se edita en dos columnas, numerador y denominador, porque en un móvil la barra de una
@@ -5985,6 +5950,7 @@ function compositionWeightAsFraction(value) {
 // Acepta lo que uno escribiría a mano: "20", "20 %", "1/9", "0,5". El vacío y lo ilegible son
 // casos distintos y hay que poder distinguirlos: null es "no cuenta", NaN es "está mal escrito".
 function parseCompositionWeight(value) {
+  if (isCompositionFixedText(value)) return null;
   const text = compositionWeightText(value).replace(/%\s*$/, "").trim();
   if (text === "") return null;
   const fraction = text.match(/^([^/]+)\/([^/]+)$/);
@@ -6029,22 +5995,40 @@ function computeCompositionPlan({ entries = [], total = "" } = {}) {
     key: entry.key,
     label: entry.label,
     weight: safeNumber(entry.weight),
-    current: safeNumber(entry.current)
+    current: safeNumber(entry.current),
+    // Importe fijo propio de la fila: se sale del reparto por pesos. null es "va por peso".
+    fixed: Number.isFinite(entry.fixed) ? roundMoney(entry.fixed) : null,
+    // Fijos que cuelgan por dentro de la fila (las posiciones fijas de un grupo). Suman a su
+    // objetivo sin tocar ningún porcentaje.
+    extra: roundMoney(safeNumber(entry.extra)),
+    // Y el dinero que hay hoy en esos fijos, que tampoco cuenta para el peso de ahora.
+    currentExtra: roundMoney(safeNumber(entry.currentExtra))
   }));
-  const rawSum = sum(rows.map(row => row.weight));
+  const weighted = rows.filter(row => row.fixed === null);
+  const rawSum = sum(weighted.map(row => row.weight));
   const currentTotal = roundMoney(sum(rows.map(row => row.current)));
-  rows.forEach(row => { row.share = rawSum > 0 ? row.weight / rawSum : 0; });
-  // El total más pequeño que cuadra la composición sin vender nada: el que deja al grupo que
+  // Lo que cuenta para el peso: el dinero de la fila menos el que está en sus fijos.
+  rows.forEach(row => { row.currentBase = roundMoney(Math.max(row.current - row.currentExtra, 0)); });
+  const weightedCurrent = roundMoney(sum(weighted.map(row => row.currentBase)));
+  rows.forEach(row => {
+    row.share = row.fixed === null && rawSum > 0 ? row.weight / rawSum : 0;
+    // El peso de ahora se mide contra el dinero repartido por pesos: si los fijos entrasen en
+    // la base, poner uno movería el porcentaje de todos los demás.
+    row.currentShare = row.fixed === null && weightedCurrent > 0 ? row.currentBase / weightedCurrent : 0;
+  });
+  const fixedTotal = roundMoney(sum(rows.map(row => (row.fixed ?? 0) + row.extra)));
+  // El reparto más pequeño que cuadra la composición sin vender nada: el que deja al grupo que
   // va más sobrado justo en su peso. Los demás se arreglan aportando.
-  const minimumTotal = roundMoney(rows.reduce(
-    (acc, row) => row.share > 0 ? Math.max(acc, row.current / row.share) : acc,
-    currentTotal
+  const minimumShared = roundMoney(weighted.reduce(
+    (acc, row) => row.share > 0 ? Math.max(acc, row.currentBase / row.share) : acc,
+    weightedCurrent
   ));
   const requested = parseNumber(total);
   const automatic = !Number.isFinite(requested) || requested < 0;
-  const effectiveTotal = automatic ? minimumTotal : roundMoney(requested);
+  const shared = automatic ? minimumShared : roundMoney(requested);
   rows.forEach(row => {
-    row.target = roundMoney(effectiveTotal * row.share);
+    row.base = roundMoney(row.fixed === null ? shared * row.share : row.fixed);
+    row.target = roundMoney(row.base + row.extra);
     row.missing = roundMoney(Math.max(row.target - row.current, 0));
     row.excess = roundMoney(Math.max(row.current - row.target, 0));
   });
@@ -6052,14 +6036,17 @@ function computeCompositionPlan({ entries = [], total = "" } = {}) {
     rows,
     rawSum,
     currentTotal,
-    minimumTotal,
-    total: effectiveTotal,
+    weightedCurrent,
+    shared,
+    fixedTotal,
+    minimumTotal: roundMoney(minimumShared + fixedTotal),
+    total: roundMoney(shared + fixedTotal),
     automatic,
     missingTotal: roundMoney(sum(rows.map(row => row.missing))),
     excessTotal: roundMoney(sum(rows.map(row => row.excess))),
     // Un 60/40 suma 100 y nueve novenos suman 1: las dos formas de escribirlo son deliberadas.
     // Cualquier otra suma suele ser un peso a medio poner, y eso sí merece un aviso.
-    weightsWarning: rows.length > 0 && rawSum > 0 && !nearlyEquals(rawSum, 100) && !nearlyEquals(rawSum, 1)
+    weightsWarning: weighted.length > 0 && rawSum > 0 && !nearlyEquals(rawSum, 100) && !nearlyEquals(rawSum, 1)
   };
 }
 
@@ -6087,26 +6074,52 @@ function compositionPositionLabel(item) {
 
 // Filas del nivel cartera. Un grupo sin peso no sale en la vista ni entra en el reparto: su
 // dinero tampoco cuenta para el total, que es lo que significa dejarlo vacío.
+function compositionGroupFixedAmount(type) {
+  const amount = compositionFixedAmount(compositionGroupWeightText(type));
+  return Number.isFinite(amount) ? amount : null;
+}
+
+// Lo que suman las posiciones fijas de un grupo: sube su objetivo y el de la cartera, pero no
+// entra en ningún porcentaje.
+function compositionPositionsFixedTotal(type) {
+  const weights = compositionPositionWeights(type);
+  return roundMoney(sum(compositionPositionsForGroup(type)
+    .map(item => compositionFixedAmount(weights[compositionPositionKey(item)]))
+    .map(amount => (Number.isFinite(amount) ? amount : 0))));
+}
+
+function compositionPositionsFixedCurrent(type) {
+  const weights = compositionPositionWeights(type);
+  return roundMoney(sum(compositionPositionsForGroup(type)
+    .filter(item => Number.isFinite(compositionFixedAmount(weights[compositionPositionKey(item)])))
+    .map(item => currentInvestmentTotal(item))));
+}
+
 function compositionGroupEntries(summary) {
   return investmentTypes().map(type => ({
     key: type,
     label: type,
     weight: parseCompositionWeight(compositionGroupWeightText(type)),
+    fixed: compositionGroupFixedAmount(type),
+    extra: compositionPositionsFixedTotal(type),
+    currentExtra: compositionPositionsFixedCurrent(type),
     current: compositionBaseForGroup(type, summary)
-  })).filter(entry => Number.isFinite(entry.weight));
+  })).filter(entry => Number.isFinite(entry.weight) || entry.fixed !== null || entry.extra > 0);
 }
 
 function compositionPositionEntries(type) {
   const weights = compositionPositionWeights(type);
   return compositionPositionsForGroup(type).map(item => {
     const key = compositionPositionKey(item);
+    const fixed = compositionFixedAmount(weights[key]);
     return {
       key,
       label: compositionPositionLabel(item),
       weight: parseCompositionWeight(weights[key]),
+      fixed: Number.isFinite(fixed) ? fixed : null,
       current: currentInvestmentTotal(item)
     };
-  }).filter(entry => Number.isFinite(entry.weight));
+  }).filter(entry => Number.isFinite(entry.weight) || entry.fixed !== null);
 }
 
 function compositionCarteraPlan(summary) {
@@ -6128,58 +6141,223 @@ function renderInvestmentComposition(summary) {
   // No se pisa el campo mientras se está escribiendo en él.
   if (input && document.activeElement !== input) input.value = compositionWeightText(state.investmentComposition?.total);
   document.getElementById("compositionTotalSummary").innerHTML = compositionSummaryHtml(plan);
+  // La tira reparte el objetivo, no el peso: así los importes fijos ocupan lo que les toca.
   document.getElementById("compositionTrack").innerHTML = plan.rows
-    .map((row, idx) => `<span style="width:${(row.share * 100).toFixed(4)}%;background:${chartColor(PIE_CHART_COLORS, idx)}"></span>`)
+    .map((row, idx) => {
+      const width = plan.total > 0 ? row.target / plan.total * 100 : 0;
+      const fixedSlice = row.fixed === null ? "" : " class=\"composition-fixed-slice\"";
+      // El color va en una variable, no en `background`: el atajo pisaría el rayado del fijo.
+      return `<span${fixedSlice} style="width:${width.toFixed(4)}%;--slice:${chartColor(PIE_CHART_COLORS, idx)}"></span>`;
+    })
     .join("");
-  renderCompositionGroupsTable(plan);
-  const note = document.getElementById("compositionNote");
-  if (note) {
-    note.innerHTML = plan.weightsWarning
-      ? `<span class="goal-overrun">Los pesos suman ${pctNoSymbol(plan.rawSum)} %. Se reparten proporcionalmente hasta el 100 %.</span>`
-      : "";
-  }
+  renderCompositionGroupCards(plan);
 }
 
 function compositionSummaryHtml(plan) {
   if (!plan.rows.length) return emptyBlock("Sin composición objetivo. Pulsa el lápiz y reparte tus grupos.");
-  const lead = plan.automatic
-    ? `<small class="muted">Sin objetivo total: se calcula el mínimo para llegar al reparto sin vender nada.</small>`
-    : "";
-  const excess = plan.excessTotal > 0
-    ? `<small class="goal-overrun">Te sobran ${money(plan.excessTotal)} en grupos que ya pasan de su peso.</small>`
-    : "";
   return `
-    ${lead}
     <div class="goal-metrics composition-metrics">
       <div><strong>${money(plan.currentTotal)}</strong><span>Actual</span></div>
       <div><strong>${money(plan.total)}</strong><span>Objetivo</span></div>
       <div class="remaining"><strong>${money(plan.missingTotal)}</strong><span>Falta</span></div>
-    </div>
-    ${excess}`;
+    </div>`;
 }
 
-function renderCompositionGroupsTable(plan) {
-  const table = document.getElementById("compositionTable");
-  if (!table) return;
-  if (!plan.rows.length) {
-    table.innerHTML = "";
+// Cada grupo es una tarjeta con sus tres cifras y, si reparte por dentro, su tabla. Solo cifras:
+// lo que explique algo va en el editor, no aquí.
+function renderCompositionGroupCards(plan) {
+  const host = document.getElementById("compositionGroups");
+  if (!host) return;
+  host.innerHTML = plan.rows.map((row, idx) => compositionGroupCardHtml(row, idx)).join("");
+  host.querySelectorAll("[data-composition-edit]").forEach(btn => {
+    btn.addEventListener("click", () => openCompositionGroupDialog(btn.dataset.compositionEdit));
+  });
+  host.querySelectorAll("[data-composition-fold]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const card = btn.closest("[data-composition-card]");
+      if (!card) return;
+      const folded = card.dataset.folded !== "true";
+      card.dataset.folded = String(folded);
+      btn.setAttribute("aria-expanded", String(!folded));
+      setCompositionFolded(card.dataset.compositionCard, folded);
+    });
+  });
+  plan.rows.forEach((row, idx) => fitCompositionTable(`compositionGroupTable-${idx}`));
+  refreshIcons();
+}
+
+function compositionGroupCardHtml(row, idx) {
+  // El grupo reparte entre sus posiciones lo que le toca por peso; sus posiciones fijas se
+  // suman encima, igual que arriba con los grupos.
+  const inner = computeCompositionPlan({ entries: compositionPositionEntries(row.key), total: String(row.base) });
+  const folded = isCompositionFolded(row.key);
+  const weightLabel = row.fixed === null
+    ? `<span class="composition-weight${row.excess > 0 ? " over" : ""}"><span class="now">${pctNoSymbol(row.currentShare)} %</span><em>→</em><span class="goal">${pctNoSymbol(row.share)} %</span></span>`
+    : `<span class="composition-fixed-chip">Fijo ${money(row.fixed)}</span>`;
+  const foldButton = inner.rows.length
+    ? `<button class="icon-btn minimal-icon composition-fold-btn" type="button" data-composition-fold aria-expanded="${!folded}" aria-label="Plegar ${escapeAttr(row.label)}"><i data-lucide="chevron-up"></i></button>`
+    : "";
+  const diff = row.excess > 0
+    ? `<div class="remaining"><strong class="negative">-${money(row.excess)}</strong><span>Sobra</span></div>`
+    : `<div class="remaining"><strong>${money(row.missing)}</strong><span>Falta</span></div>`;
+  return `
+    <article class="composition-group-card" data-composition-card="${escapeAttr(row.key)}" data-folded="${folded}">
+      <div class="composition-group-head">
+        <div class="composition-group-name">
+          ${colorDot(chartColor(PIE_CHART_COLORS, idx))}
+          <h3 class="text-clip" title="${escapeAttr(row.label)}">${escapeHtml(row.label)}</h3>
+          ${weightLabel}
+        </div>
+        <div class="composition-group-actions">
+          <button class="icon-btn minimal-icon" type="button" data-composition-edit="${escapeAttr(row.key)}" aria-label="Editar pesos de ${escapeAttr(row.label)}"><i data-lucide="edit-3"></i></button>
+          ${foldButton}
+        </div>
+      </div>
+      <div class="goal-metrics composition-metrics">
+        <div><strong>${money(row.current)}</strong><span>Actual</span></div>
+        <div><strong>${money(row.target)}</strong><span>Objetivo</span></div>
+        ${diff}
+      </div>
+      ${inner.rows.length ? `<div class="table-wrap composition-group-body"><table id="compositionGroupTable-${idx}">${compositionPositionsTableHtml(inner)}</table></div>` : ""}
+    </article>`;
+}
+
+function compositionPositionsTableHtml(plan) {
+  const rows = plan.rows.map(item => `
+    <tr>
+      <td class="text-clip col-type" title="${escapeAttr(item.label)}">${escapeHtml(item.label)}</td>
+      <td class="amount">${item.fixed === null ? `${pctNoSymbol(item.share)} %` : money(item.fixed)}</td>
+      <td class="amount">${item.fixed === null ? `${pctNoSymbol(item.currentShare)} %` : "—"}</td>
+      <td class="amount">${money(item.current)}</td>
+      <td class="amount">${compositionDiffCell(item)}</td>
+    </tr>`).join("");
+  const weighted = plan.rows.some(item => item.fixed === null);
+  const net = roundMoney(plan.missingTotal - plan.excessTotal);
+  return `<colgroup><col><col><col><col><col></colgroup>
+    <thead><tr><th class="col-type">Posición</th><th class="amount">Obj.</th><th class="amount">Ahora</th><th class="amount">Actual</th><th class="amount">Falta</th></tr></thead>
+    <tbody>${rows}</tbody>
+    <tfoot><tr>
+      <td>Total</td>
+      <td class="amount">${weighted ? "100 %" : "—"}</td>
+      <td class="amount">${weighted ? "100 %" : "—"}</td>
+      <td class="amount">${money(plan.currentTotal)}</td>
+      <td class="amount">${net < 0 ? `<span class="negative">-${money(-net)}</span>` : money(net)}</td>
+    </tr></tfoot>`;
+}
+
+// ---------------------------------------------------------------------------
+// Futuras aportaciones
+//
+// A dónde mandar el dinero que todavía no has puesto. El reparto no es el de los pesos: es lo
+// que le falta a cada grupo sobre lo que le falta a la cartera entera, que es lo que hace que
+// aportando así se llegue al objetivo sin tener que vender nada. Dentro del grupo, igual: cada
+// posición se lleva su parte de lo que le falta al grupo.
+function futureContributionPlan(summary) {
+  const cartera = compositionCarteraPlan(summary);
+  const groups = cartera.rows.map((row, idx) => {
+    const inner = computeCompositionPlan({ entries: compositionPositionEntries(row.key), total: String(row.base) });
+    const innerMissing = roundMoney(sum(inner.rows.map(item => item.missing)));
+    return {
+      key: row.key,
+      label: row.label,
+      // El color es el del grupo en la tira de la composición, no el del orden de esta lista.
+      color: chartColor(PIE_CHART_COLORS, idx),
+      missing: row.missing,
+      // Un grupo puede necesitar dinero y que sus posiciones ya estén en su sitio (el grupo se
+      // mide por lo invertido y las posiciones por su valor). Ahí manda el objetivo de cada una.
+      positions: inner.rows.map(item => ({
+        label: item.label,
+        missing: item.missing,
+        share: innerMissing > 0
+          ? item.missing / innerMissing
+          : (inner.total > 0 ? item.target / inner.total : 0)
+      }))
+    };
+  });
+  const missingTotal = roundMoney(sum(groups.map(group => group.missing)));
+  return {
+    missingTotal,
+    // Un grupo que ya está en su sitio no recibe nada, así que no sale en la lista.
+    groups: groups
+      .filter(group => group.missing > 0)
+      .map(group => ({ ...group, share: missingTotal > 0 ? group.missing / missingTotal : 0 }))
+      .sort((a, b) => b.share - a.share || a.label.localeCompare(b.label))
+  };
+}
+
+function openFutureContributionsDialog() {
+  const dialog = document.getElementById("futureContributionsDialog");
+  if (!dialog) return;
+  if (!dialog.open) dialog.showModal();
+  renderFutureContributions();
+}
+
+function renderFutureContributions() {
+  const host = document.getElementById("futureContributionsBody");
+  if (!host) return;
+  const plan = futureContributionPlan(calculateSummary(getSelectedSummaryMonth()));
+  if (!plan.missingTotal) {
+    host.innerHTML = emptyBlock("La cartera ya está en su reparto: no hay nada que aportar.");
+    refreshIcons();
     return;
   }
-  const rows = plan.rows.map((row, idx) => `
-    <tr class="clickable-row" data-composition-group="${escapeAttr(row.key)}">
-      <td class="text-clip col-type">${colorDot(chartColor(PIE_CHART_COLORS, idx))} ${escapeHtml(row.label)}</td>
-      <td class="amount">${pctNoSymbol(row.share)}</td>
-      <td class="amount">${money(row.current)}</td>
-      <td class="amount">${money(row.target)}</td>
-      <td class="amount">${compositionDiffCell(row)}</td>
-    </tr>`).join("");
-  table.innerHTML = `<colgroup><col><col><col><col><col></colgroup><thead><tr><th class="col-type">Grupo</th><th class="amount">%</th><th class="amount">Actual</th><th class="amount">Objetivo</th><th class="amount">Falta</th></tr></thead><tbody>${rows}</tbody>`;
-  table.querySelectorAll("[data-composition-group]").forEach(row => {
-    row.addEventListener("click", () => openCompositionGroupDialog(row.dataset.compositionGroup));
-  });
-  fitCompositionTable("compositionTable");
+  host.innerHTML = `
+    <div class="contribution-total"><span>Falta en total</span><strong>${money(plan.missingTotal)}</strong></div>
+    <div class="composition-groups">${plan.groups.map((group, idx) => contributionGroupCardHtml(group, idx)).join("")}</div>`;
+  plan.groups.forEach((group, idx) => fitCompositionTable(`contributionTable-${idx}`));
+  refreshIcons();
 }
 
+function contributionGroupCardHtml(group, idx) {
+  const positions = group.positions.filter(item => item.share > 0);
+  const table = positions.length
+    ? `<div class="table-wrap composition-group-body"><table id="contributionTable-${idx}">
+        <colgroup><col><col><col></colgroup>
+        <thead><tr><th class="col-type">Posición</th><th class="amount">%</th><th class="amount">Falta</th></tr></thead>
+        <tbody>${positions.map(item => `
+          <tr>
+            <td class="text-clip col-type" title="${escapeAttr(item.label)}">${escapeHtml(item.label)}</td>
+            <td class="amount">${pctNoSymbol(item.share)} %</td>
+            <td class="amount">${money(item.missing)}</td>
+          </tr>`).join("")}</tbody>
+        <tfoot><tr><td>Total</td><td class="amount">100 %</td><td class="amount">${money(group.missing)}</td></tr></tfoot>
+      </table></div>`
+    : "";
+  return `
+    <article class="composition-group-card">
+      <div class="composition-group-head">
+        <div class="composition-group-name">
+          ${colorDot(group.color)}
+          <h3 class="text-clip" title="${escapeAttr(group.label)}">${escapeHtml(group.label)}</h3>
+          <span class="contribution-share">${pctNoSymbol(group.share)} %</span>
+        </div>
+        <span class="contribution-missing">${money(group.missing)}</span>
+      </div>
+      ${table}
+    </article>`;
+}
+
+// Qué grupos ha dejado plegados este móvil. Es una preferencia de vista, no un dato de la
+// cartera: vive solo aquí y no viaja a la hoja.
+function loadCompositionFolded() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(COMPOSITION_FOLDED_KEY) || "[]");
+    return Array.isArray(stored) ? stored.map(normalizeType).filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
+function isCompositionFolded(type) {
+  return (state.compositionFolded || []).includes(normalizeType(type));
+}
+
+function setCompositionFolded(type, folded) {
+  const key = normalizeType(type);
+  const current = (state.compositionFolded || []).filter(name => name !== key);
+  state.compositionFolded = folded ? [...current, key] : current;
+  safeSetItem(COMPOSITION_FOLDED_KEY, JSON.stringify(state.compositionFolded));
+}
 
 // La tabla de composición tiene que caber en la pantalla: nada de scroll lateral. Se mide el
 // ancho real de cada columna de números, la primera se queda con lo que sobra y, si aun así no
@@ -6255,30 +6433,40 @@ const scheduleCompositionTotalRender = debounce(() => {
 // Editores de pesos. El de grupos y el de posiciones son la misma tabla con otras filas.
 // ---------------------------------------------------------------------------
 
+// Cada fila va por peso o por importe fijo, y el interruptor de la segunda columna es lo que
+// cambia entre las dos. En % siguen los dos huecos de la fracción: 1/3 se escribe y se vuelve a
+// leer igual que siempre.
 function compositionEditorTableHtml(rows, firstHeader) {
   const body = rows.map(row => {
-    const parts = compositionWeightParts(row.weight);
-    // La barra vive dentro de la celda del denominador: una columna solo para el "/" gastaría un
+    const fixed = isCompositionFixedText(row.weight);
+    const parts = compositionWeightParts(fixed ? "" : row.weight);
+    const amount = fixed ? compositionWeightText(row.weight).trim().slice(COMPOSITION_FIXED_PREFIX.length) : "";
+    // La barra vive dentro de la celda del peso: una columna solo para el "/" gastaría un
     // ancho que en un móvil no sobra, y aun así se lee "60 / 100".
     return `
-    <tr data-composition-editor-row data-key="${escapeAttr(row.key)}">
+    <tr data-composition-editor-row data-key="${escapeAttr(row.key)}" data-mode="${fixed ? "fixed" : "weight"}">
       <td class="text-clip">${escapeHtml(row.label)}</td>
-      <td class="amount"><input class="tiny-input" type="text" inputmode="decimal" data-field="numerator" value="${escapeAttr(parts.numerator)}" placeholder="—" aria-label="Peso de ${escapeAttr(row.label)}"></td>
-      <td class="amount fraction-cell"><span class="fraction-slash">/</span><input class="tiny-input" type="text" inputmode="decimal" data-field="denominator" value="${escapeAttr(parts.denominator)}" placeholder="${COMPOSITION_DEFAULT_DENOMINATOR}" aria-label="Denominador de ${escapeAttr(row.label)}"></td>
+      <td class="amount"><button class="composition-mode-btn" type="button" data-composition-mode aria-label="Cambiar ${escapeAttr(row.label)} entre peso e importe fijo">${fixed ? "€" : "%"}</button></td>
+      <td class="amount composition-value-cell">
+        <span class="composition-weight-fields"><input class="tiny-input" type="text" inputmode="decimal" data-field="numerator" value="${escapeAttr(parts.numerator)}" placeholder="—" aria-label="Peso de ${escapeAttr(row.label)}"><span class="fraction-slash">/</span><input class="tiny-input" type="text" inputmode="decimal" data-field="denominator" value="${escapeAttr(parts.denominator)}" placeholder="${COMPOSITION_DEFAULT_DENOMINATOR}" aria-label="Denominador de ${escapeAttr(row.label)}"></span>
+        <span class="composition-fixed-fields"><input class="tiny-input" type="text" inputmode="decimal" data-field="amount" value="${escapeAttr(amount)}" placeholder="0" aria-label="Importe fijo de ${escapeAttr(row.label)}"></span>
+      </td>
       <td class="amount" data-composition-share>—</td>
       <td class="amount">${money(row.current)}</td>
     </tr>`;
   }).join("");
-  return `<colgroup><col><col><col><col><col></colgroup><thead><tr><th class="col-type">${escapeHtml(firstHeader)}</th><th class="amount">Num</th><th class="amount">Den</th><th class="amount">%</th><th class="amount">Actual</th></tr></thead><tbody>${body || `<tr><td class="empty" colspan="5">No hay nada que repartir todavía.</td></tr>`}</tbody>`;
+  return `<colgroup><col><col><col><col><col></colgroup><thead><tr><th class="col-type">${escapeHtml(firstHeader)}</th><th class="amount">%/€</th><th class="amount">Peso</th><th class="amount">%</th><th class="amount">Actual</th></tr></thead><tbody>${body || `<tr><td class="empty" colspan="5">No hay nada que repartir todavía.</td></tr>`}</tbody>`;
 }
 
 function readCompositionEditorRows(tableId) {
   return Array.from(document.querySelectorAll(`#${tableId} tbody tr[data-composition-editor-row]`)).map(tr => ({
     key: tr.dataset.key || "",
-    weight: compositionWeightFromParts(
-      tr.querySelector('[data-field="numerator"]')?.value,
-      tr.querySelector('[data-field="denominator"]')?.value
-    )
+    weight: tr.dataset.mode === "fixed"
+      ? compositionFixedText(tr.querySelector('[data-field="amount"]')?.value)
+      : compositionWeightFromParts(
+        tr.querySelector('[data-field="numerator"]')?.value,
+        tr.querySelector('[data-field="denominator"]')?.value
+      )
   }));
 }
 
@@ -6287,32 +6475,50 @@ function readCompositionEditorRows(tableId) {
 function updateCompositionEditorTotals(tableId, statusId) {
   const rows = readCompositionEditorRows(tableId);
   const parsed = rows.map(row => parseCompositionWeight(row.weight));
+  const amounts = rows.map(row => compositionFixedAmount(row.weight));
   const rawSum = sum(parsed.filter(weight => Number.isFinite(weight)));
+  const fixedTotal = roundMoney(sum(amounts.filter(amount => Number.isFinite(amount))));
   document.querySelectorAll(`#${tableId} tbody tr[data-composition-editor-row]`).forEach((tr, idx) => {
     const weight = parsed[idx];
-    tr.classList.toggle("composition-invalid", Number.isNaN(weight));
+    const amount = amounts[idx];
+    const isFixed = tr.dataset.mode === "fixed";
+    tr.classList.toggle("composition-invalid", isFixed ? Number.isNaN(amount) : Number.isNaN(weight));
     const cell = tr.querySelector("[data-composition-share]");
     if (!cell) return;
-    if (weight === null) cell.textContent = "—";
+    if (isFixed) cell.textContent = amount === null || Number.isNaN(amount) ? "?" : money(amount);
+    else if (weight === null) cell.textContent = "—";
     else if (Number.isNaN(weight)) cell.textContent = "?";
     else cell.textContent = pctNoSymbol(rawSum > 0 ? weight / rawSum : 0);
   });
   const status = document.getElementById(statusId);
   if (!status) return;
   const balanced = nearlyEquals(rawSum, 100) || nearlyEquals(rawSum, 1);
-  const invalid = parsed.some(weight => Number.isNaN(weight));
+  const invalid = parsed.some(weight => Number.isNaN(weight)) || amounts.some(amount => Number.isNaN(amount));
+  // Los fijos no cuadran ni descuadran el 100 %: se dicen aparte porque suman al objetivo.
+  const fixedNote = fixedTotal > 0 ? ` · ${money(fixedTotal)} en importes fijos` : "";
   status.textContent = invalid
-    ? "Hay algún peso que no se entiende. El numerador tiene que ser un número y el denominador no puede ser 0."
+    ? "Hay algo que no se entiende. El peso necesita numerador y un denominador distinto de 0, y el importe fijo un número."
     : balanced
-      ? "✓ Reparto completo: 100 %"
-      : `! Los pesos suman ${pctNoSymbol(rawSum)} % · se reparten proporcionalmente hasta el 100 %`;
+      ? `✓ Reparto completo: 100 %${fixedNote}`
+      : `! Los pesos suman ${pctNoSymbol(rawSum)} % · se reparten proporcionalmente hasta el 100 %${fixedNote}`;
   status.classList.toggle("balanced", balanced && !invalid);
   status.classList.toggle("unbalanced", !balanced || invalid);
 }
 
 function wireCompositionEditorInputs(tableId, statusId) {
-  document.querySelectorAll(`#${tableId} [data-field="numerator"], #${tableId} [data-field="denominator"]`).forEach(input => {
+  document.querySelectorAll(`#${tableId} [data-field]`).forEach(input => {
     input.addEventListener("input", () => updateCompositionEditorTotals(tableId, statusId));
+  });
+  document.querySelectorAll(`#${tableId} [data-composition-mode]`).forEach(button => {
+    button.addEventListener("click", () => {
+      const row = button.closest("[data-composition-editor-row]");
+      if (!row) return;
+      const fixed = row.dataset.mode !== "fixed";
+      row.dataset.mode = fixed ? "fixed" : "weight";
+      button.textContent = fixed ? "€" : "%";
+      row.querySelector(fixed ? '[data-field="amount"]' : '[data-field="numerator"]')?.focus();
+      updateCompositionEditorTotals(tableId, statusId);
+    });
   });
   updateCompositionEditorTotals(tableId, statusId);
 }
@@ -6357,65 +6563,12 @@ function openCompositionGroupDialog(type) {
   // tabla se quedaría sin ajustar.
   const dialog = document.getElementById("investmentCompositionGroupDialog");
   if (!dialog.open) dialog.showModal();
-  showCompositionGroupDetail();
-}
-
-function compositionGroupContext() {
-  const type = state.currentCompositionGroup;
-  const summary = calculateSummary(getSelectedSummaryMonth());
-  const cartera = compositionCarteraPlan(summary);
-  const row = cartera.rows.find(item => normalizeType(item.key) === normalizeType(type));
-  return { type, summary, cartera, row };
-}
-
-function showCompositionGroupDetail() {
-  const { type, summary, row } = compositionGroupContext();
-  const groupTarget = row ? row.target : 0;
-  const plan = computeCompositionPlan({ entries: compositionPositionEntries(type), total: String(groupTarget) });
-  document.getElementById("compositionGroupTitle").textContent = type || "Grupo";
-  document.getElementById("compositionGroupHead").innerHTML = `
-    <div class="goal-metrics composition-metrics">
-      <div><strong>${row ? pctNoSymbol(row.share) : "—"}</strong><span>Peso %</span></div>
-      <div><strong>${money(groupTarget)}</strong><span>Objetivo del grupo</span></div>
-      <div class="remaining"><strong>${money(plan.missingTotal)}</strong><span>Falta</span></div>
-    </div>
-    ${compositionGroupBaseNote(type, summary, plan)}`;
-  const table = document.getElementById("compositionGroupTable");
-  if (plan.rows.length) {
-    table.innerHTML = `<colgroup><col><col><col><col><col></colgroup><thead><tr><th class="col-type">Posición</th><th class="amount">%</th><th class="amount">Actual</th><th class="amount">Objetivo</th><th class="amount">Falta</th></tr></thead><tbody>${plan.rows.map(item => `
-      <tr>
-        <td class="text-clip col-type">${escapeHtml(item.label)}</td>
-        <td class="amount">${pctNoSymbol(item.share)}</td>
-        <td class="amount">${money(item.current)}</td>
-        <td class="amount">${money(item.target)}</td>
-        <td class="amount">${compositionDiffCell(item)}</td>
-      </tr>`).join("")}</tbody>`;
-  } else {
-    table.innerHTML = `<tbody><tr><td class="empty" colspan="5">Sin composición dentro del grupo. Pulsa "Editar pesos".</td></tr></tbody>`;
-  }
-  const note = document.getElementById("compositionGroupNote");
-  note.innerHTML = plan.weightsWarning
-    ? `<span class="goal-overrun">Los pesos suman ${pctNoSymbol(plan.rawSum)} %. Se reparten proporcionalmente hasta el 100 %.</span>`
-    : "";
-  document.getElementById("compositionGroupDetail").classList.remove("hidden");
-  document.getElementById("compositionGroupForm").classList.add("hidden");
-  fitCompositionTable("compositionGroupTable");
-  refreshIcons();
-}
-
-// El grupo se mide con lo invertido y sus posiciones con su valor de mercado, que es lo único
-// que hay por posición. Cuando las dos cifras no coinciden se dice, en vez de dejar que el
-// descuadre aparezca sin explicación.
-function compositionGroupBaseNote(type, summary, plan) {
-  const invested = safeNumber(summary?.investedByType?.[type]);
-  if (invested <= 0) return "";
-  const value = roundMoney(plan.currentTotal);
-  if (nearlyEquals(roundMoney(invested), value)) return "";
-  return `<small class="muted">El grupo tiene ${money(invested)} invertidos y ${money(value)} de valor.</small>`;
+  document.getElementById("compositionGroupTitle").textContent = state.currentCompositionGroup || "Grupo";
+  showCompositionGroupEditor();
 }
 
 function showCompositionGroupEditor() {
-  const { type } = compositionGroupContext();
+  const type = state.currentCompositionGroup;
   const weights = compositionPositionWeights(type);
   const rows = compositionPositionsForGroup(type).map(item => {
     const key = compositionPositionKey(item);
@@ -6423,8 +6576,6 @@ function showCompositionGroupEditor() {
   });
   document.getElementById("compositionGroupEditorTable").innerHTML = compositionEditorTableHtml(rows, "Posición");
   wireCompositionEditorInputs("compositionGroupEditorTable", "compositionGroupStatus");
-  document.getElementById("compositionGroupDetail").classList.add("hidden");
-  document.getElementById("compositionGroupForm").classList.remove("hidden");
   fitCompositionTable("compositionGroupEditorTable");
   refreshIcons();
 }
@@ -6443,7 +6594,7 @@ function saveCompositionGroupFromDialog(event) {
   if (Object.keys(entries).length) positions[prettyType(type)] = entries;
   state.investmentComposition = normalizeInvestmentComposition({ ...state.investmentComposition, positions });
   writeInvestmentComposition();
-  showCompositionGroupDetail();
+  document.getElementById("investmentCompositionGroupDialog")?.close();
   renderCurrentView();
   setNotice(`Composición de ${type} guardada.`, "ok");
 }
@@ -7568,13 +7719,10 @@ function renderInvestments() {
   const summary = calculateSummary(getSelectedSummaryMonth());
   const panel = state.summaryModes.investmentPanel;
   const showingGoals = panel === "goals";
-  const showingEvolution = panel === "evolution";
-  document.getElementById("investmentPanelLabel").textContent = showingEvolution ? "Evolución" : showingGoals ? "Objetivos" : (investmentEstimateEnabled() ? "Inversión estimada" : "Inversión");
-  document.getElementById("editInvestmentGoalsBtn").classList.toggle("hidden", !showingGoals);
-  document.getElementById("openInvestmentOverviewBtn").classList.toggle("hidden", showingGoals || showingEvolution);
-  document.getElementById("investmentGoals").classList.toggle("hidden", !showingGoals);
+  document.getElementById("investmentPanelLabel").textContent = investmentEstimateEnabled() ? "Inversión estimada" : "Inversión";
+  // En Objetivos manda la composición: la tarjeta del total ya cuenta eso mismo en Inversión.
+  document.querySelector(".investment-total-card")?.classList.toggle("hidden", showingGoals);
   document.getElementById("investmentCompositionPanel")?.classList.toggle("hidden", !showingGoals);
-  document.getElementById("investmentEvolution")?.classList.toggle("hidden", !showingEvolution);
   document.querySelectorAll("[data-investment-panel]").forEach(btn => {
     btn.classList.toggle("active", btn.dataset.investmentPanel === panel);
   });
@@ -7594,15 +7742,13 @@ function renderInvestments() {
     </div>
   `;
   if (document.getElementById("investmentOverviewDialog").open) renderInvestmentBreakdownCharts(summary);
-  renderInvestmentGoals(summary);
   renderInvestmentComposition(summary);
-  if (showingEvolution) renderInvestmentEvolution();
-  else {
+  if (!showingGoals) {
     renderInvestmentBreakdownTable(summary);
     renderInvestmentEditTable();
     fitInvestmentTables();
   }
-  const hideLowerSections = showingGoals || showingEvolution;
+  const hideLowerSections = showingGoals;
   // La tarjeta de composición es justo la excepción: vive arriba y solo se ve en Objetivos.
   document.querySelectorAll("#inversiones > article.panel:not(#investmentCompositionPanel)").forEach(el => {
     el.classList.toggle("hidden", hideLowerSections);
@@ -8140,31 +8286,6 @@ async function saveInvestmentAllocationPrompt(event) {
   }
 }
 
-function loadEvolutionRange() {
-  const fallback = { start: "2026-01", end: "2026-12", snapshotDay: 31, income: 1800, expenses: 1250, investment: 750 };
-  try {
-    const saved = JSON.parse(localStorage.getItem(EVOLUTION_RANGE_KEY) || "{}");
-    // Los meses guardados se validan: un valor corrupto ("20x6-99") haría iterar
-    // monthsBetween miles de veces (o para siempre) y congelaría la pestaña.
-    const validMonth = value => /^\d{4}-(0[1-9]|1[0-2])$/.test(String(value || ""));
-    let start = validMonth(saved.start) ? saved.start : fallback.start;
-    let end = validMonth(saved.end) ? saved.end : fallback.end;
-    if (compareMonthKeys(start, end) > 0) [start, end] = [end, start];
-    // Tope de 120 meses: por encima el render de evolución se vuelve inutilizable.
-    if (monthsBetween(start, end).length > 120) end = addMonthsKey(start, 119);
-    return {
-      start,
-      end,
-      snapshotDay: Number(saved.snapshotDay ?? 31),
-      income: Number(saved.income ?? 1800),
-      expenses: Number(saved.expenses ?? 1250),
-      investment: Number(saved.investment ?? 750)
-    };
-  } catch {
-    return fallback;
-  }
-}
-
 function loadAccountGroups() {
   try {
     const saved = JSON.parse(localStorage.getItem(ACCOUNT_GROUPS_KEY) || "[]");
@@ -8366,142 +8487,6 @@ function removeAccountFromGroups(accountName) {
     group.accountNames = group.accountNames.filter(name => name !== accountName);
   });
   writeAccountGroups();
-}
-
-function saveEvolutionRangeAndRender() {
-  const start = document.getElementById("evolutionStartMonth")?.value || "2026-01";
-  const end = document.getElementById("evolutionEndMonth")?.value || start;
-  const ordered = compareMonthKeys(start, end) <= 0 ? { start, end } : { start: end, end: start };
-  state.evolutionRange = {
-    ...ordered,
-    snapshotDay: Math.min(31, Math.max(1, readEvolutionNumber("evolutionSnapshotDay", state.evolutionRange.snapshotDay ?? 31))),
-    income: readEvolutionNumber("evolutionEstimateIncome", state.evolutionRange.income ?? 1800),
-    expenses: readEvolutionNumber("evolutionEstimateExpense", state.evolutionRange.expenses ?? 1250),
-    investment: readEvolutionNumber("evolutionEstimateInvestment", state.evolutionRange.investment ?? 750)
-  };
-  safeSetItem(EVOLUTION_RANGE_KEY, JSON.stringify(state.evolutionRange));
-  renderInvestmentEvolution();
-}
-
-function readEvolutionNumber(id, fallback) {
-  const el = document.getElementById(id);
-  if (!el || el.value === "") return Number(fallback) || 0;
-  const parsed = parseNumber(el.value);
-  return Number.isFinite(parsed) ? parsed : Number(fallback) || 0;
-}
-
-function renderInvestmentEvolution() {
-  fillEvolutionMonthSelectors();
-  const rows = buildEvolutionRows(state.evolutionRange.start, state.evolutionRange.end);
-  renderTable("evolutionTable", ["Mes", "Banco", "Inv.", "Total", "Ing.", "Gasto", "Aport."], rows.map(row => [
-    escapeHtml(numericMonthLabel(row.month)),
-    money(row.bank, 0),
-    money(row.invested, 0),
-    money(row.total, 0),
-    money(row.income, 0),
-    money(row.expenses, 0),
-    money(row.investment, 0)
-  ]));
-}
-
-function fillEvolutionMonthSelectors() {
-  const months = buildEvolutionMonthOptions();
-  fillSelect("evolutionStartMonth", months);
-  fillSelect("evolutionEndMonth", months);
-  fillSelect("evolutionSnapshotDay", Array.from({ length: 31 }, (_, idx) => String(idx + 1)));
-  document.getElementById("evolutionStartMonth").value = state.evolutionRange.start;
-  document.getElementById("evolutionEndMonth").value = state.evolutionRange.end;
-  document.getElementById("evolutionSnapshotDay").value = String(state.evolutionRange.snapshotDay || 31);
-  setEvolutionInputValue("evolutionEstimateIncome", state.evolutionRange.income ?? 1800);
-  setEvolutionInputValue("evolutionEstimateExpense", state.evolutionRange.expenses ?? 1250);
-  setEvolutionInputValue("evolutionEstimateInvestment", state.evolutionRange.investment ?? 750);
-}
-
-function setEvolutionInputValue(id, value) {
-  const input = document.getElementById(id);
-  if (!input || document.activeElement === input) return;
-  input.value = formatDecimalInput(value, 0);
-}
-
-function buildEvolutionMonthOptions() {
-  const txMonths = unique([...state.transactions, ...state.futureTransactions].map(t => monthKey(t.date)));
-  const minMonth = txMonths.sort()[0] || "2025-01";
-  const start = compareMonthKeys(minMonth, "2025-01") < 0 ? minMonth : "2025-01";
-  const end = compareMonthKeys("2026-12", addMonthsKey(currentMonthKey(), 12)) > 0 ? "2026-12" : addMonthsKey(currentMonthKey(), 12);
-  return monthsBetween(start, end).map(month => ({ value: month, label: compactMonthLabel(month) }));
-}
-
-function buildEvolutionRows(start, end) {
-  const current = currentMonthKey();
-  const months = monthsBetween(start, end);
-  const priorMonth = addMonthsKey(current, -1);
-  const snapshotDay = state.evolutionRange.snapshotDay || 31;
-  const estimates = {
-    income: safeNumber(state.evolutionRange.income || 1800),
-    expenses: safeNumber(state.evolutionRange.expenses || 1250),
-    investment: safeNumber(state.evolutionRange.investment || 750)
-  };
-  let projectedBank = bankAtMonthSnapshot(priorMonth, snapshotDay);
-  let projectedInvested = investedAtMonthSnapshot(priorMonth, snapshotDay);
-  const projection = new Map();
-  monthsBetween(current, end).forEach(month => {
-    projectedBank += estimates.income - estimates.expenses - estimates.investment;
-    projectedInvested += estimates.investment;
-    projection.set(month, { bank: projectedBank, invested: projectedInvested, ...estimates });
-  });
-  return months.map(month => {
-    const isFuturePlan = compareMonthKeys(month, current) >= 0;
-    if (isFuturePlan) {
-      const p = projection.get(month) || { bank: projectedBank, invested: projectedInvested, income: 0, expenses: 0, investment: 0 };
-      return { month, bank: p.bank, invested: p.invested, total: p.bank + p.invested, income: p.income, expenses: p.expenses, investment: p.investment };
-    }
-    const snapshot = monthSnapshotDate(month, snapshotDay);
-    const summary = summarizeTransactions(state.transactions.filter(t => monthKey(t.date) === month && t.date <= snapshot));
-    const bank = bankAtMonthSnapshot(month, snapshotDay);
-    const invested = investedAtMonthSnapshot(month, snapshotDay);
-    return { month, bank, invested, total: bank + invested, income: summary.income, expenses: summary.expenses, investment: summary.invested };
-  });
-}
-
-function bankAtMonthSnapshot(month, day) {
-  const end = monthSnapshotDate(month, day);
-  return DEFAULT_CONFIG.initialCash
-    + sum(state.transactions.filter(t => t.date <= end).map(t => t.amount));
-}
-
-function investedAtMonthSnapshot(month, day) {
-  const end = monthSnapshotDate(month, day);
-  return netInvested(state.transactions.filter(t => t.date <= end && isInvestment(t)));
-}
-
-function monthsBetween(start, end) {
-  const out = [];
-  for (let cursor = start; compareMonthKeys(cursor, end) <= 0; cursor = addMonthsKey(cursor, 1)) out.push(cursor);
-  return out;
-}
-
-function addMonthsKey(month, amount) {
-  const [year, monthNum] = month.split("-").map(Number);
-  const date = new Date(year, monthNum - 1 + amount, 1);
-  return monthKey(date);
-}
-
-function monthSnapshotDate(month, day) {
-  const [year, monthNum] = month.split("-").map(Number);
-  const lastDay = new Date(year, monthNum, 0).getDate();
-  return new Date(year, monthNum - 1, Math.min(Math.max(Number(day) || 31, 1), lastDay), 23, 59, 59, 999);
-}
-
-function compareMonthKeys(a, b) {
-  return String(a).localeCompare(String(b));
-}
-
-function compactMonthLabel(key) {
-  return `${monthName(key.slice(5, 7)).slice(0, 3)} ${key.slice(0, 4)}`;
-}
-
-function numericMonthLabel(key) {
-  return `${key.slice(5, 7)}-${key.slice(2, 4)}`;
 }
 
 function tag(value) { return `<span class="tag">${escapeHtml(value || "Sin tipo")}</span>`; }

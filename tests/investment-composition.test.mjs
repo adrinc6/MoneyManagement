@@ -201,3 +201,81 @@ test("renombrar una categoría se lleva su peso y el de sus posiciones", () => {
   assert.deepEqual(plain(app.state.investmentComposition.positions), { "Renta variable": { iwda: "70/100" } });
   assert.equal(JSON.parse(app.__store.get(COMPOSITION_KEY)).groups["Renta variable"], "60/100");
 });
+
+// Importes fijos: un grupo o una posición puede pedir dinero en vez de peso. Lo que se fija
+// aquí es que ese dinero suma al objetivo y desaparece de los porcentajes, ni en el objetivo
+// ni en el peso de ahora, que es justo lo que hace que poner uno no mueva a los demás.
+const fixedEntry = (key, amount, current) => ({ key, label: key, weight: null, fixed: amount, current });
+
+test("un importe fijo suma al objetivo y no entra en el reparto por pesos", () => {
+  const app = loadApp();
+  const plan = app.computeCompositionPlan({
+    entries: [entry("ETFs", 55, 1100), entry("Fondos RV", 25, 880), entry("Fondos Mixtos", 20, 1000), fixedEntry("Metal", 8000, 9200)],
+    total: "12000"
+  });
+  assert.equal(plan.shared, 12000, "los pesos reparten lo que se escribe arriba");
+  assert.equal(plan.fixedTotal, 8000);
+  assert.equal(plan.total, 20000, "el objetivo total es el reparto más los fijos");
+  assert.equal(plan.rows[0].target, 6600, "el 55 % de 12.000, sin contar el fijo");
+  assert.equal(plan.rows[3].target, 8000, "el fijo vale exactamente lo que pide");
+  assert.equal(plan.rows[3].share, 0, "un fijo no tiene peso");
+  assert.equal(plan.rows[3].currentShare, 0);
+  assert.equal(plan.rows[3].excess, 1200, "y si tiene de más, sobra igual que un peso");
+  assert.ok(Math.abs(plan.rows[0].currentShare - 1100 / 2980) < 1e-12, "el peso de ahora ignora el dinero de los fijos");
+});
+
+test("una posición fija sube el objetivo de su grupo y el de la cartera", () => {
+  const app = loadApp();
+  const grupo = app.computeCompositionPlan({
+    entries: [entry("VWCE", 50, 700), entry("SP500", 50, 250), fixedEntry("Bono", 1000, 400)],
+    total: "6600"
+  });
+  assert.equal(grupo.total, 7600, "6.600 repartidos más los 1.000 del bono");
+  assert.equal(grupo.rows[0].target, 3300);
+  assert.equal(grupo.rows[2].missing, 600);
+
+  // Vista desde la cartera: el fijo de dentro viaja como `extra` de la fila del grupo.
+  const cartera = app.computeCompositionPlan({
+    entries: [
+      { key: "ETFs", label: "ETFs", weight: 55, extra: 1000, currentExtra: 400, current: 1500 },
+      entry("Fondos RV", 25, 880),
+      entry("Fondos Mixtos", 20, 1000)
+    ],
+    total: "12000"
+  });
+  assert.equal(cartera.rows[0].base, 6600, "por peso le tocan 6.600");
+  assert.equal(cartera.rows[0].target, 7600, "y su objetivo son 6.600 más el fijo de dentro");
+  assert.equal(cartera.total, 13000, "que también sube el objetivo de la cartera");
+  assert.ok(Math.abs(cartera.rows[0].currentShare - 1100 / 2980) < 1e-12, "el dinero del fijo no cuenta para el peso");
+});
+
+test("una composición de solo fijos no reparte nada", () => {
+  const app = loadApp();
+  const plan = app.computeCompositionPlan({
+    entries: [fixedEntry("Metal", 8000, 9200), fixedEntry("Liquidez", 2000, 1200)],
+    total: ""
+  });
+  assert.equal(plan.shared, 0);
+  assert.equal(plan.total, 10000, "el objetivo es la suma de los fijos");
+  assert.equal(plan.missingTotal, 800);
+  assert.equal(plan.excessTotal, 1200);
+  assert.equal(plan.weightsWarning, false, "sin pesos no hay reparto que avisar");
+});
+
+test("el importe fijo se guarda con el euro delante y no se confunde con un peso", () => {
+  const app = loadApp();
+  assert.equal(app.parseCompositionWeight("€1000"), null, "un fijo no es un peso");
+  assert.equal(app.compositionFixedAmount("€1000"), 1000);
+  assert.equal(app.compositionFixedAmount("€1.234,50"), 1234.5, "acepta lo que uno escribiría a mano");
+  assert.equal(app.compositionFixedAmount("60/100"), null, "un peso no tiene importe");
+  assert.ok(Number.isNaN(app.compositionFixedAmount("€abc")));
+
+  app.state.investmentComposition = app.normalizeInvestmentComposition({
+    groups: { Metal: "€8000", Bolsa: "60" },
+    positions: { Bolsa: { bono: "€1000", iwda: "1/3" } }
+  });
+  app.writeInvestmentComposition();
+  const guardado = JSON.parse(app.__store.get(COMPOSITION_KEY));
+  assert.deepEqual(plain(guardado.groups), { Metal: "€8000", Bolsa: "60/100" });
+  assert.deepEqual(plain(guardado.positions), { Bolsa: { bono: "€1000", iwda: "1/3" } });
+});
