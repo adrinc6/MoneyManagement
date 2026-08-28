@@ -5247,14 +5247,20 @@ function registrarAccountName() {
   return String(document.getElementById(id)?.value || "").trim();
 }
 
-// En periódico no se guarda un movimiento, se guardan todos los del rango: la cuenta
-// se mueve por la suma, no por uno. Sin frecuencia elegida todavía no hay nada que contar.
+function occurrencesInMonth(dates, month) {
+  return (dates || []).filter(date => date && monthKey(date) === month).length;
+}
+
+// En periódico se guardan todos los movimientos del rango, pero la previa habla del mes
+// en curso: cuenta solo las repeticiones que caen dentro de él. Un rango que empieza el
+// mes que viene no cambia nada de este, y entonces no hay previa que enseñar. Sin
+// frecuencia elegida todavía no hay fechas que contar.
 function registrarOccurrences() {
   if (!isRecurringMode()) return 1;
   if (!state.recurrenceReady) return 0;
   try {
     const { dates } = recurrenceDatesFromForm();
-    return dates.length;
+    return occurrencesInMonth(dates, currentMonthKey());
   } catch {
     return 0;
   }
