@@ -1476,9 +1476,12 @@ dialog::backdrop { background: rgba(15, 23, 42, .5); }
   z-index: 50;
   isolation: isolate;
   background: var(--nav-bg);
-  border: 1px solid rgba(255, 255, 255, .14);
+  border: 0;
   border-radius: 24px 24px 0 0;
-  box-shadow: 0 20px 54px rgba(0, 0, 0, .22);
+  /* La línea superior va como sombra interior, no como borde: así el resalte del
+     botón activo ocupa los 52px de alto y la línea se dibuja por encima. Hace
+     falta porque en tema oscuro --nav-bg y --page-bg son el mismo color. */
+  box-shadow: 0 20px 54px rgba(0, 0, 0, .22), inset 0 1px 0 rgba(255, 255, 255, .14);
   display: grid;
   grid-template-columns: repeat(5, 1fr);
   align-items: stretch;
@@ -1497,8 +1500,8 @@ dialog::backdrop { background: rgba(15, 23, 42, .5); }
   color: var(--nav-text);
   display: grid;
   place-items: center;
-  gap: 2px;
-  font-size: .68rem;
+  gap: 3px;
+  font-size: .7rem;
   padding: 0;
 }
 /* Solo se redondean las esquinas superiores exteriores, que son las de la barra:
@@ -1513,7 +1516,7 @@ dialog::backdrop { background: rgba(15, 23, 42, .5); }
   border-radius: 0;
   min-height: 100%;
 }
-.bottom-nav svg { width: 19px; height: 19px; }
+.bottom-nav svg { width: 20px; height: 20px; }
 .bottom-nav button.active {
   background: rgba(255, 255, 255, .1);
   color: var(--nav-active);
@@ -1550,7 +1553,7 @@ dialog::backdrop { background: rgba(15, 23, 42, .5); }
 .bottom-nav .fab.saving svg {
   animation: spin .8s linear infinite;
 }
-.bottom-nav .fab svg { width: 19px; height: 19px; }
+.bottom-nav .fab svg { width: 20px; height: 20px; }
 .nav-badge {
   position: absolute;
   top: 5px;
