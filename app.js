@@ -310,13 +310,13 @@ function wireUi() {
   document.getElementById("editMovementType")?.addEventListener("change", syncEditMovementConcept);
   document.getElementById("formAmount")?.addEventListener("input", enforceTransferPositiveAmount);
   document.getElementById("formAmount")?.addEventListener("change", enforceTransferPositiveAmount);
-  // Cualquier campo que cambie el cálculo repinta la vista previa.
-  ["formAmount", "formConcept", "formAccount", "recurrenceAccount", "formTransferFrom", "formTransferTo"]
-    .forEach(id => {
-      const el = document.getElementById(id);
-      el?.addEventListener("input", renderMovementPreview);
-      el?.addEventListener("change", renderMovementPreview);
-    });
+  // Cualquier campo que cambie el cálculo repinta la vista previa. Va delegado en el
+  // formulario, no campo a campo: la lista de ids se quedaba corta en cuanto aparecía un
+  // control nuevo (el grupo de inversión no repintaba nada, así que al cambiar de grupo
+  // seguía viéndose la previa del anterior hasta volver a tocar el importe).
+  const movementForm = document.getElementById("movementForm");
+  movementForm?.addEventListener("input", renderMovementPreview);
+  movementForm?.addEventListener("change", renderMovementPreview);
   document.getElementById("saveConfigBtn")?.addEventListener("click", saveConfigFromForm);
   document.getElementById("clearSyncLogsBtn")?.addEventListener("click", clearSyncLogs);
   document.getElementById("undoSentOpsBtn")?.addEventListener("click", openUndoDialog);
