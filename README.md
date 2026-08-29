@@ -49,7 +49,8 @@ MoneyManagement permite:
 - Vista jerárquica por años, meses y movimientos.
 - Interruptor entre realizados y futuros.
 - Tabla con orden, filtros y detalle editable.
-- Modo edición para seleccionar y borrar varias filas a la vez.
+- Modo edición para seleccionar y borrar varias filas a la vez. En futuros el borrado es
+  directo: el dinero aún no se ha movido, así que no se pregunta por cuenta.
 - En futuros se muestra también la cuenta.
 
 ### Inversiones
@@ -291,6 +292,7 @@ En `Ajustes > Conexión`, sobre la lista de envíos correctos del día, hay un b
 - Los importes ilegibles se rechazan con aviso en vez de convertirse en `0 €` en silencio; los miles en formato español (`1.234`) se interpretan correctamente.
 - Las recurrencias están acotadas (máximo 366 fechas) y piden confirmación por encima de 50 movimientos.
 - La edición y el borrado de movimientos localizan la fila por identificador estable: actualizar los datos mientras tienes un movimiento abierto ya no edita el equivocado.
+- Borrar un movimiento futuro no toca ningún banco ni pregunta por cuenta: ese dinero no ha salido todavía, el saldo solo se ajusta cuando el movimiento vence. Y el botón de borrar en lote ya no se queda en `Borrando`: el borrado va a la cola, así que vuelve a estar disponible al instante.
 - Si un CDN no carga, la app arranca igual (sin iconos ni gráficas) en vez de quedarse en blanco.
 - Lecturas y escrituras van por `fetch` con CORS y se cancelan con `AbortController` al agotar su tiempo: una petición colgada ya no bloquea la cola ni la interfaz.
 - La confirmación de un guardado llega en la respuesta del propio POST, no sondeando después: un cambio se confirma en un par de segundos.

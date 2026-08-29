@@ -4321,10 +4321,6 @@ function syncMovementBulkButtons() {
   editBtn.title = state.movementBulkEdit ? "Cancelar" : "Editar";
   editBtn.innerHTML = state.movementBulkEdit ? `<i data-lucide="check"></i>` : `<i data-lucide="square-pen"></i> Editar`;
   const count = selectedMovementIndexes().length;
-  if (deleteBtn.classList.contains("saving")) {
-    refreshIcons();
-    return;
-  }
   deleteBtn.disabled = count === 0;
   deleteBtn.classList.add("icon-only");
   deleteBtn.setAttribute("aria-label", count ? `Borrar ${count} movimientos seleccionados` : "Borrar movimientos seleccionados");
@@ -4339,11 +4335,12 @@ function selectedMovementIndexes() {
     .filter(Number.isInteger);
 }
 
+// El borrado es local + cola, así que no hay espera que señalizar: marcar el botón como
+// "Borrando" solo servía para dejarlo bloqueado para siempre (nadie lo restauraba en el
+// camino de éxito y el botón vive en index.html, no se re-crea en cada render).
 async function deleteSelectedMovements() {
   const indexes = selectedMovementIndexes();
   if (!indexes.length) return;
-  const btn = document.getElementById("movementBulkDeleteBtn");
-  markButtonSaving(btn, "Borrando");
   try {
     const list = getDisplayedMovements();
     const movements = indexes.map(index => list[index]).filter(Boolean);
@@ -4376,19 +4373,17 @@ async function deleteSelectedMovements() {
       syncOptions();
       renderCurrentView();
     };
-    if (state.banks.length) {
+    if (movementDeleteTouchesBanks()) {
       const totalAmount = sum(movements.map(movement => Number(movement.amount || 0)));
       promptMovementDeleteAccount({
         title: "Aplicar a cuenta",
         amount: -totalAmount,
-        onConfirm: account => finalizeDelete(account),
-        onCancel: () => restoreButton(btn)
+        onConfirm: account => finalizeDelete(account)
       });
       return;
     }
     finalizeDelete();
   } catch (error) {
-    restoreButton(btn);
     setNotice(`No se pudieron borrar: ${error.message}`, "warn");
     renderMovements();
   }
@@ -4742,7 +4737,7 @@ async function deleteMovementDetail() {
     }
   };
   try {
-    if (!state.banks.length) {
+    if (!movementDeleteTouchesBanks()) {
       finalizeDelete("");
       return;
     }
@@ -6627,6 +6622,12 @@ function bankChangeLines(totalBefore, totalAfter, account, accountBefore) {
     `Banco: ${money(totalBefore)} a ${money(totalAfter)}`,
     account ? `${account}: ${money(accountBefore)} a ${money(getBankAmount(account))}` : ""
   );
+}
+
+// Un movimiento futuro todavía no ha tocado ningún banco: al borrarlo no hay dinero que
+// devolver, así que no se pregunta por cuenta ni se aplica ningún delta de saldo.
+function movementDeleteTouchesBanks() {
+  return state.movementMode !== "future" && state.banks.length > 0;
 }
 
 function promptMovementDeleteAccount({ title, amount, onConfirm, onCancel }) {
