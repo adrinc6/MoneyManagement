@@ -1242,6 +1242,7 @@ th {
 .movement-select {
   width: 18px;
   min-height: 18px;
+  margin: 0;
   accent-color: var(--accent);
 }
 #movementTable .table-head-btn {
@@ -1266,15 +1267,18 @@ th {
   overflow-x: hidden;
 }
 #movementTable .col-select {
-  width: 20px;
-  min-width: 20px;
-  padding-left: 1px;
-  padding-right: 1px;
+  width: 26px;
+  min-width: 26px;
+  padding-left: 6px;
+  padding-right: 4px;
   text-align: center;
+  overflow: visible;
 }
 #movementTable .movement-select {
-  width: 14px;
-  min-height: 14px;
+  width: 16px;
+  height: 16px;
+  min-height: 16px;
+  vertical-align: middle;
 }
 #movementTable .col-day {
   width: 38px;
