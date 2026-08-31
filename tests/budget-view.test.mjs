@@ -197,3 +197,64 @@ test("el resumen superior indica lo pendiente y bloquea guardar hasta cuadrar", 
   assert.match(summary.innerHTML, /Todo el objetivo está asignado/);
   assert.equal(saveButton.disabled, false);
 });
+
+// El objetivo mensual debe poder cambiarse aunque el reparto por categorías no cuadre:
+// antes se rechazaba el guardado y no había forma de subirlo (el editor de categorías
+// tampoco deja repartir por encima del objetivo antiguo).
+test("cambiar el objetivo de gasto guarda y lleva al reparto por categorías", async () => {
+  const app = loadApp();
+  const nodes = conDom(app);
+  nodes.set("investmentGoalsDialog", { close() {}, showModal() {} });
+  nodes.set("goalExpenseMonthlyInput", { value: "1200" });
+  nodes.set("goalInvestmentMonthlyInput", { value: "300" });
+  app.state.budgets = { "Vivienda": 600, "Alimentación": 400 };
+  app.state.investmentGoals = app.normalizeInvestmentGoals({ expenseMonthly: 1000, investmentMonthly: 200 });
+  app.state.config = { ...app.state.config, scriptUrl: "" };
+
+  const avisos = [];
+  app.setNotice = (mensaje, tono) => avisos.push([mensaje, tono]);
+  app.markButtonSaving = () => {};
+  app.markButtonSaved = () => {};
+  app.restoreButton = () => {};
+  app.writeDataCache = () => {};
+  app.renderCurrentView = () => {};
+  let abierto = 0;
+  app.openBudgetsDialog = () => { abierto += 1; };
+
+  await app.saveInvestmentGoalsFromDialog({ preventDefault() {}, submitter: {} });
+  await new Promise(resolve => setTimeout(resolve, 0));
+
+  assert.equal(app.state.investmentGoals.expenseMonthly, 1200);
+  assert.equal(app.state.investmentGoals.investmentMonthly, 300);
+  assert.equal(abierto, 1);
+  assert.equal(avisos.at(-1)[1], "warn");
+  assert.match(avisos.at(-1)[0], /Ajusta el reparto por categorías/);
+});
+
+test("editar solo la inversión no abre el editor de categorías", async () => {
+  const app = loadApp();
+  const nodes = conDom(app);
+  nodes.set("investmentGoalsDialog", { close() {}, showModal() {} });
+  nodes.set("goalExpenseMonthlyInput", { value: "1000" });
+  nodes.set("goalInvestmentMonthlyInput", { value: "450" });
+  app.state.budgets = { "Vivienda": 600, "Alimentación": 400 };
+  app.state.investmentGoals = app.normalizeInvestmentGoals({ expenseMonthly: 1000, investmentMonthly: 200 });
+  app.state.config = { ...app.state.config, scriptUrl: "" };
+
+  const avisos = [];
+  app.setNotice = (mensaje, tono) => avisos.push([mensaje, tono]);
+  app.markButtonSaving = () => {};
+  app.markButtonSaved = () => {};
+  app.restoreButton = () => {};
+  app.writeDataCache = () => {};
+  app.renderCurrentView = () => {};
+  let abierto = 0;
+  app.openBudgetsDialog = () => { abierto += 1; };
+
+  await app.saveInvestmentGoalsFromDialog({ preventDefault() {}, submitter: {} });
+  await new Promise(resolve => setTimeout(resolve, 0));
+
+  assert.equal(app.state.investmentGoals.investmentMonthly, 450);
+  assert.equal(abierto, 0);
+  assert.equal(avisos.at(-1)[1], "ok");
+});

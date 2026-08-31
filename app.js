@@ -5700,6 +5700,11 @@ function loadInvestmentGoals() {
 function editInvestmentGoals(focusGoal = "") {
   document.getElementById("goalExpenseMonthlyInput").value = formatDecimalInput(state.investmentGoals.expenseMonthly);
   document.getElementById("goalInvestmentMonthlyInput").value = formatDecimalInput(monthlyInvestmentGoal());
+  const hint = document.getElementById("goalExpenseBudgetHint");
+  if (hint) {
+    const assigned = roundMoney(sum(Object.values(state.budgets || {})));
+    hint.textContent = `Ahora mismo el reparto por categorías suma ${money(assigned)}.`;
+  }
   document.getElementById("investmentGoalsDialog").showModal();
   const focusMap = {
     expense: "goalExpenseMonthlyInput",
@@ -5742,6 +5747,7 @@ async function saveBudgetsFromDialog(event) {
   const mismatch = budgetGoalMismatch(normalizedBudgets, state.investmentGoals.expenseMonthly);
   if (mismatch) {
     restoreButton(btn);
+    setNotice(budgetGoalMismatchMessage(mismatch), "warn");
     return;
   }
   state.budgets = normalizedBudgets;
@@ -5771,13 +5777,13 @@ async function saveInvestmentGoalsFromDialog(event) {
   markButtonSaving(btn);
   const expenseMonthly = roundMoney(document.getElementById("goalExpenseMonthlyInput").value);
   const investmentMonthly = roundMoney(document.getElementById("goalInvestmentMonthlyInput").value);
-  const mismatch = budgetGoalMismatch(state.budgets, expenseMonthly);
-  if (mismatch) {
-    restoreButton(btn);
-    setNotice(budgetGoalMismatchMessage(mismatch), "warn");
-    return;
-  }
+  // El objetivo se guarda siempre: exigir aquí que las categorías ya cuadren dejaba el
+  // gasto mensual (y de paso la inversión) imposible de cambiar, porque el editor de
+  // categorías tampoco deja repartir por encima del objetivo antiguo. Si al cambiar el
+  // gasto el reparto queda descuadrado, se abre el editor de categorías para arreglarlo.
+  const expenseChanged = roundMoney(state.investmentGoals.expenseMonthly) !== expenseMonthly;
   state.investmentGoals = normalizeInvestmentGoals({ ...state.investmentGoals, expenseMonthly, investmentMonthly, monthly: investmentMonthly });
+  const mismatch = expenseChanged ? budgetGoalMismatch(state.budgets, expenseMonthly) : null;
   safeSetItem('investmentGoals', JSON.stringify(state.investmentGoals));
   writeDataCache({ dirtySections: ["investmentGoals"] });
   renderCurrentView();
@@ -5786,16 +5792,29 @@ async function saveInvestmentGoalsFromDialog(event) {
       queueOp({ action: "saveInvestmentGoals", sheetName: state.config.objectiveSheet || "Objetivos", goals: state.investmentGoals });
       document.getElementById("investmentGoalsDialog").close();
       markButtonSaved(btn);
-      setNotice('Objetivos guardados en Google Sheets.', 'ok');
+      if (!mismatch) setNotice('Objetivos guardados en Google Sheets.', 'ok');
     } catch (error) {
       restoreButton(btn);
       setNotice(lineMessage('Objetivos guardados solo en este navegador.', error.message), 'warn');
+      openBudgetsAfterGoalChange(mismatch, { keepNotice: true });
+      return;
     }
   } else {
     markButtonSaved(btn);
     document.getElementById("investmentGoalsDialog").close();
-    setNotice('Objetivos guardados en este navegador.', 'ok');
+    if (!mismatch) setNotice('Objetivos guardados en este navegador.', 'ok');
   }
+  openBudgetsAfterGoalChange(mismatch);
+}
+
+// Tras cambiar el objetivo de gasto, el reparto por categorías puede quedar descuadrado:
+// se avisa y se abre el editor de categorías, que es donde se cuadra.
+function openBudgetsAfterGoalChange(mismatch, { keepNotice = false } = {}) {
+  if (!mismatch) return;
+  if (!keepNotice) {
+    setNotice(`${budgetGoalMismatchMessage(mismatch)} Ajusta el reparto por categorías.`, "warn");
+  }
+  window.setTimeout(() => openBudgetsDialog(), 0);
 }
 
 function normalizeInvestmentGoals(value) {
