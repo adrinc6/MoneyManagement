@@ -3,6 +3,7 @@
 // que sale de verdad, en vez de dar por hecho que el render hace lo que dice.
 import test from "node:test";
 import assert from "node:assert/strict";
+import { setTimeout as esperar } from "node:timers/promises";
 import { loadApp } from "./load-app.mjs";
 
 function conDom(app) {
@@ -222,7 +223,7 @@ test("cambiar el objetivo de gasto guarda y lleva al reparto por categorías", a
   app.openBudgetsDialog = () => { abierto += 1; };
 
   await app.saveInvestmentGoalsFromDialog({ preventDefault() {}, submitter: {} });
-  await new Promise(resolve => setTimeout(resolve, 0));
+  await esperar(0);
 
   assert.equal(app.state.investmentGoals.expenseMonthly, 1200);
   assert.equal(app.state.investmentGoals.investmentMonthly, 300);
@@ -252,7 +253,7 @@ test("editar solo la inversión no abre el editor de categorías", async () => {
   app.openBudgetsDialog = () => { abierto += 1; };
 
   await app.saveInvestmentGoalsFromDialog({ preventDefault() {}, submitter: {} });
-  await new Promise(resolve => setTimeout(resolve, 0));
+  await esperar(0);
 
   assert.equal(app.state.investmentGoals.investmentMonthly, 450);
   assert.equal(abierto, 0);
