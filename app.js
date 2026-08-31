@@ -418,10 +418,11 @@ function wireUi() {
     state.summaryModes.bankMoney = btn.dataset.bankMode;
     renderBankDetail(calculateSummary(getSelectedSummaryMonth()));
   });
-  document.addEventListener("click", event => {
-    if (event.target.closest(".toast")) return;
-    window.setTimeout(() => clearToasts(), 0);
-  });
+  // Un clic cierra los avisos que ya estaban en pantalla, pero NO el que abre ese mismo
+  // clic: se anotan en la fase de captura los que hay ANTES de que corran los manejadores
+  // y solo se retiran esos. Antes se borraba todo con un setTimeout(0) y cualquier aviso
+  // lanzado desde un botón (actualizar precios, guardar...) duraba milisegundos.
+  document.addEventListener("click", dismissExistingToasts, true);
 }
 
 function showView(id) {
@@ -623,7 +624,7 @@ async function updateInvestmentPricesFromHeader() {
     force: true,
     updateInvestments: true,
     scope: "investments",
-    successMessage: "Precios actualizados y caché de inversiones renovada."
+    quietSuccess: true
   });
 
   btn?.classList.remove("saving");
@@ -1137,6 +1138,11 @@ async function refreshDataImpl(options = {}) {
   const requestedSections = cacheSectionsForScope(scope);
   let downloadedSectionsThisRun = [];
   const manualRefresh = Boolean(options.manualRefresh);
+  // Con quietSuccess la acción ya se narra en la cabecera (el estado bajo el nombre de la
+  // app), así que sobra el aviso flotante de "cargando" y el de "hecho". Los errores y
+  // avisos sí se muestran siempre: ahí el estado corto de la cabecera no basta.
+  const quietSuccess = Boolean(options.quietSuccess);
+  const noticeOk = (message, type = "ok") => { if (!quietSuccess || type === "warn") setNotice(message, type); };
   setRefreshLoading(true);
   syncStatusStep(showProgress, refreshStartStatus({ scope, updateInvestments }), "");
 
@@ -1180,7 +1186,7 @@ async function refreshDataImpl(options = {}) {
   const shouldMoveDueFutureMovements = Boolean(scope !== "investments" && scope !== "banks" && dueFutureMovementsFromCache.length);
 
   if (cached && options.cacheOnly && !force && !updateInvestments && !shouldMoveDueFutureMovements && !resumeSections.length) {
-    setNotice(
+    noticeOk(
       cacheIsStale(cached)
         ? staleCacheMessage(cached)
         : (options.successMessage || `Datos cargados desde caché (${formatCacheAge(cacheAgeMs(cached))}).`),
@@ -1207,7 +1213,7 @@ async function refreshDataImpl(options = {}) {
   const loadingText = updateInvestments
     ? "Actualizando precios y solo inversiones..."
     : (manualRefresh && DOWNLOAD_TEXT_BY_SCOPE[scope]) || UPDATE_TEXT_BY_SCOPE[scope] || "Actualizando datos por secciones...";
-  if (force || !cached || shouldMoveDueFutureMovements) setNotice(loadingText, "");
+  if (force || !cached || shouldMoveDueFutureMovements) noticeOk(loadingText, "");
   logSyncEvent(refreshStartStatus({ scope, updateInvestments }).replace(/\n/g, " · "), "");
 
   if (!state.config.scriptUrl) {
@@ -1301,7 +1307,7 @@ async function refreshDataImpl(options = {}) {
     if (!neededSections.length && cached) {
       syncOptions();
       renderCurrentView();
-      setNotice(options.successMessage || `Datos cargados desde caché (${formatCacheAge(cacheAgeMs(cached))}).`, cacheIsStale(cached) ? "warn" : "ok");
+      noticeOk(options.successMessage || `Datos cargados desde caché (${formatCacheAge(cacheAgeMs(cached))}).`, cacheIsStale(cached) ? "warn" : "ok");
       syncStatusStep(showProgress, cacheIsStale(cached) ? "Caché antigua" : "Usando caché", cacheIsStale(cached) ? "warn" : "ok");
       logSyncEvent("Se mantiene caché local; sin manifiesto ni descarga automática.", cacheIsStale(cached) ? "warn" : "ok");
       renderSyncSettingsPanel();
@@ -1453,7 +1459,7 @@ async function refreshDataImpl(options = {}) {
           : scope === "summary"
             ? "Resumen actualizado por secciones."
             : "Datos actualizados por secciones.";
-    setNotice(lineMessage(
+    noticeOk(lineMessage(
       options.successMessage || defaultSuccess,
       flushedPending.length ? `Pendientes enviados antes: ${flushedPending.join(", ")}` : ""
     ), "ok");
@@ -8778,8 +8784,13 @@ function setNotice(message, type = "", durationMs = 2000) {
   window.setTimeout(remove, durationMs);
 }
 
-function clearToasts() {
-  document.querySelectorAll(".toast").forEach(toast => toast.remove());
+// Se ejecuta en la fase de captura: anota los avisos que hay ANTES de que corran los
+// manejadores del clic y solo retira esos. Así el aviso que abre ese mismo clic sobrevive.
+function dismissExistingToasts(event) {
+  if (event.target.closest(".toast")) return;
+  const previos = [...document.querySelectorAll(".toast")];
+  if (!previos.length) return;
+  window.setTimeout(() => previos.forEach(toast => toast.remove()), 0);
 }
 
 function formatNoticeHtml(message) {
